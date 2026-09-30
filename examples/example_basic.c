@@ -7,7 +7,7 @@
 int main(void)
 {
     const char *path = "demo.pftrace";
-    pf_trace_t *t = pf_trace_open(path);
+    struct pf_trace *t = pf_trace_open(path);
     if (!t) {
         fprintf(stderr, "failed to open %s for writing\n", path);
         return 1;
