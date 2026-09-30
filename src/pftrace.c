@@ -40,6 +40,7 @@
 
 #define TYPE_SLICE_BEGIN 1
 #define TYPE_SLICE_END 2
+#define TYPE_INSTANT 3
 #define TYPE_COUNTER 4
 
 /* TrackDescriptor */
@@ -310,9 +311,13 @@ uint64_t pf_track_counter(pf_trace_t *t, uint64_t parent_uuid, const char *name,
     return uuid;
 }
 
-/* --- Slices ------------------------------------------------------------ */
+/* --- Slices / instants --------------------------------------------------
+ * Shared by pf_slice_begin (TYPE_SLICE_BEGIN) and pf_instant_event
+ * (TYPE_INSTANT) — both are a named, optionally-categorized TrackEvent
+ * that may need to intern a fresh name/category. They differ only in
+ * the `type` value and in whether a matching _end call follows. */
 
-void pf_slice_begin(pf_trace_t *t, uint64_t track_uuid, const char *name, const char *category) {
+static void emit_named_event(pf_trace_t *t, uint32_t type, uint64_t track_uuid, const char *name, const char *category) {
     pthread_mutex_lock(&t->lock);
 
     pb_buf interned;
@@ -343,7 +348,7 @@ void pf_slice_begin(pf_trace_t *t, uint64_t track_uuid, const char *name, const 
 
     pb_buf ev;
     pb_buf_init(&ev);
-    pb_put_varint_field(&ev, FN_EVENT_TYPE, TYPE_SLICE_BEGIN);
+    pb_put_varint_field(&ev, FN_EVENT_TYPE, type);
     pb_put_varint_field(&ev, FN_EVENT_TRACK_UUID, track_uuid);
     if (name) {
         if (name_interned) pb_put_varint_field(&ev, FN_EVENT_NAME_IID, name_iid);
@@ -368,6 +373,14 @@ void pf_slice_begin(pf_trace_t *t, uint64_t track_uuid, const char *name, const 
     pb_buf_free(&ev);
     pb_buf_free(&interned);
     pthread_mutex_unlock(&t->lock);
+}
+
+void pf_slice_begin(pf_trace_t *t, uint64_t track_uuid, const char *name, const char *category) {
+    emit_named_event(t, TYPE_SLICE_BEGIN, track_uuid, name, category);
+}
+
+void pf_instant_event(pf_trace_t *t, uint64_t track_uuid, const char *name, const char *category) {
+    emit_named_event(t, TYPE_INSTANT, track_uuid, name, category);
 }
 
 void pf_slice_end(pf_trace_t *t, uint64_t track_uuid) {

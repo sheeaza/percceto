@@ -36,6 +36,7 @@ int main(void) {
     for (int i = 0; i < 3; i++) {
         pf_slice_begin(t, worker_thread, "work_item", "worker");
         pf_counter_set_double(t, queue_depth, 4.5 + i);
+        if (i % 2 == 0) pf_instant_event(t, worker_thread, "cache_miss", "worker");
         usleep(500);
         pf_slice_end(t, worker_thread);
     }

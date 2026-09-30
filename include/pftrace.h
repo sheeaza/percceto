@@ -44,6 +44,10 @@ void pf_slice_begin(pf_trace_t *t, uint64_t track_uuid, const char *name, const 
 /* Ends the most recently begun, not-yet-ended slice on `track_uuid`. */
 void pf_slice_end(pf_trace_t *t, uint64_t track_uuid);
 
+/* Records a single-point-in-time marker on `track_uuid` (Perfetto's
+ * TYPE_INSTANT) — no matching _end call. `category` may be NULL. */
+void pf_instant_event(pf_trace_t *t, uint64_t track_uuid, const char *name, const char *category);
+
 /* Samples a counter track with an integer or floating-point value. */
 void pf_counter_set_int(pf_trace_t *t, uint64_t counter_track_uuid, int64_t value);
 void pf_counter_set_double(pf_trace_t *t, uint64_t counter_track_uuid, double value);

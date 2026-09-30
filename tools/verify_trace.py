@@ -36,6 +36,7 @@ def main():
     begins = Counter()
     ends = Counter()
     counter_events = 0
+    instant_events = 0
     event_names_seen = defaultdict(set)  # track -> set of resolved names, to sanity check interning
     interned_names = {}
     interned_cats = {}
@@ -57,19 +58,23 @@ def main():
             ends[ev.track_uuid] += 1
         elif ev.type == TrackEvent.TYPE_COUNTER:
             counter_events += 1
+        elif ev.type == TrackEvent.TYPE_INSTANT:
+            instant_events += 1
 
     print(f"slice begins per track: {dict(begins)}")
     print(f"slice ends per track:   {dict(ends)}")
     print(f"counter events: {counter_events}")
+    print(f"instant events: {instant_events}")
     print(f"interned event names: {interned_names}")
     print(f"interned event categories: {interned_cats}")
 
     assert begins == ends, "slice begin/end counts must balance per track"
     assert counter_events == 6, "expected 6 counter samples (3 int + 3 double)"
+    assert instant_events == 2, "expected 2 instant (cache_miss) events"
 
     # interning dedup check: "compute"/"parse"/"render" repeat 3x each on the
     # main thread but must resolve to a single EventName interned entry each.
-    assert len(interned_names) == 4, f"expected 4 distinct interned names (compute/parse/render/work_item), got {interned_names}"
+    assert len(interned_names) == 5, f"expected 5 distinct interned names (compute/parse/render/work_item/cache_miss), got {interned_names}"
     assert len(interned_cats) == 2, f"expected 2 distinct interned categories (app/worker), got {interned_cats}"
 
     total_slice_events = sum(begins.values())
