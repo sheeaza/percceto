@@ -4,7 +4,8 @@
 
 #include "pftrace.h"
 
-int main(void) {
+int main(void)
+{
     const char *path = "demo.pftrace";
     pf_trace_t *t = pf_trace_open(path);
     if (!t) {
@@ -15,7 +16,8 @@ int main(void) {
     uint64_t proc = pf_track_process(t, 1234, "demo_app");
     uint64_t main_thread = pf_track_thread(t, proc, 1234, 1, "main");
     uint64_t worker_thread = pf_track_thread(t, proc, 1234, 2, "worker");
-    uint64_t queue_depth = pf_track_counter(t, proc, "queue_depth", PF_UNIT_COUNT);
+    uint64_t queue_depth =
+        pf_track_counter(t, proc, "queue_depth", PF_UNIT_COUNT);
 
     for (int i = 0; i < 3; i++) {
         pf_slice_begin(t, main_thread, "compute", "app");
@@ -36,7 +38,8 @@ int main(void) {
     for (int i = 0; i < 3; i++) {
         pf_slice_begin(t, worker_thread, "work_item", "worker");
         pf_counter_set_double(t, queue_depth, 4.5 + i);
-        if (i % 2 == 0) pf_instant_event(t, worker_thread, "cache_miss", "worker");
+        if (i % 2 == 0)
+            pf_instant_event(t, worker_thread, "cache_miss", "worker");
         usleep(500);
         pf_slice_end(t, worker_thread);
     }

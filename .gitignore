@@ -3,3 +3,4 @@ build/
 *.a
 *.pftrace
 .cache/
+compile_commands.json

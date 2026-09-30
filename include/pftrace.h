@@ -31,26 +31,32 @@ uint64_t pf_track_process(pf_trace_t *t, int32_t pid, const char *name);
 
 /* Registers a thread track, optionally nested under a process track
  * (pass 0 for parent_uuid if there is none), and returns its track_uuid. */
-uint64_t pf_track_thread(pf_trace_t *t, uint64_t parent_uuid, int32_t pid, int32_t tid, const char *name);
+uint64_t pf_track_thread(pf_trace_t *t, uint64_t parent_uuid, int32_t pid,
+                         int32_t tid, const char *name);
 
 /* Registers a counter track, optionally nested under another track (pass
  * 0 for parent_uuid), and returns its track_uuid. */
-uint64_t pf_track_counter(pf_trace_t *t, uint64_t parent_uuid, const char *name, pf_unit_t unit);
+uint64_t pf_track_counter(pf_trace_t *t, uint64_t parent_uuid, const char *name,
+                          pf_unit_t unit);
 
 /* Begins a slice on `track_uuid`. `category` may be NULL. Slices on a
  * given track must be ended in stack (LIFO) order via pf_slice_end. */
-void pf_slice_begin(pf_trace_t *t, uint64_t track_uuid, const char *name, const char *category);
+void pf_slice_begin(pf_trace_t *t, uint64_t track_uuid, const char *name,
+                    const char *category);
 
 /* Ends the most recently begun, not-yet-ended slice on `track_uuid`. */
 void pf_slice_end(pf_trace_t *t, uint64_t track_uuid);
 
 /* Records a single-point-in-time marker on `track_uuid` (Perfetto's
  * TYPE_INSTANT) — no matching _end call. `category` may be NULL. */
-void pf_instant_event(pf_trace_t *t, uint64_t track_uuid, const char *name, const char *category);
+void pf_instant_event(pf_trace_t *t, uint64_t track_uuid, const char *name,
+                      const char *category);
 
 /* Samples a counter track with an integer or floating-point value. */
-void pf_counter_set_int(pf_trace_t *t, uint64_t counter_track_uuid, int64_t value);
-void pf_counter_set_double(pf_trace_t *t, uint64_t counter_track_uuid, double value);
+void pf_counter_set_int(pf_trace_t *t, uint64_t counter_track_uuid,
+                        int64_t value);
+void pf_counter_set_double(pf_trace_t *t, uint64_t counter_track_uuid,
+                           double value);
 
 #ifdef __cplusplus
 }

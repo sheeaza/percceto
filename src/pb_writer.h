@@ -29,7 +29,8 @@ void pb_put_tag(pb_buf *b, uint32_t field_no, unsigned wire_type);
 /* field helpers: each writes tag + payload */
 void pb_put_varint_field(pb_buf *b, uint32_t field_no, uint64_t v);
 void pb_put_bool_field(pb_buf *b, uint32_t field_no, bool v);
-void pb_put_string_field(pb_buf *b, uint32_t field_no, const char *s, size_t len);
+void pb_put_string_field(pb_buf *b, uint32_t field_no, const char *s,
+                         size_t len);
 void pb_put_fixed64_field(pb_buf *b, uint32_t field_no, uint64_t raw_bits);
 void pb_put_double_field(pb_buf *b, uint32_t field_no, double v);
 

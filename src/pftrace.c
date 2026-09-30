@@ -85,7 +85,8 @@ typedef struct {
     uint64_t next_iid;
 } intern_table;
 
-static uint64_t fnv1a(const char *s) {
+static uint64_t fnv1a(const char *s)
+{
     uint64_t h = 14695981039346656037ULL;
     for (; *s; s++) {
         h ^= (unsigned char)*s;
@@ -98,12 +99,15 @@ static uint64_t fnv1a(const char *s) {
  * inserted); *is_new_out tells the caller whether this is a fresh
  * entry that still needs an InternedData record emitted. Returns false
  * only when the table is full and `key` wasn't already present. */
-static bool intern_lookup_or_insert(intern_table *tab, const char *key, uint64_t *iid_out, bool *is_new_out) {
+static bool intern_lookup_or_insert(intern_table *tab, const char *key,
+                                    uint64_t *iid_out, bool *is_new_out)
+{
     size_t idx = (size_t)(fnv1a(key) % PF_INTERN_CAP);
     for (size_t probe = 0; probe < PF_INTERN_CAP; probe++) {
         intern_slot *slot = &tab->slots[idx];
         if (slot->key == NULL) {
-            if (tab->count >= PF_INTERN_CAP) return false;
+            if (tab->count >= PF_INTERN_CAP)
+                return false;
             slot->key = strdup(key);
             if (!slot->key) {
                 fprintf(stderr, "pftrace: fatal: out of memory\n");
@@ -125,13 +129,16 @@ static bool intern_lookup_or_insert(intern_table *tab, const char *key, uint64_t
     return false;
 }
 
-static void intern_table_init(intern_table *tab) {
+static void intern_table_init(intern_table *tab)
+{
     memset(tab, 0, sizeof(*tab));
     tab->next_iid = 1;
 }
 
-static void intern_table_free(intern_table *tab) {
-    for (size_t i = 0; i < PF_INTERN_CAP; i++) free(tab->slots[i].key);
+static void intern_table_free(intern_table *tab)
+{
+    for (size_t i = 0; i < PF_INTERN_CAP; i++)
+        free(tab->slots[i].key);
 }
 
 /* --- Trace context ---------------------------------------------------- */
@@ -146,13 +153,15 @@ struct pf_trace {
     intern_table cat_table;
 };
 
-static uint64_t now_ns(void) {
+static uint64_t now_ns(void)
+{
     struct timespec ts;
     clock_gettime(CLOCK_BOOTTIME, &ts);
     return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
 }
 
-static uint32_t next_seq_flags(pf_trace_t *t, uint32_t extra) {
+static uint32_t next_seq_flags(pf_trace_t *t, uint32_t extra)
+{
     uint32_t flags = extra;
     if (!t->first_packet_written) {
         flags |= SEQ_INCREMENTAL_STATE_CLEARED;
@@ -163,7 +172,8 @@ static uint32_t next_seq_flags(pf_trace_t *t, uint32_t extra) {
 
 /* Frames `packet` as one entry of the (implicit, streamed) Trace.packet
  * repeated field and writes it out. */
-static void write_packet(pf_trace_t *t, const pb_buf *packet) {
+static void write_packet(pf_trace_t *t, const pb_buf *packet)
+{
     pb_buf hdr;
     pb_buf_init(&hdr);
     pb_put_tag(&hdr, FN_TRACE_PACKET, 2);
@@ -173,7 +183,9 @@ static void write_packet(pf_trace_t *t, const pb_buf *packet) {
     pb_buf_free(&hdr);
 }
 
-static void add_interned_entry(pb_buf *interned, uint32_t field_no, uint64_t iid, const char *name) {
+static void add_interned_entry(pb_buf *interned, uint32_t field_no,
+                               uint64_t iid, const char *name)
+{
     pb_buf entry;
     pb_buf_init(&entry);
     pb_put_varint_field(&entry, FN_IID, iid);
@@ -182,9 +194,11 @@ static void add_interned_entry(pb_buf *interned, uint32_t field_no, uint64_t iid
     pb_buf_free(&entry);
 }
 
-pf_trace_t *pf_trace_open(const char *path) {
+pf_trace_t *pf_trace_open(const char *path)
+{
     FILE *f = fopen(path, "wb");
-    if (!f) return NULL;
+    if (!f)
+        return NULL;
     pf_trace_t *t = calloc(1, sizeof(*t));
     if (!t) {
         fclose(f);
@@ -200,14 +214,17 @@ pf_trace_t *pf_trace_open(const char *path) {
     return t;
 }
 
-void pf_trace_flush(pf_trace_t *t) {
+void pf_trace_flush(pf_trace_t *t)
+{
     pthread_mutex_lock(&t->lock);
     fflush(t->f);
     pthread_mutex_unlock(&t->lock);
 }
 
-void pf_trace_close(pf_trace_t *t) {
-    if (!t) return;
+void pf_trace_close(pf_trace_t *t)
+{
+    if (!t)
+        return;
     fflush(t->f);
     fclose(t->f);
     pthread_mutex_destroy(&t->lock);
@@ -218,14 +235,16 @@ void pf_trace_close(pf_trace_t *t) {
 
 /* --- Tracks ------------------------------------------------------------ */
 
-uint64_t pf_track_process(pf_trace_t *t, int32_t pid, const char *name) {
+uint64_t pf_track_process(pf_trace_t *t, int32_t pid, const char *name)
+{
     pthread_mutex_lock(&t->lock);
     uint64_t uuid = t->next_uuid++;
 
     pb_buf proc;
     pb_buf_init(&proc);
     pb_put_varint_field(&proc, FN_PROCESS_PID, (uint64_t)(uint32_t)pid);
-    if (name) pb_put_string_field(&proc, FN_PROCESS_NAME, name, strlen(name));
+    if (name)
+        pb_put_string_field(&proc, FN_PROCESS_NAME, name, strlen(name));
 
     pb_buf desc;
     pb_buf_init(&desc);
@@ -238,7 +257,8 @@ uint64_t pf_track_process(pf_trace_t *t, int32_t pid, const char *name) {
     pb_put_varint_field(&packet, FN_PACKET_TIMESTAMP, now_ns());
     pb_put_varint_field(&packet, FN_PACKET_TRUSTED_SEQ_ID, t->seq_id);
     uint32_t flags = next_seq_flags(t, 0);
-    if (flags) pb_put_varint_field(&packet, FN_PACKET_SEQUENCE_FLAGS, flags);
+    if (flags)
+        pb_put_varint_field(&packet, FN_PACKET_SEQUENCE_FLAGS, flags);
     pb_put_submessage_field(&packet, FN_PACKET_TRACK_DESCRIPTOR, &desc);
     pb_buf_free(&desc);
 
@@ -248,7 +268,9 @@ uint64_t pf_track_process(pf_trace_t *t, int32_t pid, const char *name) {
     return uuid;
 }
 
-uint64_t pf_track_thread(pf_trace_t *t, uint64_t parent_uuid, int32_t pid, int32_t tid, const char *name) {
+uint64_t pf_track_thread(pf_trace_t *t, uint64_t parent_uuid, int32_t pid,
+                         int32_t tid, const char *name)
+{
     pthread_mutex_lock(&t->lock);
     uint64_t uuid = t->next_uuid++;
 
@@ -256,12 +278,14 @@ uint64_t pf_track_thread(pf_trace_t *t, uint64_t parent_uuid, int32_t pid, int32
     pb_buf_init(&thread);
     pb_put_varint_field(&thread, FN_THREAD_PID, (uint64_t)(uint32_t)pid);
     pb_put_varint_field(&thread, FN_THREAD_TID, (uint64_t)(uint32_t)tid);
-    if (name) pb_put_string_field(&thread, FN_THREAD_NAME, name, strlen(name));
+    if (name)
+        pb_put_string_field(&thread, FN_THREAD_NAME, name, strlen(name));
 
     pb_buf desc;
     pb_buf_init(&desc);
     pb_put_varint_field(&desc, FN_TRACK_UUID, uuid);
-    if (parent_uuid) pb_put_varint_field(&desc, FN_TRACK_PARENT_UUID, parent_uuid);
+    if (parent_uuid)
+        pb_put_varint_field(&desc, FN_TRACK_PARENT_UUID, parent_uuid);
     pb_put_submessage_field(&desc, FN_TRACK_THREAD, &thread);
     pb_buf_free(&thread);
 
@@ -270,7 +294,8 @@ uint64_t pf_track_thread(pf_trace_t *t, uint64_t parent_uuid, int32_t pid, int32
     pb_put_varint_field(&packet, FN_PACKET_TIMESTAMP, now_ns());
     pb_put_varint_field(&packet, FN_PACKET_TRUSTED_SEQ_ID, t->seq_id);
     uint32_t flags = next_seq_flags(t, 0);
-    if (flags) pb_put_varint_field(&packet, FN_PACKET_SEQUENCE_FLAGS, flags);
+    if (flags)
+        pb_put_varint_field(&packet, FN_PACKET_SEQUENCE_FLAGS, flags);
     pb_put_submessage_field(&packet, FN_PACKET_TRACK_DESCRIPTOR, &desc);
     pb_buf_free(&desc);
 
@@ -280,19 +305,24 @@ uint64_t pf_track_thread(pf_trace_t *t, uint64_t parent_uuid, int32_t pid, int32
     return uuid;
 }
 
-uint64_t pf_track_counter(pf_trace_t *t, uint64_t parent_uuid, const char *name, pf_unit_t unit) {
+uint64_t pf_track_counter(pf_trace_t *t, uint64_t parent_uuid, const char *name,
+                          pf_unit_t unit)
+{
     pthread_mutex_lock(&t->lock);
     uint64_t uuid = t->next_uuid++;
 
     pb_buf counter;
     pb_buf_init(&counter);
-    if (unit != PF_UNIT_UNSPECIFIED) pb_put_varint_field(&counter, FN_COUNTER_UNIT, (uint64_t)unit);
+    if (unit != PF_UNIT_UNSPECIFIED)
+        pb_put_varint_field(&counter, FN_COUNTER_UNIT, (uint64_t)unit);
 
     pb_buf desc;
     pb_buf_init(&desc);
     pb_put_varint_field(&desc, FN_TRACK_UUID, uuid);
-    if (parent_uuid) pb_put_varint_field(&desc, FN_TRACK_PARENT_UUID, parent_uuid);
-    if (name) pb_put_string_field(&desc, FN_TRACK_NAME, name, strlen(name));
+    if (parent_uuid)
+        pb_put_varint_field(&desc, FN_TRACK_PARENT_UUID, parent_uuid);
+    if (name)
+        pb_put_string_field(&desc, FN_TRACK_NAME, name, strlen(name));
     pb_put_submessage_field(&desc, FN_TRACK_COUNTER, &counter);
     pb_buf_free(&counter);
 
@@ -301,7 +331,8 @@ uint64_t pf_track_counter(pf_trace_t *t, uint64_t parent_uuid, const char *name,
     pb_put_varint_field(&packet, FN_PACKET_TIMESTAMP, now_ns());
     pb_put_varint_field(&packet, FN_PACKET_TRUSTED_SEQ_ID, t->seq_id);
     uint32_t flags = next_seq_flags(t, 0);
-    if (flags) pb_put_varint_field(&packet, FN_PACKET_SEQUENCE_FLAGS, flags);
+    if (flags)
+        pb_put_varint_field(&packet, FN_PACKET_SEQUENCE_FLAGS, flags);
     pb_put_submessage_field(&packet, FN_PACKET_TRACK_DESCRIPTOR, &desc);
     pb_buf_free(&desc);
 
@@ -317,7 +348,9 @@ uint64_t pf_track_counter(pf_trace_t *t, uint64_t parent_uuid, const char *name,
  * that may need to intern a fresh name/category. They differ only in
  * the `type` value and in whether a matching _end call follows. */
 
-static void emit_named_event(pf_trace_t *t, uint32_t type, uint64_t track_uuid, const char *name, const char *category) {
+static void emit_named_event(pf_trace_t *t, uint32_t type, uint64_t track_uuid,
+                             const char *name, const char *category)
+{
     pthread_mutex_lock(&t->lock);
 
     pb_buf interned;
@@ -328,9 +361,11 @@ static void emit_named_event(pf_trace_t *t, uint32_t type, uint64_t track_uuid, 
     bool name_interned = false;
     if (name) {
         bool is_new = false;
-        name_interned = intern_lookup_or_insert(&t->name_table, name, &name_iid, &is_new);
+        name_interned =
+            intern_lookup_or_insert(&t->name_table, name, &name_iid, &is_new);
         if (name_interned && is_new) {
-            add_interned_entry(&interned, FN_INTERNED_EVENT_NAMES, name_iid, name);
+            add_interned_entry(&interned, FN_INTERNED_EVENT_NAMES, name_iid,
+                               name);
             have_interned = true;
         }
     }
@@ -339,9 +374,11 @@ static void emit_named_event(pf_trace_t *t, uint32_t type, uint64_t track_uuid, 
     bool cat_interned = false;
     if (category) {
         bool is_new = false;
-        cat_interned = intern_lookup_or_insert(&t->cat_table, category, &cat_iid, &is_new);
+        cat_interned =
+            intern_lookup_or_insert(&t->cat_table, category, &cat_iid, &is_new);
         if (cat_interned && is_new) {
-            add_interned_entry(&interned, FN_INTERNED_EVENT_CATEGORIES, cat_iid, category);
+            add_interned_entry(&interned, FN_INTERNED_EVENT_CATEGORIES, cat_iid,
+                               category);
             have_interned = true;
         }
     }
@@ -351,20 +388,27 @@ static void emit_named_event(pf_trace_t *t, uint32_t type, uint64_t track_uuid, 
     pb_put_varint_field(&ev, FN_EVENT_TYPE, type);
     pb_put_varint_field(&ev, FN_EVENT_TRACK_UUID, track_uuid);
     if (name) {
-        if (name_interned) pb_put_varint_field(&ev, FN_EVENT_NAME_IID, name_iid);
-        else pb_put_string_field(&ev, FN_EVENT_NAME_STR, name, strlen(name));
+        if (name_interned)
+            pb_put_varint_field(&ev, FN_EVENT_NAME_IID, name_iid);
+        else
+            pb_put_string_field(&ev, FN_EVENT_NAME_STR, name, strlen(name));
     }
     if (category) {
-        if (cat_interned) pb_put_varint_field(&ev, FN_EVENT_CATEGORY_IIDS, cat_iid);
-        else pb_put_string_field(&ev, FN_EVENT_CATEGORIES_STR, category, strlen(category));
+        if (cat_interned)
+            pb_put_varint_field(&ev, FN_EVENT_CATEGORY_IIDS, cat_iid);
+        else
+            pb_put_string_field(&ev, FN_EVENT_CATEGORIES_STR, category,
+                                strlen(category));
     }
 
     pb_buf packet;
     pb_buf_init(&packet);
     pb_put_varint_field(&packet, FN_PACKET_TIMESTAMP, now_ns());
     pb_put_varint_field(&packet, FN_PACKET_TRUSTED_SEQ_ID, t->seq_id);
-    pb_put_varint_field(&packet, FN_PACKET_SEQUENCE_FLAGS, next_seq_flags(t, SEQ_NEEDS_INCREMENTAL_STATE));
-    if (have_interned) pb_put_submessage_field(&packet, FN_PACKET_INTERNED_DATA, &interned);
+    pb_put_varint_field(&packet, FN_PACKET_SEQUENCE_FLAGS,
+                        next_seq_flags(t, SEQ_NEEDS_INCREMENTAL_STATE));
+    if (have_interned)
+        pb_put_submessage_field(&packet, FN_PACKET_INTERNED_DATA, &interned);
     pb_put_submessage_field(&packet, FN_PACKET_TRACK_EVENT, &ev);
 
     write_packet(t, &packet);
@@ -375,15 +419,20 @@ static void emit_named_event(pf_trace_t *t, uint32_t type, uint64_t track_uuid, 
     pthread_mutex_unlock(&t->lock);
 }
 
-void pf_slice_begin(pf_trace_t *t, uint64_t track_uuid, const char *name, const char *category) {
+void pf_slice_begin(pf_trace_t *t, uint64_t track_uuid, const char *name,
+                    const char *category)
+{
     emit_named_event(t, TYPE_SLICE_BEGIN, track_uuid, name, category);
 }
 
-void pf_instant_event(pf_trace_t *t, uint64_t track_uuid, const char *name, const char *category) {
+void pf_instant_event(pf_trace_t *t, uint64_t track_uuid, const char *name,
+                      const char *category)
+{
     emit_named_event(t, TYPE_INSTANT, track_uuid, name, category);
 }
 
-void pf_slice_end(pf_trace_t *t, uint64_t track_uuid) {
+void pf_slice_end(pf_trace_t *t, uint64_t track_uuid)
+{
     pthread_mutex_lock(&t->lock);
 
     pb_buf ev;
@@ -395,7 +444,8 @@ void pf_slice_end(pf_trace_t *t, uint64_t track_uuid) {
     pb_buf_init(&packet);
     pb_put_varint_field(&packet, FN_PACKET_TIMESTAMP, now_ns());
     pb_put_varint_field(&packet, FN_PACKET_TRUSTED_SEQ_ID, t->seq_id);
-    pb_put_varint_field(&packet, FN_PACKET_SEQUENCE_FLAGS, next_seq_flags(t, SEQ_NEEDS_INCREMENTAL_STATE));
+    pb_put_varint_field(&packet, FN_PACKET_SEQUENCE_FLAGS,
+                        next_seq_flags(t, SEQ_NEEDS_INCREMENTAL_STATE));
     pb_put_submessage_field(&packet, FN_PACKET_TRACK_EVENT, &ev);
 
     write_packet(t, &packet);
@@ -407,7 +457,9 @@ void pf_slice_end(pf_trace_t *t, uint64_t track_uuid) {
 
 /* --- Counters ------------------------------------------------------------ */
 
-static void emit_counter_packet(pf_trace_t *t, uint64_t counter_track_uuid, const pb_buf *value_field_encoded) {
+static void emit_counter_packet(pf_trace_t *t, uint64_t counter_track_uuid,
+                                const pb_buf *value_field_encoded)
+{
     pb_buf ev;
     pb_buf_init(&ev);
     pb_put_varint_field(&ev, FN_EVENT_TYPE, TYPE_COUNTER);
@@ -418,7 +470,8 @@ static void emit_counter_packet(pf_trace_t *t, uint64_t counter_track_uuid, cons
     pb_buf_init(&packet);
     pb_put_varint_field(&packet, FN_PACKET_TIMESTAMP, now_ns());
     pb_put_varint_field(&packet, FN_PACKET_TRUSTED_SEQ_ID, t->seq_id);
-    pb_put_varint_field(&packet, FN_PACKET_SEQUENCE_FLAGS, next_seq_flags(t, SEQ_NEEDS_INCREMENTAL_STATE));
+    pb_put_varint_field(&packet, FN_PACKET_SEQUENCE_FLAGS,
+                        next_seq_flags(t, SEQ_NEEDS_INCREMENTAL_STATE));
     pb_put_submessage_field(&packet, FN_PACKET_TRACK_EVENT, &ev);
 
     write_packet(t, &packet);
@@ -427,7 +480,9 @@ static void emit_counter_packet(pf_trace_t *t, uint64_t counter_track_uuid, cons
     pb_buf_free(&ev);
 }
 
-void pf_counter_set_int(pf_trace_t *t, uint64_t counter_track_uuid, int64_t value) {
+void pf_counter_set_int(pf_trace_t *t, uint64_t counter_track_uuid,
+                        int64_t value)
+{
     pthread_mutex_lock(&t->lock);
     pb_buf val;
     pb_buf_init(&val);
@@ -437,7 +492,9 @@ void pf_counter_set_int(pf_trace_t *t, uint64_t counter_track_uuid, int64_t valu
     pthread_mutex_unlock(&t->lock);
 }
 
-void pf_counter_set_double(pf_trace_t *t, uint64_t counter_track_uuid, double value) {
+void pf_counter_set_double(pf_trace_t *t, uint64_t counter_track_uuid,
+                           double value)
+{
     pthread_mutex_lock(&t->lock);
     pb_buf val;
     pb_buf_init(&val);
