@@ -18,6 +18,10 @@ add_library(pftrace STATIC
 )
 target_include_directories(pftrace PUBLIC include)
 target_link_libraries(pftrace PUBLIC Threads::Threads)
+set_target_properties(pftrace PROPERTIES
+  C_VISIBILITY_PRESET hidden
+  VISIBILITY_INLINES_HIDDEN ON
+)
 
 add_executable(example_basic examples/example_basic.c)
 target_link_libraries(example_basic PRIVATE pftrace)
