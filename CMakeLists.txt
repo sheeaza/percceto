@@ -1,4 +1,9 @@
 cmake_minimum_required(VERSION 3.10)
+
+# Emit build/compile_commands.json for clangd. Set before project() so it
+# covers every target, including the compiler checks project() itself runs.
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
 project(pftrace C)
 
 set(CMAKE_C_STANDARD 11)
