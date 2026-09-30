@@ -10,6 +10,20 @@ endif()
 
 add_compile_options(-Wall -Wextra)
 
+# Some clangd builds (notably minimal Nix packages) ship no bundled
+# resource-dir headers and mis-detect the compiler's private include
+# dir on their own, dropping freestanding headers like stddef.h. Bake
+# the real path into compile_commands.json so clangd never needs to
+# guess it.
+execute_process(
+  COMMAND ${CMAKE_C_COMPILER} -print-file-name=include
+  OUTPUT_VARIABLE CC_BUILTIN_INCLUDE_DIR
+  OUTPUT_STRIP_TRAILING_WHITESPACE
+)
+if(EXISTS "${CC_BUILTIN_INCLUDE_DIR}")
+  add_compile_options(-isystem "${CC_BUILTIN_INCLUDE_DIR}")
+endif()
+
 find_package(Threads REQUIRED)
 
 add_library(pftrace STATIC
