@@ -37,68 +37,22 @@ endforeach()
 
 find_package(Threads REQUIRED)
 
-add_library(pftrace STATIC
-  src/pb_writer.c
-  src/pf_ring.c
-  src/pftrace.c
-)
-target_include_directories(pftrace PUBLIC include)
-target_link_libraries(pftrace PUBLIC Threads::Threads)
-# memfd_create (the ring's double mapping) is glibc's, not ISO C's, and
-# unlike clock_gettime/CLOCK_BOOTTIME it is not exposed by _DEFAULT_SOURCE --
-# only _GNU_SOURCE declares it. Without this the build fails on an implicit
-# declaration. PRIVATE: the public header is self-contained and needs no
-# feature macro from consumers.
-target_compile_definitions(pftrace PRIVATE _GNU_SOURCE)
-set_target_properties(pftrace PROPERTIES
-  C_VISIBILITY_PRESET hidden
-  VISIBILITY_INLINES_HIDDEN ON
-)
+# Keep every artifact at the top of the build dir even though the targets
+# are now declared in subdirectories. Without this CMake mirrors the source
+# tree (build/tests/test_ring, build/tools/dump_trace), which splits the
+# build files -- the point of the subdirectories -- but also moves every
+# binary, breaking existing invocations and tools/run_checks.sh for no gain.
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 
-add_executable(example_basic examples/example_basic.c)
-target_link_libraries(example_basic PRIVATE pftrace)
-# usleep, as above.
-target_compile_definitions(example_basic PRIVATE _DEFAULT_SOURCE)
-
-# Validates a trace against the protobuf wire format without needing the
-# perfetto Python package, which is not installable everywhere. Doubles as
-# the CI gate; verify_trace.py and check_schema.py are the stronger checks
-# where a real generated schema is available.
-#
-# Deliberately does not link pftrace: decoding with the encoder's own
-# constants would let a wrong field number agree with itself.
-add_executable(dump_trace tools/dump_trace.c)
-
-# Ring mechanics in isolation: compiles pf_ring.c directly rather than
-# linking pftrace, so the ring can be tested without protobuf, files or any
-# of the library's state. That is also why it needs src/ on the include
-# path -- pf_ring.h is private to the implementation.
-add_executable(test_ring tests/test_ring.c src/pf_ring.c)
-target_include_directories(test_ring PRIVATE src)
-target_link_libraries(test_ring PRIVATE Threads::Threads)
-target_compile_definitions(test_ring PRIVATE _GNU_SOURCE)
-
-# Drives enough events through a small ring to force many wraps, which is
-# where snapshot windowing and continuous gaplessness actually get tested.
-# memmem, used to confirm which events survived in a window, needs
-# _GNU_SOURCE.
-add_executable(test_stress tests/test_stress.c)
-target_link_libraries(test_stress PRIVATE pftrace Threads::Threads)
-target_compile_definitions(test_stress PRIVATE _GNU_SOURCE)
-
-# Interposes malloc/calloc/realloc to prove the hot path allocates nothing
-# once the trace is open -- requirement 1. Needs dl for RTLD_NEXT.
-add_executable(test_noalloc tests/test_noalloc.c)
-target_link_libraries(test_noalloc
-  PRIVATE pftrace Threads::Threads ${CMAKE_DL_LIBS}
-)
-
-# Not a test: reports producer vs drain cost per event, to show where the
-# hot path actually stands and at what rate continuous mode starts dropping.
-add_executable(bench tests/bench.c)
-target_link_libraries(bench PRIVATE pftrace Threads::Threads)
-
+# Must precede add_subdirectory(tests), or the add_test() calls there have
+# no test harness to register against.
 enable_testing()
-add_test(NAME ring COMMAND test_ring)
-add_test(NAME stress COMMAND test_stress)
-add_test(NAME noalloc COMMAND test_noalloc)
+
+# Each directory owns the targets built from its own sources. Build the
+# library first: everything downstream links it.
+add_subdirectory(src)
+add_subdirectory(examples)
+add_subdirectory(tools)
+add_subdirectory(tests)
