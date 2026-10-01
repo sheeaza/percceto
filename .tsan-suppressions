@@ -1,0 +1,28 @@
+# ThreadSanitizer suppressions.
+#
+# Snapshot mode (pf_ring with bounded = false) deliberately lets producers
+# overwrite records a reader may be inspecting: keeping the most recent
+# window is the entire point, so there is no backpressure to stop them.
+# The reader guards against it with a seqlock rather than a lock -- the lap
+# check in pf_ring_next opens it, pf_ring_still_valid closes it, and a
+# record that was rewritten in between is discarded instead of trusted.
+#
+# TSan cannot see that contract. It reports the producer's plain stores
+# into a record body against the reader's load of the same bytes, which is
+# exactly the interleaving the seqlock exists to tolerate. The races it
+# flags are confined to the ring's data area and never involve head, tail
+# or a record tag -- those are all atomic and genuinely race-free, which is
+# what the rest of the test suite checks.
+#
+# Bounded (continuous) mode has no such race at all: producers refuse to
+# claim space the reader has not released, so a published record is stable
+# until the reader commits past it.
+#
+# emit_event is the library's producer filling a record body; drain_locked
+# is the reader copying one out before encoding (the copy is precisely what
+# makes a concurrent overwrite harmless). fill_rec/check_rec are the unit
+# test's equivalents.
+race:^emit_event$
+race:^drain_locked$
+race:^fill_rec$
+race:^check_rec$

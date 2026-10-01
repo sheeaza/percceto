@@ -1,0 +1,93 @@
+// Minimal subset of Perfetto's TracePacket schema, sufficient to parse what
+// libpftrace emits.
+//
+// tools/verify_trace.py wants the `perfetto` Python package, which is not in
+// nixpkgs and not installable in every environment. Compiling this with
+// protoc gives the same guarantee for the fields we actually write: the trace
+// is parsed by Google's generated protobuf runtime rather than by our own
+// decoder, so an encoder bug cannot hide behind a matching decoder bug.
+//
+// Field numbers are the real ones from the official schema -- they must stay
+// in sync with the FN_* constants in src/pftrace.c. Fields libpftrace never
+// emits are omitted rather than guessed: protobuf skips unknown fields, so a
+// partial schema parses a full trace correctly.
+
+syntax = "proto2";
+
+package perfetto.protos;
+
+message ProcessDescriptor {
+    optional int32 pid = 1;
+    optional string process_name = 6;
+}
+
+message ThreadDescriptor {
+    optional int32 pid = 1;
+    optional int32 tid = 2;
+    optional string thread_name = 5;
+}
+
+message CounterDescriptor {
+    enum Unit {
+        UNIT_UNSPECIFIED = 0;
+        UNIT_TIME_NS = 1;
+        UNIT_COUNT = 2;
+        UNIT_SIZE_BYTES = 3;
+    }
+    optional Unit unit = 3;
+}
+
+message TrackDescriptor {
+    optional uint64 uuid = 1;
+    optional string name = 2;
+    optional ProcessDescriptor process = 3;
+    optional ThreadDescriptor thread = 4;
+    optional uint64 parent_uuid = 5;
+    optional CounterDescriptor counter = 8;
+}
+
+message EventName {
+    optional uint64 iid = 1;
+    optional string name = 2;
+}
+
+message EventCategory {
+    optional uint64 iid = 1;
+    optional string name = 2;
+}
+
+message InternedData {
+    repeated EventCategory event_categories = 1;
+    repeated EventName event_names = 2;
+}
+
+message TrackEvent {
+    enum Type {
+        TYPE_UNSPECIFIED = 0;
+        TYPE_SLICE_BEGIN = 1;
+        TYPE_SLICE_END = 2;
+        TYPE_INSTANT = 3;
+        TYPE_COUNTER = 4;
+    }
+    repeated uint64 category_iids = 3;
+    optional Type type = 9;
+    optional uint64 name_iid = 10;
+    optional uint64 track_uuid = 11;
+    repeated string categories = 22;
+    optional string name = 23;
+    optional int64 counter_value = 30;
+    optional double double_counter_value = 44;
+}
+
+message TracePacket {
+    optional uint64 timestamp = 8;
+    optional uint32 trusted_packet_sequence_id = 10;
+    optional TrackEvent track_event = 11;
+    optional InternedData interned_data = 12;
+    optional uint32 sequence_flags = 13;
+    optional TrackDescriptor track_descriptor = 60;
+}
+
+message Trace {
+    repeated TracePacket packet = 1;
+}
