@@ -827,7 +827,6 @@ void pf_config_init(struct pf_config *cfg)
     cfg->watermark_pct = 75;
     cfg->drain_interval_ms = 100;
     cfg->max_tracks = 256;
-    cfg->single_producer = false;
 }
 
 struct pf_trace *pf_trace_open(const struct pf_config *cfg)
@@ -858,8 +857,7 @@ struct pf_trace *pf_trace_open(const struct pf_config *cfg)
         goto fail;
 
     if (pf_ring_init(&t->ring, t->cfg.ring_bytes,
-                     t->cfg.mode == PF_MODE_CONTINUOUS,
-                     t->cfg.single_producer) != 0)
+                     t->cfg.mode == PF_MODE_CONTINUOUS) != 0)
         goto fail;
 
     t->watermark_bytes = t->ring.cap / 100u * t->cfg.watermark_pct;

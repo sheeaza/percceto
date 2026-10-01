@@ -1,7 +1,6 @@
 #ifndef PFTRACE_H
 #define PFTRACE_H
 
-#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -57,9 +56,6 @@ enum pf_mode {
  * @max_tracks: Capacity of the track table. 0 selects 256. Tracks are
  *      re-emitted at the head of every dump, so they cost file space
  *      rather than ring space.
- * @single_producer: Set only if exactly one thread will ever emit
- *      events. Drops the atomic claim to a plain load/store pair. The
- *      default (false) is safe for any number of threads.
  */
 struct pf_config {
     const char *path;
@@ -68,7 +64,6 @@ struct pf_config {
     unsigned watermark_pct;
     unsigned drain_interval_ms;
     unsigned max_tracks;
-    bool single_producer;
 };
 
 /**

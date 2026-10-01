@@ -49,8 +49,7 @@ static unsigned log2_exact(size_t v)
     return n;
 }
 
-int pf_ring_init(struct pf_ring *r, size_t want_bytes, bool bounded,
-                 bool single_producer)
+int pf_ring_init(struct pf_ring *r, size_t want_bytes, bool bounded)
 {
     memset(r, 0, sizeof(*r));
 
@@ -111,7 +110,6 @@ int pf_ring_init(struct pf_ring *r, size_t want_bytes, bool bounded,
     r->mask = cap - 1;
     r->log2cap = log2_exact(cap);
     r->bounded = bounded;
-    r->single_producer = single_producer;
     atomic_init(&r->head, 0);
     atomic_init(&r->tail, 0);
     atomic_init(&r->dropped, 0);
@@ -136,13 +134,7 @@ uint8_t *pf_ring_claim(struct pf_ring *r, uint32_t need, uint64_t *off_out)
     if (!r->bounded) {
         /* Snapshot mode: overwriting the oldest record is intended, so
          * the claim cannot fail and needs no loop. */
-        if (r->single_producer) {
-            off = atomic_load_explicit(&r->head, memory_order_relaxed);
-            atomic_store_explicit(&r->head, off + need, memory_order_relaxed);
-        } else {
-            off =
-                atomic_fetch_add_explicit(&r->head, need, memory_order_relaxed);
-        }
+        off = atomic_fetch_add_explicit(&r->head, need, memory_order_relaxed);
 
         /* Keep @tail inside the window this claim leaves intact.
          *
@@ -170,11 +162,6 @@ uint8_t *pf_ring_claim(struct pf_ring *r, uint32_t need, uint64_t *off_out)
             if (off + need - tail > r->cap) {
                 atomic_fetch_add_explicit(&r->dropped, 1, memory_order_relaxed);
                 return NULL;
-            }
-            if (r->single_producer) {
-                atomic_store_explicit(&r->head, off + need,
-                                      memory_order_relaxed);
-                break;
             }
             /* On failure @off is reloaded with the current head, so the
              * space check is redone against it. */

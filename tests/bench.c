@@ -5,6 +5,11 @@
  * whatever was being measured. Drain cost is paid on a background thread
  * and only matters in continuous mode, where it sets the rate above which
  * events start getting dropped.
+ *
+ * Single-threaded, but measuring the same claim path a multi-threaded
+ * caller takes: the fetch-add is unconditional, so this is the uncontended
+ * cost of the real thing rather than a cheaper special case. Contention
+ * adds to it; see test_stress for behaviour under several producers.
  */
 
 #include <inttypes.h>
@@ -38,7 +43,6 @@ int main(void)
     cfg.path = path;
     cfg.mode = PF_MODE_SNAPSHOT;
     cfg.ring_bytes = 64 * 1024 * 1024;
-    cfg.single_producer = true;
 
     struct pf_trace *t = pf_trace_open(&cfg);
     if (!t) {
@@ -83,7 +87,6 @@ int main(void)
     cfg.path = path;
     cfg.mode = PF_MODE_SNAPSHOT;
     cfg.ring_bytes = 64 * 1024 * 1024;
-    cfg.single_producer = true;
     cfg.drain_interval_ms = 60000; /* keep the trim thread out of the way */
 
     t = pf_trace_open(&cfg);

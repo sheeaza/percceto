@@ -53,7 +53,6 @@ struct pf_ring {
      * instead. Set for continuous mode, clear for snapshot mode, where
      * overwriting the oldest events is the entire point. */
     bool bounded;
-    bool single_producer;
 
     _Atomic uint64_t head; /* next byte to claim */
     _Atomic uint64_t tail; /* oldest byte the reader still needs */
@@ -75,13 +74,10 @@ struct pf_ring_reader {
  *      floor of %PF_RING_MIN_BYTES. Since the result is a power of two no
  *      smaller than 64 KiB it is necessarily a page multiple too.
  * @bounded: Drop rather than overwrite unconsumed records.
- * @single_producer: Only one thread will ever claim, so claiming can skip
- *      the atomic read-modify-write.
  *
  * Return: 0 on success, -1 with errno set on failure.
  */
-int pf_ring_init(struct pf_ring *r, size_t want_bytes, bool bounded,
-                 bool single_producer);
+int pf_ring_init(struct pf_ring *r, size_t want_bytes, bool bounded);
 
 /**
  * pf_ring_destroy() - Unmap the ring.

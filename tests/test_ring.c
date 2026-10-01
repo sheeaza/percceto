@@ -66,19 +66,19 @@ static void test_geometry(void)
 
     /* A non-power-of-two request rounds up; a tiny one hits the floor. */
     struct pf_ring r;
-    CHECK(pf_ring_init(&r, 100 * 1024, false, false) == 0, "init 100KiB");
+    CHECK(pf_ring_init(&r, 100 * 1024, false) == 0, "init 100KiB");
     CHECK(r.cap == 128 * 1024, "cap rounded to 128KiB, got %zu", r.cap);
     CHECK((r.cap & r.mask) == 0, "cap is a power of two");
     CHECK(((size_t)1 << r.log2cap) == r.cap, "log2cap matches cap");
     pf_ring_destroy(&r);
 
-    CHECK(pf_ring_init(&r, 1, false, false) == 0, "init below floor");
+    CHECK(pf_ring_init(&r, 1, false) == 0, "init below floor");
     CHECK(r.cap >= PF_RING_MIN_BYTES, "floor applied, got %zu", r.cap);
     pf_ring_destroy(&r);
 
     /* The two mappings must be the same memory: a write through the
      * mirror has to be visible at the front of the buffer. */
-    CHECK(pf_ring_init(&r, PF_RING_MIN_BYTES, false, false) == 0, "init");
+    CHECK(pf_ring_init(&r, PF_RING_MIN_BYTES, false) == 0, "init");
     r.base[0] = 0xAB;
     CHECK(r.base[r.cap] == 0xAB, "mirror aliases the front of the buffer");
     r.base[r.cap + 7] = 0xCD;
@@ -101,7 +101,7 @@ static void test_straddle(void)
     printf("straddle:\n");
 
     struct pf_ring r;
-    CHECK(pf_ring_init(&r, PF_RING_MIN_BYTES, false, false) == 0, "init");
+    CHECK(pf_ring_init(&r, PF_RING_MIN_BYTES, false) == 0, "init");
 
     /* Walk head to 32 bytes before the end, then write a 64-byte record
      * so 32 bytes land past cap. */
@@ -192,7 +192,7 @@ static void test_concurrent_bounded(void)
     struct pf_ring r;
     /* Deliberately small, so the reader must keep up and drops are
      * plausible -- that is the path being tested. */
-    CHECK(pf_ring_init(&r, 256 * 1024, true, false) == 0, "init");
+    CHECK(pf_ring_init(&r, 256 * 1024, true) == 0, "init");
 
     pthread_t th[NTHREADS];
     struct producer_arg args[NTHREADS];
@@ -268,7 +268,7 @@ static void test_concurrent_unbounded(void)
     printf("concurrent, unbounded (%d threads x %d):\n", NTHREADS, PER_THREAD);
 
     struct pf_ring r;
-    CHECK(pf_ring_init(&r, 256 * 1024, false, false) == 0, "init");
+    CHECK(pf_ring_init(&r, 256 * 1024, false) == 0, "init");
 
     pthread_t th[NTHREADS];
     struct producer_arg args[NTHREADS];
@@ -335,7 +335,7 @@ static void test_drop_accounting(void)
     printf("drop accounting:\n");
 
     struct pf_ring r;
-    CHECK(pf_ring_init(&r, PF_RING_MIN_BYTES, true, true) == 0, "init");
+    CHECK(pf_ring_init(&r, PF_RING_MIN_BYTES, true) == 0, "init");
 
     const uint32_t need = 64;
     uint64_t ok = 0;
@@ -377,14 +377,19 @@ static void test_drop_accounting(void)
     printf("  ok\n");
 }
 
-/* --- 5. Single-producer fast path ------------------------------------- */
+/* --- 5. One producer, many wraps -------------------------------------- */
 
-static void test_single_producer(void)
+/* The uncontended path, which is also the deterministic one: with a single
+ * thread and no reader racing it, trimming often enough must avoid every
+ * resync, where the concurrent cases above can only tolerate them. A
+ * regression that made trimming lose boundaries on its own, rather than
+ * under contention, would show up here and nowhere else. */
+static void test_uncontended_wraps(void)
 {
-    printf("single producer:\n");
+    printf("one producer, many wraps:\n");
 
     struct pf_ring r;
-    CHECK(pf_ring_init(&r, PF_RING_MIN_BYTES, false, true) == 0, "init");
+    CHECK(pf_ring_init(&r, PF_RING_MIN_BYTES, false) == 0, "init");
 
     /* 5000 records of up to ~216B is several times the 64KiB ring, so it
      * wraps repeatedly; trimming as we go is what keeps tail on a live
@@ -411,7 +416,7 @@ static void test_single_producer(void)
         CHECK(check_rec(got, len, &seq), "record intact");
         seen++;
     }
-    CHECK(seen > 0, "records readable in single-producer mode");
+    CHECK(seen > 0, "records readable after repeated wraps");
     CHECK(atomic_load_explicit(&r.resyncs, memory_order_relaxed) == 0,
           "trimming often enough avoids any resync");
 
@@ -424,7 +429,7 @@ int main(void)
     test_geometry();
     test_straddle();
     test_drop_accounting();
-    test_single_producer();
+    test_uncontended_wraps();
     test_concurrent_bounded();
     test_concurrent_unbounded();
 
