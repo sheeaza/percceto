@@ -104,18 +104,16 @@
 #define PF_OUT_FLUSH_THRESHOLD (128u * 1024u)
 
 /* Snapshot mode keeps this fraction of the ring as history, trimming the
- * rest. The remainder is headroom: without it producers would lap the
- * oldest retained record while the trim walk was reading it, and the
- * reader's boundary would be unrecoverable. */
+ * rest. The remainder is headroom: the drain thread walks @tail forward so
+ * the retained window stays bounded, and leaving a margin means the walk
+ * covers a worthwhile span each time instead of reclaiming the handful of
+ * bytes just produced and being re-triggered by the next event.
+ *
+ * Correctness does not depend on this running often enough. pf_ring_claim
+ * keeps @tail on a recoverable boundary itself, as part of the same atomic
+ * step that moves @head; this only controls how much history a dump holds. */
 #define PF_SNAPSHOT_RETAIN_NUM 3
 #define PF_SNAPSHOT_RETAIN_DEN 4
-
-/* Trim is triggered above the retain point, not at it, so each walk frees
- * a worthwhile span. Waking at exactly the retain point means every trim
- * reclaims the handful of bytes just produced and is re-triggered by the
- * next event, turning an amortized O(1) cost into a walk per event. */
-#define PF_SNAPSHOT_WAKE_NUM 7
-#define PF_SNAPSHOT_WAKE_DEN 8
 
 static size_t round_up8(size_t v)
 {
@@ -220,13 +218,10 @@ struct pf_trace {
     struct pf_config cfg;
     struct pf_ring ring;
 
+    /* Continuous mode: ring occupancy at which a producer wakes the drain
+     * thread, from cfg.watermark_pct. */
     size_t watermark_bytes;
-    /* Ring occupancy at which a producer nudges the drain thread. The
-     * watermark in continuous mode; the trim point in snapshot mode. */
-    size_t wake_threshold_bytes;
-    /* Snapshot mode: how much history a trim keeps. Below
-     * wake_threshold_bytes, so each trim frees a worthwhile span instead
-     * of being re-triggered by the next event. */
+    /* Snapshot mode: how much history the drain thread's trim keeps. */
     size_t retain_bytes;
 
     /* Serializes drains: a caller's pf_trace_dump() against the drain
@@ -643,33 +638,26 @@ static void *drain_thread_fn(void *arg)
     return NULL;
 }
 
-/* Hot path: keep the ring's tail from being lapped, and nudge the drain
- * thread.
+/* Nudges the drain thread once the ring passes the watermark.
  *
- * Both modes need this, for different reasons. Continuous mode must write
- * before the ring fills, or events get dropped. Snapshot mode never
- * writes, but must still advance the tail before producers lap it.
+ * Continuous mode only. Snapshot mode needs no wake for correctness:
+ * pf_ring_claim keeps @tail on a recoverable boundary itself, as part of
+ * the same atomic step that moves @head, so there is no window for a
+ * producer to slip past a decision made out here. Its drain thread still
+ * runs on the interval timer to keep the retained window from growing to
+ * the whole ring, but nothing on the hot path has to prompt it.
  *
- * Signalling the drain thread is not sufficient on its own for snapshot
- * mode: at ~30ns per event a producer can consume the headroom between
- * the wake threshold and the end of the ring before the woken thread is
- * scheduled, and the reader's boundary is then gone. So past the
- * threshold the producer also trims inline. That costs a tag walk, but
- * only on the rare event that crosses the line, and it is pure pointer
- * arithmetic -- no copying, no syscall, no lock. */
+ * The exchange on wake_pending means a burst of events past the watermark
+ * costs one futex between drains, not one per event. */
 static void maybe_wake_drain(struct pf_trace *t, uint32_t need)
 {
-    uint64_t head = atomic_load_explicit(&t->ring.head, memory_order_relaxed);
-    uint64_t tail = atomic_load_explicit(&t->ring.tail, memory_order_relaxed);
-    if (head + need - tail < t->wake_threshold_bytes)
+    if (t->cfg.mode != PF_MODE_CONTINUOUS)
         return;
 
-    /* Snapshot mode: reclaim here and now rather than hoping to be
-     * scheduled in time. Continuous mode must not do this -- its tail
-     * marks what has been written to disk, and moving it would discard
-     * events instead of saving them. */
-    if (t->cfg.mode == PF_MODE_SNAPSHOT)
-        pf_ring_trim(&t->ring, t->retain_bytes);
+    uint64_t head = atomic_load_explicit(&t->ring.head, memory_order_relaxed);
+    uint64_t tail = atomic_load_explicit(&t->ring.tail, memory_order_relaxed);
+    if (head + need - tail < t->watermark_bytes)
+        return;
 
     if (atomic_exchange_explicit(&t->wake_pending, 1, memory_order_acq_rel) !=
         0)
@@ -875,10 +863,6 @@ struct pf_trace *pf_trace_open(const struct pf_config *cfg)
         goto fail;
 
     t->watermark_bytes = t->ring.cap / 100u * t->cfg.watermark_pct;
-    t->wake_threshold_bytes =
-        t->cfg.mode == PF_MODE_CONTINUOUS ?
-            t->watermark_bytes :
-            t->ring.cap / PF_SNAPSHOT_WAKE_DEN * PF_SNAPSHOT_WAKE_NUM;
     t->retain_bytes =
         t->ring.cap / PF_SNAPSHOT_RETAIN_DEN * PF_SNAPSHOT_RETAIN_NUM;
 

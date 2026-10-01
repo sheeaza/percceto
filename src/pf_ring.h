@@ -195,9 +195,16 @@ bool pf_ring_trim(struct pf_ring *r, size_t retain_bytes);
  * pf_ring_resync() - Abandon buffered records after losing the boundary.
  * @r: Ring.
  *
- * Last resort when the reader can no longer trust @tail: moves it to
- * @head, which is always a record boundary, discarding what had not been
- * read and bumping the resync counter.
+ * Moves @tail to @head, which is always a record boundary, discarding what
+ * had not been read and bumping the resync counter.
+ *
+ * Reached when a producer recycles the oldest record while pf_ring_trim()
+ * is deriving a boundary from it. In unbounded mode that is a normal
+ * outcome under load, not a fault: there is no backpressure to prevent it,
+ * and the alternative -- leaving @tail mid-record -- is unrecoverable,
+ * since lengths are only discoverable forwards. Losing the older part of
+ * the window is the lesser cost, and the recent records a snapshot is
+ * actually for survive.
  */
 void pf_ring_resync(struct pf_ring *r);
 

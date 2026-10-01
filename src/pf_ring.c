@@ -143,6 +143,23 @@ uint8_t *pf_ring_claim(struct pf_ring *r, uint32_t need, uint64_t *off_out)
             off =
                 atomic_fetch_add_explicit(&r->head, need, memory_order_relaxed);
         }
+
+        /* Keep @tail inside the window this claim leaves intact.
+         *
+         * Nothing stops producers from lapping it: that is the mode's
+         * defining behaviour. But @tail must stay on a record boundary that
+         * has not been overwritten, or the reader has no position it can
+         * walk from. Checking here rather than in a caller's "am I near the
+         * end" heuristic is what makes that hold -- the check sees the
+         * @head this claim actually produced, so there is no window between
+         * deciding and claiming for another producer to slip through.
+         *
+         * Trimming to half the ring, not to the brink: @tail only has to be
+         * recoverable, and leaving a margin means the next few claims find
+         * it already correct and skip the walk entirely. */
+        uint64_t tail = atomic_load_explicit(&r->tail, memory_order_relaxed);
+        if (off + need - tail > r->cap)
+            pf_ring_trim(r, r->cap / 2);
     } else {
         /* Bounded mode: decide before moving @head, so that a refusal
          * leaves no gap. */
@@ -241,14 +258,20 @@ bool pf_ring_trim(struct pf_ring *r, size_t retain_bytes)
     uint64_t pos = tail;
 
     /* Walk record by record so @tail lands on a real boundary; a bare
-     * seek to @target would leave it mid-record and unrecoverable. */
+     * seek to @target would leave it mid-record and unrecoverable.
+     *
+     * The walk starts at the oldest record, which is also the one most
+     * likely to be recycled underneath it. That is unavoidable: record
+     * lengths are only discoverable forwards, so there is no way to find a
+     * boundary near @head without starting from a known one. When a
+     * producer wins that race the walk resyncs, which is correct rather
+     * than exceptional -- see pf_ring_resync. Trimming often enough that
+     * @tail stays well clear of @head is what keeps it rare. */
     while (pos < target) {
         uint64_t w = atomic_load_explicit(tag_at(r, pos), memory_order_acquire);
         uint32_t len = (uint32_t)w;
         if ((w >> 32) != (pos >> r->log2cap) || len == 0 || len > PF_REC_MAX ||
             (len & (PF_REC_ALIGN - 1)) != 0) {
-            /* Boundary already overwritten -- producers outran the trim.
-             * head is a boundary by construction, so restart there. */
             pf_ring_resync(r);
             return false;
         }
@@ -258,7 +281,7 @@ bool pf_ring_trim(struct pf_ring *r, size_t retain_bytes)
     /* Only ever advance. Trims can run concurrently (a producer trimming
      * inline while the drain thread does the same), and a plain store of a
      * staler @pos would drag @tail backwards onto bytes already recycled. */
-    uint64_t cur = tail;
+    uint64_t cur = atomic_load_explicit(&r->tail, memory_order_relaxed);
     while (cur < pos) {
         if (atomic_compare_exchange_weak_explicit(&r->tail, &cur, pos,
                                                   memory_order_release,

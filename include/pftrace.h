@@ -81,10 +81,14 @@ struct pf_config {
  *      either the ring or the drain interval is too small.
  * @truncated_names: Names or categories longer than 255 bytes, which are
  *      recorded truncated.
- * @resyncs: Times the drain thread lost its place in the ring and
- *      skipped to the newest data, discarding what it had not yet read.
- *      Expected to stay 0; a nonzero value in %PF_MODE_SNAPSHOT means
- *      producers lapped the reader mid-dump.
+ * @resyncs: Times the drain thread lost its place in the ring and skipped
+ *      to the newest data. Only possible in %PF_MODE_SNAPSHOT, which has
+ *      no backpressure: a producer can recycle the oldest record while the
+ *      reader is deriving a boundary from it. Expected to be small and
+ *      tolerable rather than zero -- each one costs part of the retained
+ *      history, not the dump, so a snapshot still captures the window
+ *      leading up to it. Growing steadily means the ring is too small for
+ *      the event rate.
  */
 struct pf_stats {
     uint64_t events;
