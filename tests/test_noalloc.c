@@ -13,8 +13,6 @@
  */
 
 #define _GNU_SOURCE
-#include "pftrace.h"
-
 #include <dlfcn.h>
 #include <inttypes.h>
 #include <stdatomic.h>
@@ -23,6 +21,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+
+#include "pftrace.h"
 
 static atomic_bool armed;
 static atomic_uint_least64_t violations;

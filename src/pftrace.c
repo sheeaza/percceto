@@ -1,7 +1,3 @@
-#include "pftrace.h"
-#include "pb_writer.h"
-#include "pf_ring.h"
-
 #include <errno.h>
 #include <fcntl.h>
 #include <pthread.h>
@@ -12,6 +8,10 @@
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
+
+#include "pb_writer.h"
+#include "pf_ring.h"
+#include "pftrace.h"
 
 /* --- Confirmed Perfetto wire-format field numbers -------------------
  * Pulled directly from the compiled perfetto_trace_pb2 DESCRIPTOR (the

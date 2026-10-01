@@ -1,9 +1,9 @@
-#include "pf_ring.h"
-
 #include <errno.h>
 #include <string.h>
 #include <sys/mman.h>
 #include <unistd.h>
+
+#include "pf_ring.h"
 
 /* A record's tag lives at its start and is the only atomically accessed
  * field. The mirror guarantees the whole record is contiguous, and every

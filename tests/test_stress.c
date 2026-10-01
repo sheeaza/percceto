@@ -13,8 +13,6 @@
  *                 because the drain thread keeps up.
  */
 
-#include "pftrace.h"
-
 #include <inttypes.h>
 #include <pthread.h>
 #include <stdbool.h>
@@ -22,6 +20,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+
+#include "pftrace.h"
 
 static int failures;
 

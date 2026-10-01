@@ -1,8 +1,8 @@
-#include "pb_writer.h"
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#include "pb_writer.h"
 
 static void pb_die(const char *msg)
 {

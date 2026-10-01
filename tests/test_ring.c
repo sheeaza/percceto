@@ -5,13 +5,13 @@
  * record contiguous, that concurrent producers never corrupt each other,
  * and that a dropped event is counted rather than silently lost. */
 
-#include "pf_ring.h"
-
 #include <inttypes.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#include "pf_ring.h"
 
 static int failures;
 

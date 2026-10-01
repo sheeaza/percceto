@@ -7,14 +7,14 @@
  * events start getting dropped.
  */
 
-#include "pftrace.h"
-
 #include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
+
+#include "pftrace.h"
 
 static uint64_t now_ns(void)
 {

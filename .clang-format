@@ -60,11 +60,25 @@ DisableFormat: false
 ExperimentalAutoDetectBinPacking: false
 FixNamespaceComments: false
 
-IncludeBlocks: Preserve
+# System headers first, then this project's own. A private header that
+# forgets to include what it needs then fails to compile here rather than
+# silently depending on whatever the including file pulled in before it.
+#
+# Regroup, not Preserve: clang-format sorts within each priority and
+# inserts the blank line between the two groups, so the order cannot drift
+# back by hand.
+#
+# IncludeIsMainRegex is deliberately set to a pattern that matches nothing.
+# Left at its default, clang-format treats pb_writer.h as pb_writer.c's
+# "main" header and hoists it above the system block, overriding the
+# priorities below -- which is the convention this is replacing.
+IncludeBlocks: Regroup
 IncludeCategories:
-  - Regex: '.*'
+  - Regex: '^<'
     Priority: 1
-IncludeIsMainRegex: '(Test)?$'
+  - Regex: '.*'
+    Priority: 2
+IncludeIsMainRegex: '$^'
 IndentCaseLabels: false
 IndentGotoLabels: false
 IndentPPDirectives: None
@@ -93,7 +107,7 @@ PenaltyReturnTypeOnItsOwnLine: 60
 
 PointerAlignment: Right
 ReflowComments: false
-SortIncludes: false
+SortIncludes: true
 SortUsingDeclarations: false
 SpaceAfterCStyleCast: false
 SpaceAfterTemplateKeyword: true

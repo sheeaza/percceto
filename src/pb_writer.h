@@ -1,9 +1,9 @@
 #ifndef PB_WRITER_H
 #define PB_WRITER_H
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
-#include <stdbool.h>
 
 /* Minimal, growable protobuf byte-buffer writer. No schema knowledge lives
  * here — just wire-format primitives (varint / tag / length-delimited /
