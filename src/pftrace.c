@@ -1,5 +1,3 @@
-#define _GNU_SOURCE
-
 #include "pftrace.h"
 #include "pb_writer.h"
 

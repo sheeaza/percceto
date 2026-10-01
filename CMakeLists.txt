@@ -43,6 +43,12 @@ add_library(pftrace STATIC
 )
 target_include_directories(pftrace PUBLIC include)
 target_link_libraries(pftrace PUBLIC Threads::Threads)
+# strdup, clock_gettime and CLOCK_BOOTTIME are POSIX/BSD additions that glibc
+# hides under the strict ISO C definitions. -std=gnu11 happens to define this
+# for us, so the build works without it, but saying so explicitly keeps the
+# sources compilable under a strict -std=c11 too. PRIVATE: the public header
+# is self-contained and needs no feature macro from consumers.
+target_compile_definitions(pftrace PRIVATE _DEFAULT_SOURCE)
 set_target_properties(pftrace PROPERTIES
   C_VISIBILITY_PRESET hidden
   VISIBILITY_INLINES_HIDDEN ON
@@ -50,3 +56,5 @@ set_target_properties(pftrace PROPERTIES
 
 add_executable(example_basic examples/example_basic.c)
 target_link_libraries(example_basic PRIVATE pftrace)
+# usleep, as above.
+target_compile_definitions(example_basic PRIVATE _DEFAULT_SOURCE)
