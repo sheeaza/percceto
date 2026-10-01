@@ -15,19 +15,25 @@ endif()
 
 add_compile_options(-Wall -Wextra)
 
-# Some clangd builds (notably minimal Nix packages) ship no bundled
-# resource-dir headers and mis-detect the compiler's private include
-# dir on their own, dropping freestanding headers like stddef.h. Bake
-# the real path into compile_commands.json so clangd never needs to
-# guess it.
-execute_process(
-  COMMAND ${CMAKE_C_COMPILER} -print-file-name=include
-  OUTPUT_VARIABLE CC_BUILTIN_INCLUDE_DIR
-  OUTPUT_STRIP_TRAILING_WHITESPACE
-)
-if(EXISTS "${CC_BUILTIN_INCLUDE_DIR}")
-  add_compile_options(-isystem "${CC_BUILTIN_INCLUDE_DIR}")
-endif()
+# Bake the compiler's own system include dirs into compile_commands.json.
+#
+# On Nix, CMAKE_C_COMPILER is a wrapper script that injects the paths to
+# the freestanding headers (stddef.h) and the libc headers (stdio.h) via
+# NIX_CFLAGS_COMPILE at invocation time. Those flags never reach
+# compile_commands.json, and clangd runs the bare clang driver without
+# the wrapper's environment -- so it resolves neither. There is no
+# /usr/include to fall back on, so every system header goes missing.
+#
+# CMake already probes the real search path during compiler detection, so
+# reuse its answer rather than re-deriving it. Harmless elsewhere: on a
+# normal toolchain these are the dirs clangd would have found anyway.
+#
+# The SHELL: prefix keeps each flag/path pair together. Without it CMake
+# de-duplicates the repeated bare "-isystem" token and the second path
+# onward is emitted with no flag at all.
+foreach(dir IN LISTS CMAKE_C_IMPLICIT_INCLUDE_DIRECTORIES)
+  add_compile_options("SHELL:-isystem ${dir}")
+endforeach()
 
 find_package(Threads REQUIRED)
 
