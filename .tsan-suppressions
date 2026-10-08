@@ -1,6 +1,6 @@
 # ThreadSanitizer suppressions.
 #
-# Snapshot mode (pf_ring with bounded = false) deliberately lets producers
+# Snapshot mode (pf_ring with overwrite = true) deliberately lets producers
 # overwrite records a reader may be inspecting: keeping the most recent
 # window is the entire point, so there is no backpressure to stop them.
 # The reader guards against it with a seqlock rather than a lock -- the lap
@@ -14,7 +14,7 @@
 # or a record tag -- those are all atomic and genuinely race-free, which is
 # what the rest of the test suite checks.
 #
-# Bounded (continuous) mode has no such race at all: producers refuse to
+# Continuous mode has no such race at all: producers refuse to
 # claim space the reader has not released, so a published record is stable
 # until the reader commits past it.
 #

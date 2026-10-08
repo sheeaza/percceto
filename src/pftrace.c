@@ -3,6 +3,7 @@
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -71,29 +72,71 @@
 #define FN_NAME_STR 2
 
 /* --- Ring record layout -------------------------------------------------
- * Byte offsets within a record. The tag is first because pf_ring treats
- * it as the record's publication flag; everything after it is plain
- * bytes written by the owning producer alone.
+ * The tag is first because pf_ring treats it as the record's publication
+ * flag; everything after it is plain bytes written by the owning producer
+ * alone.
  *
  * Variable-length by design: a slice_end carries no name and no value and
  * so costs 32 bytes, against the 48 a fixed-stride slot would spend on
  * every event regardless. Strings are copied in raw and converted to iids
  * later by the drain thread, which keeps the intern table (and its
- * hashing) off the hot path entirely. */
+ * hashing) off the hot path entirely.
+ *
+ *   0       8       16      24 25 26 27  28
+ *   +-------+-------+-------+--+--+--+--+---------------------------+
+ *   | tag   | ts    | track |ty|nl|cl|fl| value? | name   | category |
+ *   +-------+-------+-------+--+--+--+--+---------------------------+
+ *                                        \- 8 bytes, iff RF_HAS_VALUE
+ *
+ * Overlaid on the ring rather than copied field by field, which is sound
+ * because every member is naturally aligned: pf_ring hands out 8-byte
+ * aligned records (PF_REC_ALIGN), and the four one-byte fields sit in the
+ * 24..27 tail. Any buffer this is cast onto must be 8-byte aligned too --
+ * see pf_trace.rec_copy.
+ */
+struct pf_rec {
+    /* Owned by pf_ring, which accesses it atomically as the publication
+     * flag. Declared here only so the offsets below are self-evident;
+     * nothing in this file may read or write it. */
+    uint64_t tag;
 
-#define R_TAG 0 /* 8: lap/len, written last by pf_ring_publish */
-#define R_TS 8 /* 8: timestamp, ns */
-#define R_TRACK 16 /* 8: track_uuid */
-#define R_TYPE 24 /* 1: TYPE_* */
-#define R_NLEN 25 /* 1: name bytes following the header */
-#define R_CLEN 26 /* 1: category bytes following the name */
-#define R_FLAGS 27 /* 1: see RF_* */
-#define R_BODY 28 /* then: value (8, counters only), name, category */
+    uint64_t ts; /* timestamp, ns */
+    uint64_t track; /* track_uuid */
+    uint8_t type; /* TYPE_* */
+    uint8_t nlen; /* name bytes, following the value */
+    uint8_t clen; /* category bytes, following the name */
+    uint8_t flags; /* see RF_* */
+
+    /* value (8 bytes, counters only), then name, then category. */
+    uint8_t body[];
+};
 
 #define RF_HAS_VALUE 0x1u
 #define RF_VALUE_IS_DOUBLE 0x2u
 
 #define PF_NAME_MAX 255u
+
+/* The layout is the on-ring wire format, so pin it. Note this is
+ * offsetof(body) and not sizeof: the struct's 8-byte alignment rounds
+ * sizeof up to 32, and spending those 4 bytes on every record -- or
+ * shifting where the body begins -- is exactly the regression to catch. */
+_Static_assert(offsetof(struct pf_rec, tag) == 0, "tag leads the record");
+_Static_assert(offsetof(struct pf_rec, ts) == 8, "ts follows the tag");
+_Static_assert(offsetof(struct pf_rec, track) == 16, "track follows ts");
+_Static_assert(offsetof(struct pf_rec, type) == 24, "header tail at 24");
+_Static_assert(offsetof(struct pf_rec, nlen) == 25, "no padding before nlen");
+_Static_assert(offsetof(struct pf_rec, clen) == 26, "no padding before clen");
+_Static_assert(offsetof(struct pf_rec, flags) == 27, "no padding before flags");
+_Static_assert(offsetof(struct pf_rec, body) == 28, "body packs against flags");
+_Static_assert(PF_REC_TAG_BYTES == sizeof(uint64_t),
+               "pf_ring's tag and this one are the same 8 bytes");
+
+/* The largest record this layout can produce, which is what pf_ring sizes
+ * its claim limit against. Keeps that header's arithmetic honest rather
+ * than merely commented. */
+#define PF_REC_WORST (offsetof(struct pf_rec, body) + 8u + 2u * PF_NAME_MAX)
+_Static_assert((PF_REC_WORST + 7u) / 8u * 8u == PF_REC_MAX,
+               "PF_REC_MAX matches the worst case: value + name + category");
 
 /* Cap on a track's stored name. Fixed so the track table is one
  * allocation at open and never grows. */
@@ -257,8 +300,12 @@ struct pf_trace {
     struct pb_buf scratch_entry;
     /* Snapshot mode copies each record out of the ring before encoding it,
      * so a producer overwriting the original mid-encode cannot feed torn
-     * bytes into the intern table. Fixed size, so no allocation. */
-    uint8_t rec_copy[PF_REC_MAX];
+     * bytes into the intern table. Fixed size, so no allocation.
+     *
+     * Aligned because emit_record overlays struct pf_rec on whatever it is
+     * handed, and in this mode that is this buffer rather than the ring's
+     * own 8-byte aligned slot. */
+    _Alignas(struct pf_rec) uint8_t rec_copy[PF_REC_MAX];
 
     struct intern_table name_table;
     struct intern_table cat_table;
@@ -442,15 +489,15 @@ static int emit_track_header(struct pf_trace *t, bool restart)
 /* Caller holds out_lock. */
 static int emit_record(struct pf_trace *t, const uint8_t *rec)
 {
-    uint64_t ts, track_uuid;
-    memcpy(&ts, rec + R_TS, 8);
-    memcpy(&track_uuid, rec + R_TRACK, 8);
-    uint8_t type = rec[R_TYPE];
-    uint8_t nlen = rec[R_NLEN];
-    uint8_t clen = rec[R_CLEN];
-    uint8_t flags = rec[R_FLAGS];
+    const struct pf_rec *r = (const struct pf_rec *)rec;
+    uint64_t ts = r->ts;
+    uint64_t track_uuid = r->track;
+    uint8_t type = r->type;
+    uint8_t nlen = r->nlen;
+    uint8_t clen = r->clen;
+    uint8_t flags = r->flags;
 
-    const uint8_t *body = rec + R_BODY;
+    const uint8_t *body = r->body;
     uint64_t raw_value = 0;
     if (flags & RF_HAS_VALUE) {
         memcpy(&raw_value, body, 8);
@@ -696,8 +743,8 @@ static void emit_event(struct pf_trace *t, uint8_t type, uint64_t track_uuid,
     clamp_len(t, name, &nlen);
     clamp_len(t, category, &clen);
 
-    uint32_t need =
-        (uint32_t)round_up8(R_BODY + (has_value ? 8u : 0u) + nlen + clen);
+    uint32_t need = (uint32_t)round_up8(offsetof(struct pf_rec, body) +
+                                        (has_value ? 8u : 0u) + nlen + clen);
 
     /* Timestamp before claiming, not after. The claim can spin briefly
      * when producers collide, and a timestamp taken afterwards would
@@ -713,15 +760,16 @@ static void emit_event(struct pf_trace *t, uint8_t type, uint64_t track_uuid,
     if (!rec)
         return; /* continuous mode, reader behind; counted as dropped */
 
-    memcpy(rec + R_TS, &ts, 8);
-    memcpy(rec + R_TRACK, &track_uuid, 8);
-    rec[R_TYPE] = type;
-    rec[R_NLEN] = (uint8_t)nlen;
-    rec[R_CLEN] = (uint8_t)clen;
-    rec[R_FLAGS] = (uint8_t)((has_value ? RF_HAS_VALUE : 0u) |
-                             (value_is_double ? RF_VALUE_IS_DOUBLE : 0u));
+    struct pf_rec *r = (struct pf_rec *)rec;
+    r->ts = ts;
+    r->track = track_uuid;
+    r->type = type;
+    r->nlen = (uint8_t)nlen;
+    r->clen = (uint8_t)clen;
+    r->flags = (uint8_t)((has_value ? RF_HAS_VALUE : 0u) |
+                         (value_is_double ? RF_VALUE_IS_DOUBLE : 0u));
 
-    uint8_t *body = rec + R_BODY;
+    uint8_t *body = r->body;
     if (has_value) {
         memcpy(body, &raw_value, 8);
         body += 8;
