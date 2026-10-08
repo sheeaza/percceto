@@ -72,9 +72,9 @@
 #define FN_NAME_STR 2
 
 /* --- Ring record layout -------------------------------------------------
- * The tag is first because pf_ring treats it as the record's publication
- * flag; everything after it is plain bytes written by the owning producer
- * alone.
+ * Opens with pf_ring's tag, which pf_ring owns and this file only reserves
+ * room for; everything after it is plain bytes written by the owning
+ * producer alone.
  *
  * Variable-length by design: a slice_end carries no name and no value and
  * so costs 32 bytes, against the 48 a fixed-stride slot would spend on
@@ -84,7 +84,7 @@
  *
  *   0       8       16      24 25 26 27  28
  *   +-------+-------+-------+--+--+--+--+---------------------------+
- *   | tag   | ts    | track |ty|nl|cl|fl| value? | name   | category |
+ *   | hdr   | ts    | track |ty|nl|cl|fl| value? | name   | category |
  *   +-------+-------+-------+--+--+--+--+---------------------------+
  *                                        \- 8 bytes, iff RF_HAS_VALUE
  *
@@ -95,10 +95,9 @@
  * see pf_trace.rec_copy.
  */
 struct pf_rec {
-    /* Owned by pf_ring, which accesses it atomically as the publication
-     * flag. Declared here only so the offsets below are self-evident;
-     * nothing in this file may read or write it. */
-    uint64_t tag;
+    /* pf_ring's publication tag. Claimed and skipped, never touched:
+     * pf_ring_publish writes it once the fields below are in place. */
+    struct pf_rec_hdr hdr;
 
     uint64_t ts; /* timestamp, ns */
     uint64_t track; /* track_uuid */
@@ -120,7 +119,7 @@ struct pf_rec {
  * offsetof(body) and not sizeof: the struct's 8-byte alignment rounds
  * sizeof up to 32, and spending those 4 bytes on every record -- or
  * shifting where the body begins -- is exactly the regression to catch. */
-_Static_assert(offsetof(struct pf_rec, tag) == 0, "tag leads the record");
+_Static_assert(offsetof(struct pf_rec, hdr) == 0, "the tag leads the record");
 _Static_assert(offsetof(struct pf_rec, ts) == 8, "ts follows the tag");
 _Static_assert(offsetof(struct pf_rec, track) == 16, "track follows ts");
 _Static_assert(offsetof(struct pf_rec, type) == 24, "header tail at 24");
@@ -128,8 +127,6 @@ _Static_assert(offsetof(struct pf_rec, nlen) == 25, "no padding before nlen");
 _Static_assert(offsetof(struct pf_rec, clen) == 26, "no padding before clen");
 _Static_assert(offsetof(struct pf_rec, flags) == 27, "no padding before flags");
 _Static_assert(offsetof(struct pf_rec, body) == 28, "body packs against flags");
-_Static_assert(PF_REC_TAG_BYTES == sizeof(uint64_t),
-               "pf_ring's tag and this one are the same 8 bytes");
 
 /* The largest record this layout can produce, which is what pf_ring sizes
  * its claim limit against. Keeps that header's arithmetic honest rather

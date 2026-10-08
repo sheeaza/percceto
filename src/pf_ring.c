@@ -21,7 +21,8 @@
  */
 static _Atomic uint64_t *tag_at(const struct pf_ring *r, uint64_t pos)
 {
-    return (_Atomic uint64_t *)(void *)(r->base + (pos & r->mask));
+    void *at = r->base + (pos & r->mask);
+    return &((struct pf_rec_hdr *)at)->tag;
 }
 
 static uint64_t tag_make(const struct pf_ring *r, uint64_t pos, uint32_t len)

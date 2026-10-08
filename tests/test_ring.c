@@ -7,6 +7,7 @@
 
 #include <inttypes.h>
 #include <pthread.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -25,11 +26,17 @@ static int failures;
         }                                                 \
     } while (0)
 
-/* Test records: an 8-byte tag, an 8-byte sequence number, then a
+/* Test records: pf_ring's tag, an 8-byte sequence number, then a
  * byte-pattern payload derived from that number so corruption is
  * detectable rather than merely suspected. */
-#define T_SEQ 8
-#define T_PAYLOAD 16
+struct t_rec {
+    struct pf_rec_hdr hdr;
+    uint64_t seq;
+    uint8_t payload[];
+};
+
+#define T_SEQ offsetof(struct t_rec, seq)
+#define T_PAYLOAD offsetof(struct t_rec, payload)
 
 static uint32_t rec_size(uint32_t payload)
 {

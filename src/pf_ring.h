@@ -35,10 +35,28 @@
 /* Every record is a multiple of 8 bytes, so each tag stays naturally
  * aligned and its load/store is a plain instruction plus a fence. */
 #define PF_REC_ALIGN 8u
-#define PF_REC_TAG_BYTES 8u
 
-/* 8 tag + 8 ts + 8 track_uuid + 4 type/nlen/clen/flags + 8 value
- * + 255 name + 255 category, rounded up to PF_REC_ALIGN. */
+/**
+ * struct pf_rec_hdr - The tag every record begins with.
+ * @tag: `(lap << 32) | len`, as described above.
+ *
+ * Owned by pf_ring, not by the code storing records in it: pf_ring_publish
+ * writes @tag release-last and the reader's lap check is a load of it, so
+ * a producer claims space for this header plus its payload, fills only the
+ * payload, and leaves @tag alone. That split is what makes publication
+ * atomic per record.
+ *
+ * Callers embed this as their record's first member -- see struct pf_rec in
+ * pftrace.c -- so the payload offsets either side of the ring agree by
+ * construction instead of by a matching pair of constants.
+ */
+struct pf_rec_hdr {
+    _Atomic uint64_t tag;
+};
+
+/* sizeof(struct pf_rec_hdr) + 8 ts + 8 track_uuid
+ * + 4 type/nlen/clen/flags + 8 value + 255 name + 255 category,
+ * rounded up to PF_REC_ALIGN. */
 #define PF_REC_MAX 552u
 
 #define PF_RING_MIN_BYTES (64u * 1024u)
@@ -96,8 +114,8 @@ void pf_ring_destroy(struct pf_ring *r);
  *
  * Reserves a byte range owned exclusively by the caller, who may then
  * fill it concurrently with other producers filling theirs. Writes the
- * payload at the returned pointer plus %PF_REC_TAG_BYTES, leaving the tag
- * for pf_ring_publish().
+ * payload after the %struct pf_rec_hdr the record opens with, leaving that
+ * header for pf_ring_publish().
  *
  * Without @overwrite this claims with a compare-exchange rather than a
  * fetch-add, so that a claim refused for lack of space leaves @head
