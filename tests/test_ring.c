@@ -66,19 +66,19 @@ static void test_geometry(void)
 
     /* A non-power-of-two request rounds up; a tiny one hits the floor. */
     struct pf_ring r;
-    CHECK(pf_ring_init(&r, 100 * 1024, false) == 0, "init 100KiB");
+    CHECK(pf_ring_init(&r, 100 * 1024, true) == 0, "init 100KiB");
     CHECK(r.cap == 128 * 1024, "cap rounded to 128KiB, got %zu", r.cap);
     CHECK((r.cap & r.mask) == 0, "cap is a power of two");
     CHECK(((size_t)1 << r.log2cap) == r.cap, "log2cap matches cap");
     pf_ring_destroy(&r);
 
-    CHECK(pf_ring_init(&r, 1, false) == 0, "init below floor");
+    CHECK(pf_ring_init(&r, 1, true) == 0, "init below floor");
     CHECK(r.cap >= PF_RING_MIN_BYTES, "floor applied, got %zu", r.cap);
     pf_ring_destroy(&r);
 
     /* The two mappings must be the same memory: a write through the
      * mirror has to be visible at the front of the buffer. */
-    CHECK(pf_ring_init(&r, PF_RING_MIN_BYTES, false) == 0, "init");
+    CHECK(pf_ring_init(&r, PF_RING_MIN_BYTES, true) == 0, "init");
     r.base[0] = 0xAB;
     CHECK(r.base[r.cap] == 0xAB, "mirror aliases the front of the buffer");
     r.base[r.cap + 7] = 0xCD;
@@ -101,7 +101,7 @@ static void test_straddle(void)
     printf("straddle:\n");
 
     struct pf_ring r;
-    CHECK(pf_ring_init(&r, PF_RING_MIN_BYTES, false) == 0, "init");
+    CHECK(pf_ring_init(&r, PF_RING_MIN_BYTES, true) == 0, "init");
 
     /* Walk head to 32 bytes before the end, then write a 64-byte record
      * so 32 bytes land past cap. */
@@ -172,7 +172,7 @@ static void *producer_fn(void *p)
         uint64_t off;
         uint8_t *rec = pf_ring_claim(a->ring, need, &off);
         if (!rec)
-            continue; /* bounded mode drop; counted by the ring */
+            continue; /* dropping-mode drop; counted by the ring */
         /* Sequence encodes which producer wrote it, so a torn record
          * shows up as a payload mismatch rather than going unnoticed. */
         fill_rec(rec, ((uint64_t)a->id << 32) | i, need - T_PAYLOAD);
@@ -182,17 +182,17 @@ static void *producer_fn(void *p)
     return NULL;
 }
 
-/* Bounded (continuous) mode: a concurrent reader consumes while 8
+/* Dropping (continuous) mode: a concurrent reader consumes while 8
  * producers write. Nothing may be corrupt, and every attempted event must
  * be either published or counted as dropped -- never silently lost. */
-static void test_concurrent_bounded(void)
+static void test_concurrent_dropping(void)
 {
-    printf("concurrent, bounded (%d threads x %d):\n", NTHREADS, PER_THREAD);
+    printf("concurrent, dropping (%d threads x %d):\n", NTHREADS, PER_THREAD);
 
     struct pf_ring r;
     /* Deliberately small, so the reader must keep up and drops are
      * plausible -- that is the path being tested. */
-    CHECK(pf_ring_init(&r, 256 * 1024, true) == 0, "init");
+    CHECK(pf_ring_init(&r, 256 * 1024, false) == 0, "init");
 
     pthread_t th[NTHREADS];
     struct producer_arg args[NTHREADS];
@@ -255,20 +255,21 @@ static void test_concurrent_bounded(void)
           "reader saw every published record: %" PRIu64 " != %" PRIu64,
           consumed, published);
     CHECK(atomic_load_explicit(&r.resyncs, memory_order_relaxed) == 0,
-          "bounded mode never resyncs");
+          "dropping mode never resyncs");
 
     pf_ring_destroy(&r);
     printf("  ok\n");
 }
 
-/* Unbounded (snapshot) mode: producers overwrite freely. Records must
+/* Overwriting (snapshot) mode: producers overwrite freely. Records must
  * still never be torn, and the ring must not lose its boundaries. */
-static void test_concurrent_unbounded(void)
+static void test_concurrent_overwriting(void)
 {
-    printf("concurrent, unbounded (%d threads x %d):\n", NTHREADS, PER_THREAD);
+    printf("concurrent, overwriting (%d threads x %d):\n", NTHREADS,
+           PER_THREAD);
 
     struct pf_ring r;
-    CHECK(pf_ring_init(&r, 256 * 1024, false) == 0, "init");
+    CHECK(pf_ring_init(&r, 256 * 1024, true) == 0, "init");
 
     pthread_t th[NTHREADS];
     struct producer_arg args[NTHREADS];
@@ -295,7 +296,7 @@ static void test_concurrent_unbounded(void)
     }
 
     CHECK(atomic_load_explicit(&r.dropped, memory_order_relaxed) == 0,
-          "unbounded mode never drops");
+          "overwriting mode never drops");
     CHECK(atomic_load_explicit(&r.published, memory_order_relaxed) ==
               (uint64_t)NTHREADS * PER_THREAD,
           "every event published");
@@ -335,7 +336,7 @@ static void test_drop_accounting(void)
     printf("drop accounting:\n");
 
     struct pf_ring r;
-    CHECK(pf_ring_init(&r, PF_RING_MIN_BYTES, true) == 0, "init");
+    CHECK(pf_ring_init(&r, PF_RING_MIN_BYTES, false) == 0, "init");
 
     const uint32_t need = 64;
     uint64_t ok = 0;
@@ -389,7 +390,7 @@ static void test_uncontended_wraps(void)
     printf("one producer, many wraps:\n");
 
     struct pf_ring r;
-    CHECK(pf_ring_init(&r, PF_RING_MIN_BYTES, false) == 0, "init");
+    CHECK(pf_ring_init(&r, PF_RING_MIN_BYTES, true) == 0, "init");
 
     /* 5000 records of up to ~216B is several times the 64KiB ring, so it
      * wraps repeatedly; trimming as we go is what keeps tail on a live
@@ -430,8 +431,8 @@ int main(void)
     test_straddle();
     test_drop_accounting();
     test_uncontended_wraps();
-    test_concurrent_bounded();
-    test_concurrent_unbounded();
+    test_concurrent_dropping();
+    test_concurrent_overwriting();
 
     if (failures) {
         printf("\n%d CHECK(S) FAILED\n", failures);

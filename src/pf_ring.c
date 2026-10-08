@@ -9,7 +9,7 @@
  * field. The mirror guarantees the whole record is contiguous, and every
  * record is 8-byte aligned, so this cast is well defined.
  *
- * In unbounded (snapshot) mode a producer may be overwriting the very
+ * In an overwriting (snapshot) ring a producer may be overwriting the very
  * record a reader is inspecting -- that is the mode's defining behaviour,
  * not a defect. The reader therefore treats everything it loads from the
  * ring as provisional: the tag's lap check (pf_ring_next) opens a seqlock
@@ -49,7 +49,7 @@ static unsigned log2_exact(size_t v)
     return n;
 }
 
-int pf_ring_init(struct pf_ring *r, size_t want_bytes, bool bounded)
+int pf_ring_init(struct pf_ring *r, size_t want_bytes, bool overwrite)
 {
     memset(r, 0, sizeof(*r));
 
@@ -58,7 +58,7 @@ int pf_ring_init(struct pf_ring *r, size_t want_bytes, bool bounded)
     size_t cap = round_up_pow2(want_bytes);
 
     /* The ring must hold more than one maximum-size record for the
-     * bounded-mode space check to ever succeed. PF_RING_MIN_BYTES is far
+     * dropping mode's space check to ever succeed. PF_RING_MIN_BYTES is far
      * above PF_REC_MAX, so this only guards absurd configs. */
     if (cap < 2 * PF_REC_MAX) {
         errno = EINVAL;
@@ -109,7 +109,7 @@ int pf_ring_init(struct pf_ring *r, size_t want_bytes, bool bounded)
     r->cap = cap;
     r->mask = cap - 1;
     r->log2cap = log2_exact(cap);
-    r->bounded = bounded;
+    r->overwrite = overwrite;
     atomic_init(&r->head, 0);
     atomic_init(&r->tail, 0);
     atomic_init(&r->dropped, 0);
@@ -131,7 +131,7 @@ uint8_t *pf_ring_claim(struct pf_ring *r, uint32_t need, uint64_t *off_out)
 {
     uint64_t off;
 
-    if (!r->bounded) {
+    if (r->overwrite) {
         /* Snapshot mode: overwriting the oldest record is intended, so
          * the claim cannot fail and needs no loop. */
         off = atomic_fetch_add_explicit(&r->head, need, memory_order_relaxed);
@@ -153,7 +153,7 @@ uint8_t *pf_ring_claim(struct pf_ring *r, uint32_t need, uint64_t *off_out)
         if (off + need - tail > r->cap)
             pf_ring_trim(r, r->cap / 2);
     } else {
-        /* Bounded mode: decide before moving @head, so that a refusal
+        /* Continuous mode: decide before moving @head, so that a refusal
          * leaves no gap. */
         off = atomic_load_explicit(&r->head, memory_order_relaxed);
         for (;;) {
@@ -218,7 +218,7 @@ const uint8_t *pf_ring_next(struct pf_ring *r, struct pf_ring_reader *rd,
 
 bool pf_ring_still_valid(const struct pf_ring *r, uint64_t pos)
 {
-    if (r->bounded)
+    if (!r->overwrite)
         return true; /* producers never overwrite unconsumed bytes */
     uint64_t head = atomic_load_explicit(&r->head, memory_order_acquire);
     return head - pos <= r->cap;

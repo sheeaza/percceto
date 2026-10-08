@@ -554,10 +554,10 @@ static int drain_locked(struct pf_trace *t)
          * intern table, and since the table outlives the rolled-back
          * packet, a later valid event could reference an iid whose
          * InternedData record was never written -- an unreadable trace.
-         * A bounded ring cannot be overwritten under the reader, so it
-         * skips the copy entirely and encodes in place. */
+         * A non-overwriting ring cannot be overwritten under the reader,
+         * so it skips the copy entirely and encodes in place. */
         const uint8_t *src = rec;
-        if (!t->ring.bounded) {
+        if (t->ring.overwrite) {
             memcpy(t->rec_copy, rec, len);
             if (!pf_ring_still_valid(&t->ring, rec_pos)) {
                 /* Lapped: the reader's position is no longer a known
@@ -711,7 +711,7 @@ static void emit_event(struct pf_trace *t, uint8_t type, uint64_t track_uuid,
     uint64_t off;
     uint8_t *rec = pf_ring_claim(&t->ring, need, &off);
     if (!rec)
-        return; /* bounded mode, reader behind; counted as dropped */
+        return; /* continuous mode, reader behind; counted as dropped */
 
     memcpy(rec + R_TS, &ts, 8);
     memcpy(rec + R_TRACK, &track_uuid, 8);
@@ -857,7 +857,7 @@ struct pf_trace *pf_trace_open(const struct pf_config *cfg)
         goto fail;
 
     if (pf_ring_init(&t->ring, t->cfg.ring_bytes,
-                     t->cfg.mode == PF_MODE_CONTINUOUS) != 0)
+                     t->cfg.mode == PF_MODE_SNAPSHOT) != 0)
         goto fail;
 
     t->watermark_bytes = t->ring.cap / 100u * t->cfg.watermark_pct;

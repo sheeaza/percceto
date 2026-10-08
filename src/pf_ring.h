@@ -49,10 +49,11 @@ struct pf_ring {
     size_t mask; /* cap - 1 */
     unsigned log2cap;
 
-    /* Refuse to overwrite records the reader has not consumed, dropping
-     * instead. Set for continuous mode, clear for snapshot mode, where
-     * overwriting the oldest events is the entire point. */
-    bool bounded;
+    /* Lap records the reader has not consumed, rather than refusing new
+     * ones. Set for snapshot mode, where overwriting the oldest events is
+     * the entire point, and clear for continuous mode, which drops
+     * instead. */
+    bool overwrite;
 
     _Atomic uint64_t head; /* next byte to claim */
     _Atomic uint64_t tail; /* oldest byte the reader still needs */
@@ -73,11 +74,11 @@ struct pf_ring_reader {
  * @want_bytes: Requested capacity; rounded up to a power of two, with a
  *      floor of %PF_RING_MIN_BYTES. Since the result is a power of two no
  *      smaller than 64 KiB it is necessarily a page multiple too.
- * @bounded: Drop rather than overwrite unconsumed records.
+ * @overwrite: Overwrite unconsumed records rather than dropping new ones.
  *
  * Return: 0 on success, -1 with errno set on failure.
  */
-int pf_ring_init(struct pf_ring *r, size_t want_bytes, bool bounded);
+int pf_ring_init(struct pf_ring *r, size_t want_bytes, bool overwrite);
 
 /**
  * pf_ring_destroy() - Unmap the ring.
@@ -98,14 +99,14 @@ void pf_ring_destroy(struct pf_ring *r);
  * payload at the returned pointer plus %PF_REC_TAG_BYTES, leaving the tag
  * for pf_ring_publish().
  *
- * In bounded mode this claims with a compare-exchange rather than a
+ * Without @overwrite this claims with a compare-exchange rather than a
  * fetch-add, so that a claim refused for lack of space leaves @head
  * untouched. A fetch-add would advance @head first and then have nowhere
  * to put a valid tag, leaving a permanent hole that the reader could
  * never walk past.
  *
  * Return: Pointer to the record start, or %NULL if the record was
- * dropped (bounded mode, reader too far behind).
+ * dropped (only without @overwrite, reader too far behind).
  */
 uint8_t *pf_ring_claim(struct pf_ring *r, uint32_t need, uint64_t *off_out);
 
@@ -147,8 +148,8 @@ const uint8_t *pf_ring_next(struct pf_ring *r, struct pf_ring_reader *rd,
  * @r: Ring.
  * @pos: Absolute position of the record being checked.
  *
- * Only unbounded (snapshot) mode can overwrite a record out from under
- * the reader, so this always succeeds in bounded mode. Call it after
+ * Only an @overwrite (snapshot) ring can overwrite a record out from under
+ * the reader, so this always succeeds otherwise. Call it after
  * consuming a record's bytes and discard the result if it fails; this is
  * the second half of a seqlock, with pf_ring_next()'s lap check as the
  * first.
@@ -162,7 +163,7 @@ bool pf_ring_still_valid(const struct pf_ring *r, uint64_t pos);
  * @r: Ring.
  * @rd: Walk state.
  *
- * Advances @tail, freeing the space for producers. In bounded mode this
+ * Advances @tail, freeing the space for producers. Without @overwrite this
  * is what lets them stop dropping.
  */
 void pf_ring_read_commit(struct pf_ring *r, struct pf_ring_reader *rd);
@@ -195,7 +196,7 @@ bool pf_ring_trim(struct pf_ring *r, size_t retain_bytes);
  * had not been read and bumping the resync counter.
  *
  * Reached when a producer recycles the oldest record while pf_ring_trim()
- * is deriving a boundary from it. In unbounded mode that is a normal
+ * is deriving a boundary from it. With @overwrite that is a normal
  * outcome under load, not a fault: there is no backpressure to prevent it,
  * and the alternative -- leaving @tail mid-record -- is unrecoverable,
  * since lengths are only discoverable forwards. Losing the older part of
