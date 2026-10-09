@@ -1,0 +1,10 @@
+# CMake build tree
+build/
+
+# Object/archive files from any out-of-tree or ad-hoc compile
+*.o
+*.a
+
+# clangd: index cache, plus the root symlink into build/
+.cache/
+compile_commands.json
