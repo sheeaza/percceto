@@ -9,17 +9,19 @@
 
 #define PAYLOAD_LEN 24
 
-typedef struct {
+struct message {
     uint64_t seq;
     unsigned char payload[PAYLOAD_LEN];
-} message_t;
+};
 
-static void fill_payload(unsigned char *payload, uint64_t seq) {
+static void fill_payload(unsigned char *payload, uint64_t seq)
+{
     for (int i = 0; i < PAYLOAD_LEN; i++)
         payload[i] = (unsigned char)((seq + (uint64_t)i) & 0xFF);
 }
 
-static bool payload_ok(const unsigned char *payload, uint64_t seq) {
+static bool payload_ok(const unsigned char *payload, uint64_t seq)
+{
     unsigned char expected[PAYLOAD_LEN];
     fill_payload(expected, seq);
     return memcmp(payload, expected, PAYLOAD_LEN) == 0;
@@ -34,31 +36,34 @@ static bool payload_ok(const unsigned char *payload, uint64_t seq) {
 
 /* ---- Lossless transfer (overwrite_on_full = false) ---- */
 
-typedef struct {
-    ringbuf_t *rb;
+struct lossless_producer_args {
+    struct ringbuf *rb;
     uint64_t num_messages;
     bool failed;
     const char *label;
-} lossless_producer_args_t;
+};
 
-typedef struct {
-    ringbuf_t *rb;
+struct lossless_consumer_args {
+    struct ringbuf *rb;
     uint64_t num_messages;
     bool failed;
     const char *label;
-} lossless_consumer_args_t;
+};
 
-static void *lossless_producer_main(void *arg) {
-    lossless_producer_args_t *a = arg;
+static void *lossless_producer_main(void *arg)
+{
+    struct lossless_producer_args *a = arg;
     for (uint64_t seq = 0; seq < a->num_messages; seq++) {
-        message_t msg;
+        struct message msg;
         msg.seq = seq;
         fill_payload(msg.payload, seq);
 
         uint64_t spins = 0;
         while (!ringbuf_push(a->rb, &msg)) {
             if (++spins > MAX_SPIN) {
-                fprintf(stderr, "%s: producer stalled pushing seq %" PRIu64 "\n", a->label, seq);
+                fprintf(stderr,
+                        "%s: producer stalled pushing seq %" PRIu64 "\n",
+                        a->label, seq);
                 a->failed = true;
                 return NULL;
             }
@@ -68,16 +73,19 @@ static void *lossless_producer_main(void *arg) {
     return NULL;
 }
 
-static void *lossless_consumer_main(void *arg) {
-    lossless_consumer_args_t *a = arg;
-    for (uint64_t expected_seq = 0; expected_seq < a->num_messages; expected_seq++) {
-        message_t msg;
+static void *lossless_consumer_main(void *arg)
+{
+    struct lossless_consumer_args *a = arg;
+    for (uint64_t expected_seq = 0; expected_seq < a->num_messages;
+         expected_seq++) {
+        struct message msg;
 
         uint64_t spins = 0;
         while (!ringbuf_pop(a->rb, &msg)) {
             if (++spins > MAX_SPIN) {
-                fprintf(stderr, "%s: consumer stalled waiting for seq %" PRIu64 "\n", a->label,
-                        expected_seq);
+                fprintf(stderr,
+                        "%s: consumer stalled waiting for seq %" PRIu64 "\n",
+                        a->label, expected_seq);
                 a->failed = true;
                 return NULL;
             }
@@ -85,7 +93,9 @@ static void *lossless_consumer_main(void *arg) {
         }
 
         if (msg.seq != expected_seq || !payload_ok(msg.payload, expected_seq)) {
-            fprintf(stderr, "%s: mismatch at expected seq %" PRIu64 ", got %" PRIu64 "\n",
+            fprintf(stderr,
+                    "%s: mismatch at expected seq %" PRIu64 ", got %" PRIu64
+                    "\n",
                     a->label, expected_seq, msg.seq);
             a->failed = true;
             return NULL;
@@ -95,11 +105,15 @@ static void *lossless_consumer_main(void *arg) {
 }
 
 /* Runs a two-thread lossless transfer over an already-created buffer. */
-static bool run_lossless_transfer(ringbuf_t *rb, uint64_t n, const char *label) {
-    lossless_producer_args_t pargs = {
-        .rb = rb, .num_messages = n, .failed = false, .label = label};
-    lossless_consumer_args_t cargs = {
-        .rb = rb, .num_messages = n, .failed = false, .label = label};
+static bool run_lossless_transfer(struct ringbuf *rb, uint64_t n,
+                                  const char *label)
+{
+    struct lossless_producer_args pargs = {
+        .rb = rb, .num_messages = n, .failed = false, .label = label
+    };
+    struct lossless_consumer_args cargs = {
+        .rb = rb, .num_messages = n, .failed = false, .label = label
+    };
 
     pthread_t producer, consumer;
     pthread_create(&producer, NULL, lossless_producer_main, &pargs);
@@ -114,9 +128,10 @@ static bool run_lossless_transfer(ringbuf_t *rb, uint64_t n, const char *label) 
     return true;
 }
 
-static bool run_lossless_test(void) {
+static bool run_lossless_test(void)
+{
     /* Small, non-trivial capacity forces heavy wraparound during the run. */
-    ringbuf_t *rb = ringbuf_create(sizeof(message_t), 16, false);
+    struct ringbuf *rb = ringbuf_create(sizeof(struct message), 16, false);
     if (!rb) {
         fprintf(stderr, "lossless: ringbuf_create failed\n");
         return false;
@@ -131,13 +146,15 @@ static bool run_lossless_test(void) {
 /* Expects a capacity-4 buffer created with overwrite_on_full = true. Pushes
  * 10 messages with no pops, so the oldest 6 must be evicted and only seq
  * 6..9 remain. */
-static bool run_overwrite_basic_on(ringbuf_t *rb, const char *label) {
+static bool run_overwrite_basic_on(struct ringbuf *rb, const char *label)
+{
     for (uint64_t seq = 0; seq < 10; seq++) {
-        message_t msg;
+        struct message msg;
         msg.seq = seq;
         fill_payload(msg.payload, seq);
         if (!ringbuf_push(rb, &msg)) {
-            fprintf(stderr, "%s: push unexpectedly failed at seq %" PRIu64 "\n", label, seq);
+            fprintf(stderr, "%s: push unexpectedly failed at seq %" PRIu64 "\n",
+                    label, seq);
             return false;
         }
     }
@@ -149,20 +166,21 @@ static bool run_overwrite_basic_on(ringbuf_t *rb, const char *label) {
     }
 
     for (uint64_t expected_seq = 6; expected_seq < 10; expected_seq++) {
-        message_t msg;
+        struct message msg;
         if (!ringbuf_pop(rb, &msg)) {
-            fprintf(stderr, "%s: pop unexpectedly failed at seq %" PRIu64 "\n", label,
-                    expected_seq);
+            fprintf(stderr, "%s: pop unexpectedly failed at seq %" PRIu64 "\n",
+                    label, expected_seq);
             return false;
         }
         if (msg.seq != expected_seq || !payload_ok(msg.payload, expected_seq)) {
-            fprintf(stderr, "%s: mismatch, expected seq %" PRIu64 ", got %" PRIu64 "\n", label,
-                    expected_seq, msg.seq);
+            fprintf(stderr,
+                    "%s: mismatch, expected seq %" PRIu64 ", got %" PRIu64 "\n",
+                    label, expected_seq, msg.seq);
             return false;
         }
     }
 
-    message_t msg;
+    struct message msg;
     if (ringbuf_pop(rb, &msg)) {
         fprintf(stderr, "%s: expected empty buffer after draining\n", label);
         return false;
@@ -172,8 +190,9 @@ static bool run_overwrite_basic_on(ringbuf_t *rb, const char *label) {
     return true;
 }
 
-static bool run_overwrite_basic_test(void) {
-    ringbuf_t *rb = ringbuf_create(sizeof(message_t), 4, true);
+static bool run_overwrite_basic_test(void)
+{
+    struct ringbuf *rb = ringbuf_create(sizeof(struct message), 4, true);
     if (!rb) {
         fprintf(stderr, "overwrite_basic: ringbuf_create failed\n");
         return false;
@@ -186,16 +205,16 @@ static bool run_overwrite_basic_test(void) {
 /* ---- Overwrite mode, concurrent stress. A tiny capacity maximizes
  * eviction-vs-read contention on the shared boundary slot. ---- */
 
-typedef struct {
-    ringbuf_t *rb;
+struct stress_producer_args {
+    struct ringbuf *rb;
     uint64_t num_messages;
     atomic_bool *done;
     bool failed;
     const char *label;
-} stress_producer_args_t;
+};
 
-typedef struct {
-    ringbuf_t *rb;
+struct stress_consumer_args {
+    struct ringbuf *rb;
     atomic_bool *done;
     uint64_t received;
     uint64_t last_seq;
@@ -203,12 +222,13 @@ typedef struct {
     bool out_of_order;
     bool stalled;
     const char *label;
-} stress_consumer_args_t;
+};
 
-static void *stress_producer_main(void *arg) {
-    stress_producer_args_t *a = arg;
+static void *stress_producer_main(void *arg)
+{
+    struct stress_producer_args *a = arg;
     for (uint64_t seq = 0; seq < a->num_messages; seq++) {
-        message_t msg;
+        struct message msg;
         msg.seq = seq;
         fill_payload(msg.payload, seq);
 
@@ -217,7 +237,9 @@ static void *stress_producer_main(void *arg) {
         uint64_t spins = 0;
         while (!ringbuf_push(a->rb, &msg)) {
             if (++spins > MAX_SPIN) {
-                fprintf(stderr, "%s: producer stalled pushing seq %" PRIu64 "\n", a->label, seq);
+                fprintf(stderr,
+                        "%s: producer stalled pushing seq %" PRIu64 "\n",
+                        a->label, seq);
                 a->failed = true;
                 atomic_store_explicit(a->done, true, memory_order_release);
                 return NULL;
@@ -229,22 +251,24 @@ static void *stress_producer_main(void *arg) {
     return NULL;
 }
 
-static void *stress_consumer_main(void *arg) {
-    stress_consumer_args_t *a = arg;
+static void *stress_consumer_main(void *arg)
+{
+    struct stress_consumer_args *a = arg;
     bool have_prev = false;
     uint64_t prev_seq = 0;
     uint64_t spins = 0;
 
     for (;;) {
-        message_t msg;
+        struct message msg;
         if (!ringbuf_pop(a->rb, &msg)) {
             if (atomic_load_explicit(a->done, memory_order_acquire)) {
                 if (!ringbuf_pop(a->rb, &msg))
                     break; /* producer finished and buffer is fully drained */
             } else {
                 if (++spins > MAX_SPIN) {
-                    fprintf(stderr, "%s: consumer stalled after %" PRIu64 " messages\n", a->label,
-                            a->received);
+                    fprintf(stderr,
+                            "%s: consumer stalled after %" PRIu64 " messages\n",
+                            a->label, a->received);
                     a->stalled = true;
                     return NULL;
                 }
@@ -271,18 +295,23 @@ static void *stress_consumer_main(void *arg) {
     return NULL;
 }
 
-static bool run_overwrite_stress_on(ringbuf_t *rb, uint64_t n, const char *label) {
+static bool run_overwrite_stress_on(struct ringbuf *rb, uint64_t n,
+                                    const char *label)
+{
     atomic_bool done = false;
-    stress_producer_args_t pargs = {
-        .rb = rb, .num_messages = n, .done = &done, .failed = false, .label = label};
-    stress_consumer_args_t cargs = {.rb = rb,
-                                    .done = &done,
-                                    .received = 0,
-                                    .last_seq = 0,
-                                    .corrupted = false,
-                                    .out_of_order = false,
-                                    .stalled = false,
-                                    .label = label};
+    struct stress_producer_args pargs = { .rb = rb,
+                                          .num_messages = n,
+                                          .done = &done,
+                                          .failed = false,
+                                          .label = label };
+    struct stress_consumer_args cargs = { .rb = rb,
+                                          .done = &done,
+                                          .received = 0,
+                                          .last_seq = 0,
+                                          .corrupted = false,
+                                          .out_of_order = false,
+                                          .stalled = false,
+                                          .label = label };
 
     pthread_t producer, consumer;
     pthread_create(&producer, NULL, stress_producer_main, &pargs);
@@ -303,22 +332,27 @@ static bool run_overwrite_stress_on(ringbuf_t *rb, uint64_t n, const char *label
         return false;
     }
     if (cargs.last_seq != n - 1) {
-        fprintf(stderr, "%s: did not observe final message (last_seq=%" PRIu64 ")\n", label,
-                cargs.last_seq);
+        fprintf(stderr,
+                "%s: did not observe final message (last_seq=%" PRIu64 ")\n",
+                label, cargs.last_seq);
         return false;
     }
     if (cargs.received + dropped != n) {
-        fprintf(stderr, "%s: received(%" PRIu64 ") + dropped(%zu) != pushed(%" PRIu64 ")\n",
+        fprintf(stderr,
+                "%s: received(%" PRIu64 ") + dropped(%zu) != pushed(%" PRIu64
+                ")\n",
                 label, cargs.received, dropped, n);
         return false;
     }
 
-    printf("%s: PASS (received=%" PRIu64 ", dropped=%zu)\n", label, cargs.received, dropped);
+    printf("%s: PASS (received=%" PRIu64 ", dropped=%zu)\n", label,
+           cargs.received, dropped);
     return true;
 }
 
-static bool run_overwrite_stress_test(void) {
-    ringbuf_t *rb = ringbuf_create(sizeof(message_t), 4, true);
+static bool run_overwrite_stress_test(void)
+{
+    struct ringbuf *rb = ringbuf_create(sizeof(struct message), 4, true);
     if (!rb) {
         fprintf(stderr, "overwrite_stress: ringbuf_create failed\n");
         return false;
@@ -347,9 +381,11 @@ static bool run_overwrite_stress_test(void) {
 
 /* Sharp regression test: single-threaded, so a failure can only come from
  * the full/empty arithmetic rather than from a race. */
-static bool run_wrap_boundary_test(void) {
+static bool run_wrap_boundary_test(void)
+{
     const uint64_t capacity = 16;
-    ringbuf_t *rb = ringbuf_create(sizeof(message_t), (size_t)capacity, false);
+    struct ringbuf *rb =
+        ringbuf_create(sizeof(struct message), (size_t)capacity, false);
     if (!rb) {
         fprintf(stderr, "wrap_boundary: ringbuf_create failed\n");
         return false;
@@ -357,31 +393,36 @@ static bool run_wrap_boundary_test(void) {
     ringbuf_test_seed_counters(rb, SEED_BASE);
 
     if (!ringbuf_is_empty_approx(rb)) {
-        fprintf(stderr, "wrap_boundary: should read empty right after seeding\n");
+        fprintf(stderr,
+                "wrap_boundary: should read empty right after seeding\n");
         goto fail;
     }
 
     /* Fill to exactly capacity; write_idx crosses SIZE_MAX partway through. */
     for (uint64_t seq = 0; seq < capacity; seq++) {
-        message_t msg;
+        struct message msg;
         msg.seq = seq;
         fill_payload(msg.payload, seq);
         if (!ringbuf_push(rb, &msg)) {
-            fprintf(stderr, "wrap_boundary: push failed at seq %" PRIu64 " (expected room)\n",
+            fprintf(stderr,
+                    "wrap_boundary: push failed at seq %" PRIu64
+                    " (expected room)\n",
                     seq);
             goto fail;
         }
     }
 
     if (!ringbuf_is_full_approx(rb)) {
-        fprintf(stderr, "wrap_boundary: should read full after %" PRIu64 " pushes\n", capacity);
+        fprintf(stderr,
+                "wrap_boundary: should read full after %" PRIu64 " pushes\n",
+                capacity);
         goto fail;
     }
 
     /* Non-overwrite buffer: the next push must be refused, not wrap around
      * and clobber unread data. */
     {
-        message_t msg;
+        struct message msg;
         msg.seq = capacity;
         fill_payload(msg.payload, capacity);
         if (ringbuf_push(rb, &msg)) {
@@ -392,25 +433,29 @@ static bool run_wrap_boundary_test(void) {
 
     /* write_idx has now wrapped past SIZE_MAX while read_idx has not. */
     for (uint64_t expected_seq = 0; expected_seq < capacity; expected_seq++) {
-        message_t msg;
+        struct message msg;
         if (!ringbuf_pop(rb, &msg)) {
-            fprintf(stderr,
-                    "wrap_boundary: pop reported empty across the SIZE_MAX boundary "
-                    "at seq %" PRIu64 "\n",
-                    expected_seq);
+            fprintf(
+                stderr,
+                "wrap_boundary: pop reported empty across the SIZE_MAX boundary "
+                "at seq %" PRIu64 "\n",
+                expected_seq);
             goto fail;
         }
         if (msg.seq != expected_seq || !payload_ok(msg.payload, expected_seq)) {
-            fprintf(stderr, "wrap_boundary: mismatch, expected seq %" PRIu64 ", got %" PRIu64 "\n",
+            fprintf(stderr,
+                    "wrap_boundary: mismatch, expected seq %" PRIu64
+                    ", got %" PRIu64 "\n",
                     expected_seq, msg.seq);
             goto fail;
         }
     }
 
     {
-        message_t msg;
+        struct message msg;
         if (ringbuf_pop(rb, &msg)) {
-            fprintf(stderr, "wrap_boundary: expected empty buffer after draining\n");
+            fprintf(stderr,
+                    "wrap_boundary: expected empty buffer after draining\n");
             goto fail;
         }
     }
@@ -420,7 +465,8 @@ static bool run_wrap_boundary_test(void) {
     }
 
     ringbuf_destroy(rb);
-    printf("wrap_boundary: PASS (crossed SIZE_MAX, %" PRIu64 " messages)\n", capacity);
+    printf("wrap_boundary: PASS (crossed SIZE_MAX, %" PRIu64 " messages)\n",
+           capacity);
     return true;
 
 fail:
@@ -429,8 +475,9 @@ fail:
 }
 
 /* Overwrite-mode eviction accounting across the same boundary. */
-static bool run_wrap_overwrite_basic_test(void) {
-    ringbuf_t *rb = ringbuf_create(sizeof(message_t), 4, true);
+static bool run_wrap_overwrite_basic_test(void)
+{
+    struct ringbuf *rb = ringbuf_create(sizeof(struct message), 4, true);
     if (!rb) {
         fprintf(stderr, "wrap_overwrite_basic: ringbuf_create failed\n");
         return false;
@@ -444,8 +491,9 @@ static bool run_wrap_overwrite_basic_test(void) {
 /* Concurrent coverage of the boundary, for ThreadSanitizer. Smaller counts
  * than the main stress tests: the boundary is crossed in the first handful
  * of pushes, so the rest is just ordinary running. */
-static bool run_wrap_lossless_concurrent_test(void) {
-    ringbuf_t *rb = ringbuf_create(sizeof(message_t), 16, false);
+static bool run_wrap_lossless_concurrent_test(void)
+{
+    struct ringbuf *rb = ringbuf_create(sizeof(struct message), 16, false);
     if (!rb) {
         fprintf(stderr, "wrap_lossless_concurrent: ringbuf_create failed\n");
         return false;
@@ -456,8 +504,9 @@ static bool run_wrap_lossless_concurrent_test(void) {
     return ok;
 }
 
-static bool run_wrap_overwrite_stress_test(void) {
-    ringbuf_t *rb = ringbuf_create(sizeof(message_t), 4, true);
+static bool run_wrap_overwrite_stress_test(void)
+{
+    struct ringbuf *rb = ringbuf_create(sizeof(struct message), 4, true);
     if (!rb) {
         fprintf(stderr, "wrap_overwrite_stress: ringbuf_create failed\n");
         return false;
@@ -470,7 +519,8 @@ static bool run_wrap_overwrite_stress_test(void) {
 
 #endif /* RINGBUF_TEST_HOOKS */
 
-int main(void) {
+int main(void)
+{
     bool ok = true;
     ok &= run_lossless_test();
     ok &= run_overwrite_basic_test();
@@ -481,7 +531,8 @@ int main(void) {
     ok &= run_wrap_lossless_concurrent_test();
     ok &= run_wrap_overwrite_stress_test();
 #else
-    printf("counter-overflow tests SKIPPED (build with -DRINGBUF_TEST_HOOKS)\n");
+    printf(
+        "counter-overflow tests SKIPPED (build with -DRINGBUF_TEST_HOOKS)\n");
 #endif
 
     if (!ok) {

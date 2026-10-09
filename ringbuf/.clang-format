@@ -1,6 +1,11 @@
 # clang-format configuration adapted from the Linux kernel's .clang-format
 # (https://github.com/torvalds/linux/blob/master/.clang-format), with
-# indentation switched from tabs/8 to spaces/4.
+# indentation switched from tabs/8 to spaces/4. Kernel brace, column, and
+# spacing rules are otherwise kept as-is.
+#
+# Note the kernel's "no typedefs for structs" rule is a convention this
+# file cannot enforce -- declare `struct foo` and spell it out at use
+# sites rather than hiding it behind a foo_t.
 #
 #   https://clang.llvm.org/docs/ClangFormatStyleOptions.html
 #
@@ -69,8 +74,8 @@ FixNamespaceComments: false
 # back by hand.
 #
 # IncludeIsMainRegex is deliberately set to a pattern that matches nothing.
-# Left at its default, clang-format treats pb_writer.h as pb_writer.c's
-# "main" header and hoists it above the system block, overriding the
+# Left at its default, clang-format treats a .c file's like-named header as
+# its "main" header and hoists it above the system block, overriding the
 # priorities below -- which is the convention this is replacing.
 IncludeBlocks: Regroup
 IncludeCategories:

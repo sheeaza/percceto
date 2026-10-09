@@ -1,10 +1,10 @@
 #define _POSIX_C_SOURCE 200112L
 
-#include "ringbuf.h"
-
 #include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
+
+#include "ringbuf.h"
 
 struct ringbuf {
     size_t capacity;
@@ -21,13 +21,14 @@ struct ringbuf {
     atomic_size_t dropped_count;
 
     _Alignas(64) atomic_size_t write_idx; /* producer-owned */
-    size_t cached_read;                   /* producer's private cache of read_idx */
+    size_t cached_read; /* producer's private cache of read_idx */
 
-    _Alignas(64) atomic_size_t read_idx;  /* consumer-owned */
-    size_t cached_write;                  /* consumer's private cache of write_idx */
+    _Alignas(64) atomic_size_t read_idx; /* consumer-owned */
+    size_t cached_write; /* consumer's private cache of write_idx */
 };
 
-static size_t next_pow2(size_t v) {
+static size_t next_pow2(size_t v)
+{
     if (v < 2)
         return 2;
     size_t p = 1;
@@ -36,13 +37,15 @@ static size_t next_pow2(size_t v) {
     return p;
 }
 
-ringbuf_t *ringbuf_create(size_t slot_size, size_t min_capacity, bool overwrite_on_full) {
+struct ringbuf *ringbuf_create(size_t slot_size, size_t min_capacity,
+                               bool overwrite_on_full)
+{
     if (slot_size == 0)
         return NULL;
 
     size_t capacity = next_pow2(min_capacity);
 
-    ringbuf_t *rb = NULL;
+    struct ringbuf *rb = NULL;
     if (posix_memalign((void **)&rb, 64, sizeof(*rb)) != 0)
         return NULL;
 
@@ -79,7 +82,8 @@ ringbuf_t *ringbuf_create(size_t slot_size, size_t min_capacity, bool overwrite_
     return rb;
 }
 
-void ringbuf_destroy(ringbuf_t *rb) {
+void ringbuf_destroy(struct ringbuf *rb)
+{
     if (!rb)
         return;
     free(rb->slot_lock);
@@ -87,24 +91,28 @@ void ringbuf_destroy(ringbuf_t *rb) {
     free(rb);
 }
 
-bool ringbuf_push(ringbuf_t *rb, const void *data) {
-    size_t write_idx = atomic_load_explicit(&rb->write_idx, memory_order_relaxed);
+bool ringbuf_push(struct ringbuf *rb, const void *data)
+{
+    size_t write_idx =
+        atomic_load_explicit(&rb->write_idx, memory_order_relaxed);
     size_t next = write_idx + 1;
     size_t idx = write_idx & rb->mask;
 
     if (next - rb->cached_read > rb->capacity) {
-        rb->cached_read = atomic_load_explicit(&rb->read_idx, memory_order_acquire);
+        rb->cached_read =
+            atomic_load_explicit(&rb->read_idx, memory_order_acquire);
         if (next - rb->cached_read > rb->capacity) {
             if (!rb->overwrite_on_full)
                 return false; /* genuinely full */
 
             int expected = 0;
             if (!atomic_compare_exchange_strong_explicit(
-                    &rb->slot_lock[idx], &expected, 1,
-                    memory_order_acquire, memory_order_relaxed))
+                    &rb->slot_lock[idx], &expected, 1, memory_order_acquire,
+                    memory_order_relaxed))
                 return false; /* consumer is mid-read of this exact slot */
 
-            size_t fresh_read = atomic_load_explicit(&rb->read_idx, memory_order_acquire);
+            size_t fresh_read =
+                atomic_load_explicit(&rb->read_idx, memory_order_acquire);
             if (next - fresh_read > rb->capacity) {
                 /* Still full, so claim the eviction of message `fresh_read`
                  * with a CAS. Both we and the consumer advance read_idx only
@@ -115,7 +123,8 @@ bool ringbuf_push(ringbuf_t *rb, const void *data) {
                 if (atomic_compare_exchange_strong_explicit(
                         &rb->read_idx, &expected_read, fresh_read + 1,
                         memory_order_acq_rel, memory_order_acquire)) {
-                    atomic_fetch_add_explicit(&rb->dropped_count, 1, memory_order_relaxed);
+                    atomic_fetch_add_explicit(&rb->dropped_count, 1,
+                                              memory_order_relaxed);
                     rb->cached_read = fresh_read + 1;
                 } else {
                     /* Consumer retired it first, so no eviction happened.
@@ -139,7 +148,8 @@ bool ringbuf_push(ringbuf_t *rb, const void *data) {
     return true;
 }
 
-bool ringbuf_pop(ringbuf_t *rb, void *data) {
+bool ringbuf_pop(struct ringbuf *rb, void *data)
+{
     size_t read_idx = atomic_load_explicit(&rb->read_idx, memory_order_relaxed);
 
     /* Signed difference so this stays correct when the counters wrap past
@@ -148,7 +158,8 @@ bool ringbuf_pop(ringbuf_t *rb, void *data) {
      * difference just means cached_write is stale (the producer can advance
      * read_idx in overwrite mode), which is handled by the same refresh. */
     if ((ptrdiff_t)(rb->cached_write - read_idx) <= 0) {
-        rb->cached_write = atomic_load_explicit(&rb->write_idx, memory_order_acquire);
+        rb->cached_write =
+            atomic_load_explicit(&rb->write_idx, memory_order_acquire);
         if ((ptrdiff_t)(rb->cached_write - read_idx) <= 0)
             return false; /* genuinely empty */
     }
@@ -158,8 +169,8 @@ bool ringbuf_pop(ringbuf_t *rb, void *data) {
     if (rb->overwrite_on_full) {
         int expected = 0;
         if (!atomic_compare_exchange_strong_explicit(
-                &rb->slot_lock[idx], &expected, 1,
-                memory_order_acquire, memory_order_relaxed))
+                &rb->slot_lock[idx], &expected, 1, memory_order_acquire,
+                memory_order_relaxed))
             return false; /* producer is evicting this exact slot right now */
 
         memcpy(data, rb->buffer + idx * rb->slot_size, rb->slot_size);
@@ -184,32 +195,38 @@ bool ringbuf_pop(ringbuf_t *rb, void *data) {
     return true;
 }
 
-size_t ringbuf_capacity(const ringbuf_t *rb) {
+size_t ringbuf_capacity(const struct ringbuf *rb)
+{
     return rb->capacity;
 }
 
-size_t ringbuf_slot_size(const ringbuf_t *rb) {
+size_t ringbuf_slot_size(const struct ringbuf *rb)
+{
     return rb->slot_size;
 }
 
-size_t ringbuf_dropped_count(const ringbuf_t *rb) {
+size_t ringbuf_dropped_count(const struct ringbuf *rb)
+{
     return atomic_load_explicit(&rb->dropped_count, memory_order_relaxed);
 }
 
-bool ringbuf_is_empty_approx(const ringbuf_t *rb) {
+bool ringbuf_is_empty_approx(const struct ringbuf *rb)
+{
     size_t w = atomic_load_explicit(&rb->write_idx, memory_order_acquire);
     size_t r = atomic_load_explicit(&rb->read_idx, memory_order_acquire);
     return (ptrdiff_t)(w - r) <= 0;
 }
 
-bool ringbuf_is_full_approx(const ringbuf_t *rb) {
+bool ringbuf_is_full_approx(const struct ringbuf *rb)
+{
     size_t w = atomic_load_explicit(&rb->write_idx, memory_order_acquire);
     size_t r = atomic_load_explicit(&rb->read_idx, memory_order_acquire);
     return (ptrdiff_t)(w - r) >= (ptrdiff_t)rb->capacity;
 }
 
 #ifdef RINGBUF_TEST_HOOKS
-void ringbuf_test_seed_counters(ringbuf_t *rb, size_t start) {
+void ringbuf_test_seed_counters(struct ringbuf *rb, size_t start)
+{
     atomic_store_explicit(&rb->write_idx, start, memory_order_relaxed);
     atomic_store_explicit(&rb->read_idx, start, memory_order_relaxed);
     rb->cached_read = start;
