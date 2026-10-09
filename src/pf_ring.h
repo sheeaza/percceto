@@ -21,7 +21,7 @@
  * makes the lap check below work, and it sidesteps the
  * full-versus-empty ambiguity of wrapped indices.
  *
- * Publication is per record, because producers claim space in order but
+ * Publication is per record, because producers reserve space in order but
  * finish copying out of order. Each record starts with an 8-byte atomic
  * tag, `(lap << 32) | len`, written release-last. A reader at absolute
  * position p accepts a record only if its lap equals `p >> log2cap`,
@@ -40,10 +40,10 @@
  * struct pf_rec_hdr - The tag every record begins with.
  * @tag: `(lap << 32) | len`, as described above.
  *
- * Owned by pf_ring, not by the code storing records in it: pf_ring_publish
+ * Owned by pf_ring, not by the code storing records in it: pf_ring_submit
  * writes @tag release-last and the reader's lap check is a load of it, so
- * a producer claims space for this header plus its payload, fills only the
- * payload, and leaves @tag alone. That split is what makes publication
+ * a producer reserves space for this header plus its payload, fills only
+ * the payload, and leaves @tag alone. That split is what makes publication
  * atomic per record.
  *
  * Callers embed this as their record's first member -- see struct pf_rec in
@@ -73,7 +73,7 @@ struct pf_ring {
      * instead. */
     bool overwrite;
 
-    _Atomic uint64_t head; /* next byte to claim */
+    _Atomic uint64_t head; /* next byte to reserve */
     _Atomic uint64_t tail; /* oldest byte the reader still needs */
     _Atomic uint64_t dropped;
     _Atomic uint64_t resyncs;
@@ -105,39 +105,57 @@ int pf_ring_init(struct pf_ring *r, size_t want_bytes, bool overwrite);
 void pf_ring_destroy(struct pf_ring *r);
 
 /**
- * pf_ring_claim() - Reserve space for one record.
- * @r: Ring.
- * @need: Record size including the tag; must be 8-byte aligned and at
- *      most %PF_REC_MAX.
- * @off_out: Receives the record's absolute position, to hand to
- *      pf_ring_publish().
+ * struct pf_rec_res - A reservation held between reserve and submit.
+ * @rec: Where to write the record, or %NULL if it was dropped.
+ * @tag: The tag pf_ring_submit() will store. Opaque to the caller.
  *
- * Reserves a byte range owned exclusively by the caller, who may then
- * fill it concurrently with other producers filling theirs. Writes the
- * payload after the %struct pf_rec_hdr the record opens with, leaving that
- * header for pf_ring_publish().
+ * @tag cannot simply live in @rec until submit: a tag carrying a nonzero
+ * length is exactly what the reader accepts, so a half-filled record would
+ * read as published. Nor can submit recompute it from @rec alone -- a
+ * pointer into the mapping yields `pos & mask`, neither the lap nor the
+ * length -- and recovering the lap from @head would get it wrong for a
+ * producer delayed a full lap, stamping a live record's lap with this
+ * record's length. Keeping it here, outside the ring, is what makes a
+ * lapped producer's submit land as a stale tag the reader rejects.
  *
- * Without @overwrite this claims with a compare-exchange rather than a
- * fetch-add, so that a claim refused for lack of space leaves @head
- * untouched. A fetch-add would advance @head first and then have nowhere
- * to put a valid tag, leaving a permanent hole that the reader could
- * never walk past.
- *
- * Return: Pointer to the record start, or %NULL if the record was
- * dropped (only without @overwrite, reader too far behind).
+ * Two words, so it returns in registers rather than through memory.
  */
-uint8_t *pf_ring_claim(struct pf_ring *r, uint32_t need, uint64_t *off_out);
+struct pf_rec_res {
+    struct pf_rec_hdr *rec;
+    uint64_t tag;
+};
 
 /**
- * pf_ring_publish() - Make a filled record visible to the reader.
+ * pf_ring_reserve() - Reserve space for one record.
  * @r: Ring.
- * @off: Absolute position from pf_ring_claim().
- * @need: Same size passed to pf_ring_claim().
+ * @need: Record size including the header; must be 8-byte aligned and at
+ *      most %PF_REC_MAX.
+ *
+ * Reserves a byte range owned exclusively by the caller, who may then fill
+ * it concurrently with other producers filling theirs. Write the payload
+ * after the returned header and leave the header itself alone; it is
+ * pf_ring_submit()'s to store.
+ *
+ * Without @overwrite this reserves with a compare-exchange rather than a
+ * fetch-add, so that a refusal for lack of space leaves @head untouched. A
+ * fetch-add would advance @head first and then have nowhere to put a valid
+ * tag, leaving a permanent hole that the reader could never walk past.
+ *
+ * Return: The reservation, whose @rec is %NULL if the record was dropped
+ * (only without @overwrite, reader too far behind). A dropped reservation
+ * must not be submitted.
+ */
+struct pf_rec_res pf_ring_reserve(struct pf_ring *r, uint32_t need);
+
+/**
+ * pf_ring_submit() - Make a filled record visible to the reader.
+ * @r: Ring.
+ * @res: Reservation from pf_ring_reserve(), whose @rec is not %NULL.
  *
  * Release-stores the tag, so a reader that acquire-loads it sees the
  * fully written payload.
  */
-void pf_ring_publish(struct pf_ring *r, uint64_t off, uint32_t need);
+void pf_ring_submit(struct pf_ring *r, struct pf_rec_res res);
 
 /**
  * pf_ring_read_begin() - Start a walk at the oldest unconsumed record.

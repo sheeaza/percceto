@@ -113,28 +113,29 @@ static void test_straddle(void)
     /* Walk head to 32 bytes before the end, then write a 64-byte record
      * so 32 bytes land past cap. */
     const uint32_t big = 64;
-    uint64_t off;
-    uint8_t *rec;
+    struct pf_rec_res res;
     while (true) {
         uint64_t head = atomic_load_explicit(&r.head, memory_order_relaxed);
         if (head % r.cap == r.cap - 32)
             break;
-        rec = pf_ring_claim(&r, 32, &off);
-        CHECK(rec != NULL, "claim filler");
-        fill_rec(rec, off, 32 - T_PAYLOAD);
-        pf_ring_publish(&r, off, 32);
+        res = pf_ring_reserve(&r, 32);
+        CHECK(res.rec != NULL, "reserve filler");
+        fill_rec((uint8_t *)res.rec, head, 32 - T_PAYLOAD);
+        pf_ring_submit(&r, res);
         pf_ring_trim(&r, r.cap / 2);
     }
 
-    uint64_t straddle_off;
-    rec = pf_ring_claim(&r, big, &straddle_off);
-    CHECK(rec != NULL, "claim straddling record");
-    CHECK(straddle_off % r.cap == r.cap - 32, "record starts 32B before end");
-    fill_rec(rec, 0xFEEDFACEu, big - T_PAYLOAD);
-    pf_ring_publish(&r, straddle_off, big);
+    res = pf_ring_reserve(&r, big);
+    CHECK(res.rec != NULL, "reserve straddling record");
+    /* Offset within the buffer, which is all this check needs; the
+     * absolute position lives in the reservation's tag. */
+    size_t straddle_off = (size_t)((uint8_t *)res.rec - r.base);
+    CHECK(straddle_off == r.cap - 32, "record starts 32B before end");
+    fill_rec((uint8_t *)res.rec, 0xFEEDFACEu, big - T_PAYLOAD);
+    pf_ring_submit(&r, res);
 
     /* The tail half must be visible at the front of the buffer. */
-    CHECK(memcmp(r.base + (straddle_off & r.mask) + 32, r.base, 32) == 0,
+    CHECK(memcmp(r.base + straddle_off + 32, r.base, 32) == 0,
           "bytes past cap alias the front");
 
     /* And the reader must see it as one undivided record. */
@@ -176,14 +177,14 @@ static void *producer_fn(void *p)
          * straddles happen at many different offsets. */
         uint32_t payload = (uint32_t)((a->id * 13u + i * 7u) % 200u);
         uint32_t need = rec_size(payload);
-        uint64_t off;
-        uint8_t *rec = pf_ring_claim(a->ring, need, &off);
-        if (!rec)
+        struct pf_rec_res res = pf_ring_reserve(a->ring, need);
+        if (!res.rec)
             continue; /* dropping-mode drop; counted by the ring */
         /* Sequence encodes which producer wrote it, so a torn record
          * shows up as a payload mismatch rather than going unnoticed. */
-        fill_rec(rec, ((uint64_t)a->id << 32) | i, need - T_PAYLOAD);
-        pf_ring_publish(a->ring, off, need);
+        fill_rec((uint8_t *)res.rec, ((uint64_t)a->id << 32) | i,
+                 need - T_PAYLOAD);
+        pf_ring_submit(a->ring, res);
         a->published++;
     }
     return NULL;
@@ -348,12 +349,11 @@ static void test_drop_accounting(void)
     const uint32_t need = 64;
     uint64_t ok = 0;
     for (unsigned i = 0; i < 100000; i++) {
-        uint64_t off;
-        uint8_t *rec = pf_ring_claim(&r, need, &off);
-        if (!rec)
+        struct pf_rec_res res = pf_ring_reserve(&r, need);
+        if (!res.rec)
             continue;
-        fill_rec(rec, i, need - T_PAYLOAD);
-        pf_ring_publish(&r, off, need);
+        fill_rec((uint8_t *)res.rec, i, need - T_PAYLOAD);
+        pf_ring_submit(&r, res);
         ok++;
     }
 
@@ -364,11 +364,11 @@ static void test_drop_accounting(void)
     CHECK(ok + dropped == 100000, "all attempts accounted for");
 
     /* head must not have advanced past what was actually published: a
-     * refused claim has to leave no hole. */
+     * refused reservation has to leave no hole. */
     uint64_t head = atomic_load_explicit(&r.head, memory_order_relaxed);
     CHECK(head == ok * need,
-          "no gap left by refused claims: head=%" PRIu64 " want=%" PRIu64, head,
-          ok * need);
+          "no gap left by refused reservations: head=%" PRIu64 " want=%" PRIu64,
+          head, ok * need);
 
     /* Draining frees space, so claims must succeed again. */
     struct pf_ring_reader rd;
@@ -378,8 +378,8 @@ static void test_drop_accounting(void)
     }
     pf_ring_read_commit(&r, &rd);
 
-    uint64_t off;
-    CHECK(pf_ring_claim(&r, need, &off) != NULL, "claim succeeds after drain");
+    CHECK(pf_ring_reserve(&r, need).rec != NULL,
+          "reserve succeeds after drain");
 
     pf_ring_destroy(&r);
     printf("  ok\n");
@@ -404,11 +404,10 @@ static void test_uncontended_wraps(void)
      * boundary, exactly as the snapshot-mode drain thread does. */
     for (unsigned i = 0; i < 5000; i++) {
         uint32_t need = rec_size(i % 100u);
-        uint64_t off;
-        uint8_t *rec = pf_ring_claim(&r, need, &off);
-        CHECK(rec != NULL, "claim %u", i);
-        fill_rec(rec, i, need - T_PAYLOAD);
-        pf_ring_publish(&r, off, need);
+        struct pf_rec_res res = pf_ring_reserve(&r, need);
+        CHECK(res.rec != NULL, "reserve %u", i);
+        fill_rec((uint8_t *)res.rec, i, need - T_PAYLOAD);
+        pf_ring_submit(&r, res);
         if (i % 16 == 0)
             pf_ring_trim(&r, r.cap / 4 * 3);
     }

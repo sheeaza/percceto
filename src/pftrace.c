@@ -96,7 +96,7 @@
  */
 struct pf_rec {
     /* pf_ring's publication tag. Claimed and skipped, never touched:
-     * pf_ring_publish writes it once the fields below are in place. */
+     * pf_ring_submit writes it once the fields below are in place. */
     struct pf_rec_hdr hdr;
 
     uint64_t ts; /* timestamp, ns */
@@ -149,7 +149,7 @@ _Static_assert((PF_REC_WORST + 7u) / 8u * 8u == PF_REC_MAX,
  * covers a worthwhile span each time instead of reclaiming the handful of
  * bytes just produced and being re-triggered by the next event.
  *
- * Correctness does not depend on this running often enough. pf_ring_claim
+ * Correctness does not depend on this running often enough. pf_ring_reserve
  * keeps @tail on a recoverable boundary itself, as part of the same atomic
  * step that moves @head; this only controls how much history a dump holds. */
 #define PF_SNAPSHOT_RETAIN_NUM 3
@@ -685,7 +685,7 @@ static void *drain_thread_fn(void *arg)
 /* Nudges the drain thread once the ring passes the watermark.
  *
  * Continuous mode only. Snapshot mode needs no wake for correctness:
- * pf_ring_claim keeps @tail on a recoverable boundary itself, as part of
+ * pf_ring_reserve keeps @tail on a recoverable boundary itself, as part of
  * the same atomic step that moves @head, so there is no window for a
  * producer to slip past a decision made out here. Its drain thread still
  * runs on the interval timer to keep the retained window from growing to
@@ -713,9 +713,10 @@ static void maybe_wake_drain(struct pf_trace *t, uint32_t need)
 }
 
 /* --- Event emission (hot path) ------------------------------------------
- * Claim a byte range, fill it, publish it. No allocation, no I/O, and no
+ * Reserve a byte range, fill it, submit it. No allocation, no I/O, and no
  * lock: concurrent producers own disjoint ranges, so their copies proceed
- * in parallel and only the claim itself is serialized, by one atomic. */
+ * in parallel and only the reservation itself is serialized, by one
+ * atomic. */
 
 static size_t clamp_len(struct pf_trace *t, const char *s, size_t *len_out)
 {
@@ -743,21 +744,21 @@ static void emit_event(struct pf_trace *t, uint8_t type, uint64_t track_uuid,
     uint32_t need = (uint32_t)round_up8(offsetof(struct pf_rec, body) +
                                         (has_value ? 8u : 0u) + nlen + clen);
 
-    /* Timestamp before claiming, not after. The claim can spin briefly
-     * when producers collide, and a timestamp taken afterwards would
-     * include that delay -- attributing contention in the tracer to the
-     * code being traced. Taken first, it is the caller's moment, and the
-     * cost of the claim lands between this event and the next rather than
-     * inside this one. Events can then reach the ring in a different order
-     * than their timestamps, which is fine: Perfetto sorts by timestamp. */
+    /* Timestamp before reserving, not after. The reservation can spin
+     * briefly when producers collide, and a timestamp taken afterwards
+     * would include that delay -- attributing contention in the tracer to
+     * the code being traced. Taken first, it is the caller's moment, and
+     * the cost of the reservation lands between this event and the next
+     * rather than inside this one. Events can then reach the ring in a
+     * different order than their timestamps, which is fine: Perfetto sorts
+     * by timestamp. */
     uint64_t ts = now_ns();
 
-    uint64_t off;
-    uint8_t *rec = pf_ring_claim(&t->ring, need, &off);
-    if (!rec)
+    struct pf_rec_res res = pf_ring_reserve(&t->ring, need);
+    if (!res.rec)
         return; /* continuous mode, reader behind; counted as dropped */
 
-    struct pf_rec *r = (struct pf_rec *)rec;
+    struct pf_rec *r = (struct pf_rec *)res.rec;
     r->ts = ts;
     r->track = track_uuid;
     r->type = type;
@@ -776,7 +777,7 @@ static void emit_event(struct pf_trace *t, uint8_t type, uint64_t track_uuid,
     if (clen)
         memcpy(body + nlen, category, clen);
 
-    pf_ring_publish(&t->ring, off, need);
+    pf_ring_submit(&t->ring, res);
     maybe_wake_drain(t, need);
 }
 

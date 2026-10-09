@@ -128,61 +128,68 @@ void pf_ring_destroy(struct pf_ring *r)
     r->cap = 0;
 }
 
-uint8_t *pf_ring_claim(struct pf_ring *r, uint32_t need, uint64_t *off_out)
+/* The reservation for a record of @len bytes at absolute @pos, with the
+ * tag submit will store precomputed -- see struct pf_rec_res. */
+static struct pf_rec_res res_at(const struct pf_ring *r, uint64_t pos,
+                                uint32_t len)
+{
+    void *at = r->base + (pos & r->mask);
+    return (struct pf_rec_res){ .rec = at, .tag = tag_make(r, pos, len) };
+}
+
+struct pf_rec_res pf_ring_reserve(struct pf_ring *r, uint32_t need)
 {
     uint64_t off;
 
     if (r->overwrite) {
         /* Snapshot mode: overwriting the oldest record is intended, so
-         * the claim cannot fail and needs no loop. */
+         * the reservation cannot fail and needs no loop. */
         off = atomic_fetch_add_explicit(&r->head, need, memory_order_relaxed);
 
-        /* Keep @tail inside the window this claim leaves intact.
+        /* Keep @tail inside the window this reservation leaves intact.
          *
          * Nothing stops producers from lapping it: that is the mode's
          * defining behaviour. But @tail must stay on a record boundary that
          * has not been overwritten, or the reader has no position it can
          * walk from. Checking here rather than in a caller's "am I near the
          * end" heuristic is what makes that hold -- the check sees the
-         * @head this claim actually produced, so there is no window between
-         * deciding and claiming for another producer to slip through.
+         * @head this reservation actually produced, so there is no window
+         * between deciding and reserving for another producer to slip
+         * through.
          *
          * Trimming to half the ring, not to the brink: @tail only has to be
-         * recoverable, and leaving a margin means the next few claims find
-         * it already correct and skip the walk entirely. */
+         * recoverable, and leaving a margin means the next few reservations
+         * find it already correct and skip the walk entirely. */
         uint64_t tail = atomic_load_explicit(&r->tail, memory_order_relaxed);
         if (off + need - tail > r->cap)
             pf_ring_trim(r, r->cap / 2);
-    } else {
-        /* Continuous mode: decide before moving @head, so that a refusal
-         * leaves no gap. */
-        off = atomic_load_explicit(&r->head, memory_order_relaxed);
-        for (;;) {
-            uint64_t tail =
-                atomic_load_explicit(&r->tail, memory_order_acquire);
-            if (off + need - tail > r->cap) {
-                atomic_fetch_add_explicit(&r->dropped, 1, memory_order_relaxed);
-                return NULL;
-            }
-            /* On failure @off is reloaded with the current head, so the
-             * space check is redone against it. */
-            if (atomic_compare_exchange_weak_explicit(
-                    &r->head, &off, off + need, memory_order_relaxed,
-                    memory_order_relaxed))
-                break;
-        }
+
+        return res_at(r, off, need);
     }
 
-    *off_out = off;
-    return r->base + (off & r->mask);
+    /* Continuous mode: decide before moving @head, so that a refusal
+     * leaves no gap. */
+    off = atomic_load_explicit(&r->head, memory_order_relaxed);
+    for (;;) {
+        uint64_t tail = atomic_load_explicit(&r->tail, memory_order_acquire);
+        if (off + need - tail > r->cap) {
+            atomic_fetch_add_explicit(&r->dropped, 1, memory_order_relaxed);
+            return (struct pf_rec_res){ .rec = NULL };
+        }
+        /* On failure @off is reloaded with the current head, so the
+         * space check is redone against it. */
+        if (atomic_compare_exchange_weak_explicit(&r->head, &off, off + need,
+                                                  memory_order_relaxed,
+                                                  memory_order_relaxed))
+            return res_at(r, off, need);
+    }
 }
 
-void pf_ring_publish(struct pf_ring *r, uint64_t off, uint32_t need)
+void pf_ring_submit(struct pf_ring *r, struct pf_rec_res res)
 {
-    /* Release: everything written into the record above is visible to any
-     * reader that acquire-loads this tag. */
-    atomic_store_explicit(tag_at(r, off), tag_make(r, off, need),
-                          memory_order_release);
+    /* Release: everything written into the record is visible to any reader
+     * that acquire-loads this tag. */
+    atomic_store_explicit(&res.rec->tag, res.tag, memory_order_release);
     atomic_fetch_add_explicit(&r->published, 1, memory_order_relaxed);
 }
 

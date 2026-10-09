@@ -6,7 +6,7 @@
  * and only matters in continuous mode, where it sets the rate above which
  * events start getting dropped.
  *
- * Single-threaded, but measuring the same claim path a multi-threaded
+ * Single-threaded, but measuring the same reserve path a multi-threaded
  * caller takes: the fetch-add is unconditional, so this is the uncontended
  * cost of the real thing rather than a cheaper special case. Contention
  * adds to it; see test_stress for behaviour under several producers.
@@ -34,7 +34,7 @@ int main(void)
 {
     /* Producer cost with no draining at all: snapshot mode, ring big
      * enough that the trim thread stays idle. This is the pure
-     * claim+memcpy+publish path. */
+     * reserve+memcpy+submit path. */
     const char *path = "bench.pftrace";
     unlink(path);
 
