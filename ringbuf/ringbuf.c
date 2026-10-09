@@ -25,11 +25,30 @@ struct ringbuf {
     atomic_int *slot_lock;
     atomic_size_t dropped_count;
 
-    _Alignas(64) atomic_size_t write_idx; /* producer-owned */
-    size_t cached_read; /* producer's private cache of read_idx */
+    /* Single-writer: only the producer ever stores to write_idx, in either
+     * mode, which is why it keeps a cheap relaxed-load / release-store pair
+     * rather than a CAS. */
+    _Alignas(64) atomic_size_t write_idx;
+    size_t cached_read; /* producer-private cache of read_idx */
 
-    _Alignas(64) atomic_size_t read_idx; /* consumer-owned */
-    size_t cached_write; /* consumer's private cache of write_idx */
+    /* Retirement counter, and the one place the clean SPSC split breaks.
+     *
+     * In lossless mode the consumer is its only writer and a blind release
+     * store suffices. In overwrite mode the producer writes it too, when it
+     * evicts, so read_idx is multi-writer and both sides must advance it
+     * via CAS(n -> n+1). Exactly one CAS per n can win, which is what makes
+     * a message either received or dropped and never both.
+     *
+     * The cache-line padding is still worth it despite that contention:
+     * evictions only occur when the buffer is full, so the common case
+     * leaves this line to the consumer alone. */
+    _Alignas(64) atomic_size_t read_idx;
+
+    /* Consumer-private cache of write_idx. Plain size_t, deliberately: the
+     * producer never touches it. This is also what makes ringbuf_pop
+     * non-re-entrant -- two concurrent poppers would race here even though
+     * read_idx itself is CAS-safe. */
+    size_t cached_write;
 
     /* Slot data, then (in overwrite mode only) the slot_lock array. Both
      * live in this one allocation, so the control block and the slots it

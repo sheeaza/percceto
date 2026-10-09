@@ -11,6 +11,12 @@
  * ringbuf_push(); exactly one (possibly different) thread may call
  * ringbuf_pop(). Calling either from more than one thread concurrently
  * is undefined behavior.
+ *
+ * This holds in both modes. Internally, overwrite_on_full makes the read
+ * index multi-writer -- the producer advances it when it evicts -- but
+ * that does not widen the contract: ringbuf_pop keeps consumer-private
+ * non-atomic state, so a second concurrent popper races regardless of
+ * how the index itself is synchronized.
  */
 
 struct ringbuf;

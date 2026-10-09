@@ -69,6 +69,32 @@ handle that, and both must hold together:
   `read_idx` from moving backwards over a concurrent eviction (which would hand
   out the same message twice).
 
+### SPSC at the API, multi-writer `read_idx` inside
+
+These are two separate claims and it is easy to conflate them. The internal
+contention on `read_idx` does **not** make the buffer SPMC, and a reader who
+infers otherwise from the eviction CAS will ship a race.
+
+- **Internally**, `read_idx` is a multi-writer retirement counter. Two threads
+  race to retire message *n* via `CAS(n -> n+1)`: the producer evicting (in
+  `ringbuf_push`) and the consumer receiving (in `ringbuf_pop`). Exactly one
+  wins per *n*, which is where `received + dropped == pushed` comes from.
+  "MPSC on `read_idx`" describes this more tightly than "SPMC" — the extra
+  writer is the producer, not an extra consumer.
+- **Externally**, `pop` is still single-caller. `read_idx` being CAS-safe is
+  not sufficient, because `pop` also reads and writes `cached_write`, a plain
+  non-atomic `size_t`. One consumer owns it exclusively; two consumers race on
+  it immediately (tsan flags it on the first contended pop). The producer never
+  touches it, so the multi-writer `read_idx` costs nothing there.
+
+The asymmetry is deliberate: the producer writes consumer-owned state, but never
+the reverse. `write_idx` stays single-writer in both modes, which is why it keeps
+a cheap relaxed-load / release-store pair while `read_idx` needs the CAS.
+
+Real SPMC would mean dropping or atomicizing `cached_write` and auditing the
+slot locks for consumer-vs-consumer overlap, which they were never designed for.
+The eviction machinery is not the obstacle.
+
 **Counters are monotonic and mapped to slots with `& mask`, so they wrap at
 `SIZE_MAX`.** Emptiness is therefore a *signed* comparison,
 `(ptrdiff_t)(cached_write - read_idx) <= 0`, never `read_idx >= cached_write` —
