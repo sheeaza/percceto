@@ -1,6 +1,8 @@
 #define _POSIX_C_SOURCE 200112L
 
 #include <stdatomic.h>
+#include <stddef.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -10,13 +12,16 @@ struct ringbuf {
     size_t capacity;
     size_t mask;
     size_t slot_size;
-    char *buffer;
     bool overwrite_on_full;
 
-    /* One lock per slot, only allocated when overwrite_on_full is set.
+    /* One lock per slot, only present when overwrite_on_full is set.
      * Guards the single physical slot where an in-flight ringbuf_pop can
      * overlap with a ringbuf_push eviction (see design notes in the repo
-     * plan). 0 = free, 1 = held. */
+     * plan). 0 = free, 1 = held.
+     *
+     * Points into the tail after the slot data, or NULL in lossless mode.
+     * Kept as a pointer rather than recomputed from capacity/slot_size so
+     * the hot paths index it directly. */
     atomic_int *slot_lock;
     atomic_size_t dropped_count;
 
@@ -25,6 +30,13 @@ struct ringbuf {
 
     _Alignas(64) atomic_size_t read_idx; /* consumer-owned */
     size_t cached_write; /* consumer's private cache of write_idx */
+
+    /* Slot data, then (in overwrite mode only) the slot_lock array. Both
+     * live in this one allocation, so the control block and the slots it
+     * describes share cache lines at the boundary instead of sitting in
+     * unrelated heap regions, and create/destroy are a single
+     * malloc/free. */
+    _Alignas(64) char tail[];
 };
 
 static size_t next_pow2(size_t v)
@@ -37,6 +49,24 @@ static size_t next_pow2(size_t v)
     return p;
 }
 
+/* a + b, or 0 on overflow. 0 is never a legitimate total here (the header
+ * alone is non-empty), so callers treat it as failure. */
+static size_t add_checked(size_t a, size_t b)
+{
+    if (a > SIZE_MAX - b)
+        return 0;
+    return a + b;
+}
+
+/* Rounds up to a power-of-two alignment, or 0 on overflow. */
+static size_t align_up(size_t v, size_t align)
+{
+    size_t sum = add_checked(v, align - 1);
+    if (sum == 0)
+        return 0;
+    return sum & ~(align - 1);
+}
+
 struct ringbuf *ringbuf_create(size_t slot_size, size_t min_capacity,
                                bool overwrite_on_full)
 {
@@ -45,49 +75,58 @@ struct ringbuf *ringbuf_create(size_t slot_size, size_t min_capacity,
 
     size_t capacity = next_pow2(min_capacity);
 
-    struct ringbuf *rb = NULL;
-    if (posix_memalign((void **)&rb, 64, sizeof(*rb)) != 0)
+    /* One allocation: header, then capacity*slot_size bytes of slots, then
+     * the optional lock array. Every step is overflow-checked because
+     * slot_size and min_capacity are caller-supplied; an unchecked
+     * capacity*slot_size could wrap and under-allocate the buffer. */
+    if (slot_size > SIZE_MAX / capacity)
         return NULL;
+    size_t data_bytes = capacity * slot_size;
 
-    char *buffer = NULL;
-    if (posix_memalign((void **)&buffer, 64, capacity * slot_size) != 0) {
-        free(rb);
-        return NULL;
-    }
-
-    atomic_int *slot_lock = NULL;
+    size_t tail_bytes = data_bytes;
+    size_t lock_offset = 0;
     if (overwrite_on_full) {
-        slot_lock = malloc(capacity * sizeof(*slot_lock));
-        if (!slot_lock) {
-            free(buffer);
-            free(rb);
+        /* The lock array follows the slot data, so its start has to be
+         * aligned for atomic_int -- slot_size carries no such guarantee. */
+        lock_offset = align_up(data_bytes, _Alignof(atomic_int));
+        if (lock_offset == 0)
             return NULL;
-        }
-        for (size_t i = 0; i < capacity; i++)
-            atomic_init(&slot_lock[i], 0);
+        if (capacity > SIZE_MAX / sizeof(atomic_int))
+            return NULL;
+        tail_bytes = add_checked(lock_offset, capacity * sizeof(atomic_int));
+        if (tail_bytes == 0)
+            return NULL;
     }
+
+    size_t total = add_checked(offsetof(struct ringbuf, tail), tail_bytes);
+    if (total == 0)
+        return NULL;
+
+    struct ringbuf *rb = NULL;
+    if (posix_memalign((void **)&rb, _Alignof(struct ringbuf), total) != 0)
+        return NULL;
 
     rb->capacity = capacity;
     rb->mask = capacity - 1;
     rb->slot_size = slot_size;
-    rb->buffer = buffer;
     rb->overwrite_on_full = overwrite_on_full;
-    rb->slot_lock = slot_lock;
+    rb->slot_lock = overwrite_on_full ?
+                        (atomic_int *)(void *)(rb->tail + lock_offset) :
+                        NULL;
     atomic_init(&rb->dropped_count, (size_t)0);
     atomic_init(&rb->write_idx, (size_t)0);
     rb->cached_read = 0;
     atomic_init(&rb->read_idx, (size_t)0);
     rb->cached_write = 0;
 
+    for (size_t i = 0; overwrite_on_full && i < capacity; i++)
+        atomic_init(&rb->slot_lock[i], 0);
+
     return rb;
 }
 
 void ringbuf_destroy(struct ringbuf *rb)
 {
-    if (!rb)
-        return;
-    free(rb->slot_lock);
-    free(rb->buffer);
     free(rb);
 }
 
@@ -136,14 +175,14 @@ bool ringbuf_push(struct ringbuf *rb, const void *data)
                 rb->cached_read = fresh_read;
             }
 
-            memcpy(rb->buffer + idx * rb->slot_size, data, rb->slot_size);
+            memcpy(rb->tail + idx * rb->slot_size, data, rb->slot_size);
             atomic_store_explicit(&rb->slot_lock[idx], 0, memory_order_release);
             atomic_store_explicit(&rb->write_idx, next, memory_order_release);
             return true;
         }
     }
 
-    memcpy(rb->buffer + idx * rb->slot_size, data, rb->slot_size);
+    memcpy(rb->tail + idx * rb->slot_size, data, rb->slot_size);
     atomic_store_explicit(&rb->write_idx, next, memory_order_release);
     return true;
 }
@@ -173,7 +212,7 @@ bool ringbuf_pop(struct ringbuf *rb, void *data)
                 memory_order_relaxed))
             return false; /* producer is evicting this exact slot right now */
 
-        memcpy(data, rb->buffer + idx * rb->slot_size, rb->slot_size);
+        memcpy(data, rb->tail + idx * rb->slot_size, rb->slot_size);
         atomic_store_explicit(&rb->slot_lock[idx], 0, memory_order_release);
 
         /* read_idx has two writers in overwrite mode (us, and the producer
@@ -190,7 +229,7 @@ bool ringbuf_pop(struct ringbuf *rb, void *data)
         return true;
     }
 
-    memcpy(data, rb->buffer + idx * rb->slot_size, rb->slot_size);
+    memcpy(data, rb->tail + idx * rb->slot_size, rb->slot_size);
     atomic_store_explicit(&rb->read_idx, read_idx + 1, memory_order_release);
     return true;
 }

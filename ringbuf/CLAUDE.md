@@ -81,6 +81,19 @@ Capacity is rounded up to a power of two (minimum 2) so the mask works.
 a private cache of the other's counter (`cached_read` / `cached_write`) to avoid
 touching the peer's line on every operation.
 
+**One allocation per buffer.** The slot data and the optional lock array live in
+a `_Alignas(64) char tail[]` flexible array member, so `ringbuf_create` is a
+single `posix_memalign` and `ringbuf_destroy` a single `free` — there is no
+separate `buffer` pointer to chase. The lock array starts at `tail +
+align_up(capacity * slot_size, _Alignof(atomic_int))`, since `slot_size` carries
+no alignment guarantee of its own; `slot_lock` caches that address rather than
+recomputing it on the hot path.
+
+Because `slot_size` and `min_capacity` are caller-supplied, every step of the
+size computation is overflow-checked (`add_checked`, `align_up`, and the two
+division guards). An unchecked `capacity * slot_size` would wrap and
+under-allocate, turning every subsequent slot write into a heap overflow.
+
 ### Test hooks
 
 `RINGBUF_TEST_HOOKS` exposes `ringbuf_test_seed_counters()`, which parks both
