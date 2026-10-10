@@ -17,6 +17,7 @@ set(CMAKE_C_EXTENSIONS OFF)
 
 option(RINGBUF_BUILD_TESTS "Build the ringbuf test binary" ON)
 option(RINGBUF_BUILD_TSAN "Also build a ThreadSanitizer test binary" OFF)
+option(RINGBUF_BUILD_BENCH "Also build the benchmark binary" OFF)
 
 find_package(Threads REQUIRED)
 
@@ -112,4 +113,29 @@ if(RINGBUF_BUILD_TESTS)
             Threads::Threads)
         add_test(NAME ringbuf_mutex_tsan COMMAND test_ringbuf_mutex_tsan)
     endif()
+endif()
+
+# Benchmark. Opt-in and OFF by default: it runs for tens of seconds and is a
+# measurement, not a pass/fail check, so it is deliberately NOT an add_test
+# entry -- `ctest` stays fast and its results stay meaningful.
+#
+#   cmake -B build -DRINGBUF_BUILD_BENCH=ON && cmake --build build -j
+#   ./build/bench_ringbuf
+#
+# Compiles ringbuf.c directly for symmetry with the test targets. Always -O2
+# regardless of build type: benchmarking a -O0 or -Og build measures nothing
+# useful, and a stray Debug configure would silently produce garbage numbers.
+if(RINGBUF_BUILD_BENCH)
+    # Pins threads to fixed CPUs via pthread_setaffinity_np, which is a glibc
+    # extension -- hence the _GNU_SOURCE the source defines for itself. Fail
+    # at configure time rather than with a confusing compile error.
+    if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        message(FATAL_ERROR
+            "RINGBUF_BUILD_BENCH needs pthread_setaffinity_np (Linux); "
+            "got ${CMAKE_SYSTEM_NAME}.")
+    endif()
+
+    add_executable(bench_ringbuf bench_ringbuf.c ringbuf.c)
+    target_compile_options(bench_ringbuf PRIVATE ${RINGBUF_WARNINGS} -O2 -g)
+    target_link_libraries(bench_ringbuf PRIVATE Threads::Threads)
 endif()

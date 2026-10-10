@@ -34,6 +34,29 @@ four and the anchored form matters more than before.
 `build/` already holds a **Unix Makefiles** cache. `-G Ninja` will refuse to
 reconfigure over it; `rm -rf build` first if you want to switch generators.
 
+### Benchmark
+
+Opt-in, and deliberately **not** a CTest entry — it is a measurement, not a
+pass/fail check, and it runs for tens of seconds:
+
+```bash
+cmake -B build -DRINGBUF_BUILD_BENCH=ON && cmake --build build -j
+./build/bench_ringbuf
+```
+
+Always compiled `-O2` regardless of `CMAKE_BUILD_TYPE`, so a stray Debug
+configure cannot silently produce meaningless numbers. Linux-only: it pins the
+producer and consumer to fixed CPUs with `pthread_setaffinity_np`, without which
+a mid-run migration shows up as a throughput cliff unrelated to the code. CMake
+fails at configure time on other platforms.
+
+`bench_ringbuf.c` measures `ringbuf` against an internal `struct mq` baseline —
+a mutex-protected ring with the *same* non-blocking contract (lock, check, copy,
+unlock; `false` when full/empty). That baseline is intentionally not a condvar
+blocking queue: the point is to isolate the cost of the lock, not futex wakeup
+latency. Note it is a separate toy struct, unrelated to `ringbuf_mutex.{c,h}`,
+which the benchmark does not yet cover.
+
 ### Running a single test case
 
 Not supported. `main(void)` in `test_ringbuf.c` and `test_ringbuf_mutex.c` takes
@@ -70,8 +93,8 @@ the single allocation applies to both.
 Single-producer / single-consumer lock-free ring buffer. Two interchangeable
 implementations (see "Two implementations" above): `ringbuf.{c,h}` plus
 `ringbuf_mutex.{c,h}`, with `test_ringbuf.c` and `test_ringbuf_mutex.c`
-mirroring each other case for case. CMake builds a static library per variant
-plus the test binaries.
+mirroring each other case for case, and `bench_ringbuf.c` alongside. CMake
+builds a static library per variant plus the test binaries.
 
 Exactly one thread may call `ringbuf_push`, exactly one may call `ringbuf_pop`.
 More than one on either side is UB — this is the premise the whole design rests
