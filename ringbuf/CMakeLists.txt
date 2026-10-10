@@ -51,6 +51,15 @@ target_include_directories(ringbuf PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_options(ringbuf PRIVATE ${RINGBUF_WARNINGS})
 target_link_libraries(ringbuf PUBLIC Threads::Threads)
 
+# Mutex variant: same structure and same external SPSC contract, but
+# overwrite mode is reconciled with one internal mutex instead of the
+# per-slot spinlocks and read_idx CAS. Independent target with prefixed
+# symbols, so both can be linked into one binary.
+add_library(ringbuf_mutex ringbuf_mutex.c ringbuf_mutex.h)
+target_include_directories(ringbuf_mutex PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_options(ringbuf_mutex PRIVATE ${RINGBUF_WARNINGS})
+target_link_libraries(ringbuf_mutex PUBLIC Threads::Threads)
+
 if(RINGBUF_BUILD_TESTS)
     enable_testing()
 
@@ -64,6 +73,14 @@ if(RINGBUF_BUILD_TESTS)
     target_compile_options(test_ringbuf PRIVATE ${RINGBUF_WARNINGS})
     target_link_libraries(test_ringbuf PRIVATE Threads::Threads)
     add_test(NAME ringbuf COMMAND test_ringbuf)
+
+    # Same deal for the mutex variant: compile ringbuf_mutex.c directly, do
+    # not link the ringbuf_mutex target, or the four wrap tests vanish.
+    add_executable(test_ringbuf_mutex ringbuf_mutex.c test_ringbuf_mutex.c)
+    target_compile_definitions(test_ringbuf_mutex PRIVATE RINGBUF_TEST_HOOKS)
+    target_compile_options(test_ringbuf_mutex PRIVATE ${RINGBUF_WARNINGS})
+    target_link_libraries(test_ringbuf_mutex PRIVATE Threads::Threads)
+    add_test(NAME ringbuf_mutex COMMAND test_ringbuf_mutex)
 
     if(RINGBUF_BUILD_TSAN)
         if(NOT CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
@@ -81,5 +98,18 @@ if(RINGBUF_BUILD_TESTS)
         target_link_options(test_ringbuf_tsan PRIVATE -fsanitize=thread)
         target_link_libraries(test_ringbuf_tsan PRIVATE Threads::Threads)
         add_test(NAME ringbuf_tsan COMMAND test_ringbuf_tsan)
+
+        # The real gate on the mutex variant: it is what proves the unlocked
+        # fast push path does not race a concurrent locked pop.
+        add_executable(test_ringbuf_mutex_tsan
+            ringbuf_mutex.c test_ringbuf_mutex.c)
+        target_compile_definitions(test_ringbuf_mutex_tsan PRIVATE
+            RINGBUF_TEST_HOOKS)
+        target_compile_options(test_ringbuf_mutex_tsan PRIVATE
+            ${RINGBUF_WARNINGS} -O1 -g -fsanitize=thread)
+        target_link_options(test_ringbuf_mutex_tsan PRIVATE -fsanitize=thread)
+        target_link_libraries(test_ringbuf_mutex_tsan PRIVATE
+            Threads::Threads)
+        add_test(NAME ringbuf_mutex_tsan COMMAND test_ringbuf_mutex_tsan)
     endif()
 endif()

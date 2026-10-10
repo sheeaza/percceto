@@ -1,0 +1,568 @@
+/*
+ * Tests for the mutex variant. Mirrors test_ringbuf.c case for case, so the
+ * two can be compared directly, with one deliberate divergence:
+ *
+ * In overwrite mode this variant promises push NEVER fails. So the overwrite
+ * producers below have no retry loop -- a false return is a hard failure,
+ * which is the whole point of the variant and must not be papered over by a
+ * spin. The consumers keep their spin loops, since pop still legitimately
+ * reports an empty buffer.
+ */
+
+#include <inttypes.h>
+#include <pthread.h>
+#include <sched.h>
+#include <stdatomic.h>
+#include <stdio.h>
+#include <string.h>
+
+#include "ringbuf_mutex.h"
+
+#define PAYLOAD_LEN 24
+
+struct message {
+    uint64_t seq;
+    unsigned char payload[PAYLOAD_LEN];
+};
+
+static void fill_payload(unsigned char *payload, uint64_t seq)
+{
+    for (int i = 0; i < PAYLOAD_LEN; i++)
+        payload[i] = (unsigned char)((seq + (uint64_t)i) & 0xFF);
+}
+
+static bool payload_ok(const unsigned char *payload, uint64_t seq)
+{
+    unsigned char expected[PAYLOAD_LEN];
+    fill_payload(expected, seq);
+    return memcmp(payload, expected, PAYLOAD_LEN) == 0;
+}
+
+/* Upper bound on consecutive failed push/pop attempts before a test declares
+ * a stall. Legitimate contention resolves within a few thousand yields even
+ * when the peer thread loses its timeslice, so this is a large safety margin
+ * -- but it is bounded, so a regression that wedges the buffer (e.g. an empty
+ * check that mis-reports forever) fails the suite instead of hanging it. */
+#define MAX_SPIN 2000000u
+
+/* ---- Lossless transfer (overwrite_on_full = false) ---- */
+
+struct lossless_producer_args {
+    struct ringbuf_mutex *rb;
+    uint64_t num_messages;
+    bool failed;
+    const char *label;
+};
+
+struct lossless_consumer_args {
+    struct ringbuf_mutex *rb;
+    uint64_t num_messages;
+    bool failed;
+    const char *label;
+};
+
+static void *lossless_producer_main(void *arg)
+{
+    struct lossless_producer_args *a = arg;
+    for (uint64_t seq = 0; seq < a->num_messages; seq++) {
+        struct message msg;
+        msg.seq = seq;
+        fill_payload(msg.payload, seq);
+
+        /* Lossless mode: push legitimately fails on a full buffer, so this
+         * retry loop stays. */
+        uint64_t spins = 0;
+        while (!ringbuf_mutex_push(a->rb, &msg)) {
+            if (++spins > MAX_SPIN) {
+                fprintf(stderr,
+                        "%s: producer stalled pushing seq %" PRIu64 "\n",
+                        a->label, seq);
+                a->failed = true;
+                return NULL;
+            }
+            sched_yield();
+        }
+    }
+    return NULL;
+}
+
+static void *lossless_consumer_main(void *arg)
+{
+    struct lossless_consumer_args *a = arg;
+    for (uint64_t expected_seq = 0; expected_seq < a->num_messages;
+         expected_seq++) {
+        struct message msg;
+
+        uint64_t spins = 0;
+        while (!ringbuf_mutex_pop(a->rb, &msg)) {
+            if (++spins > MAX_SPIN) {
+                fprintf(stderr,
+                        "%s: consumer stalled waiting for seq %" PRIu64 "\n",
+                        a->label, expected_seq);
+                a->failed = true;
+                return NULL;
+            }
+            sched_yield();
+        }
+
+        if (msg.seq != expected_seq || !payload_ok(msg.payload, expected_seq)) {
+            fprintf(stderr,
+                    "%s: mismatch at expected seq %" PRIu64 ", got %" PRIu64
+                    "\n",
+                    a->label, expected_seq, msg.seq);
+            a->failed = true;
+            return NULL;
+        }
+    }
+    return NULL;
+}
+
+/* Runs a two-thread lossless transfer over an already-created buffer. */
+static bool run_lossless_transfer(struct ringbuf_mutex *rb, uint64_t n,
+                                  const char *label)
+{
+    struct lossless_producer_args pargs = {
+        .rb = rb, .num_messages = n, .failed = false, .label = label
+    };
+    struct lossless_consumer_args cargs = {
+        .rb = rb, .num_messages = n, .failed = false, .label = label
+    };
+
+    pthread_t producer, consumer;
+    pthread_create(&producer, NULL, lossless_producer_main, &pargs);
+    pthread_create(&consumer, NULL, lossless_consumer_main, &cargs);
+    pthread_join(producer, NULL);
+    pthread_join(consumer, NULL);
+
+    if (pargs.failed || cargs.failed)
+        return false;
+
+    printf("%s: PASS (%" PRIu64 " messages)\n", label, n);
+    return true;
+}
+
+static bool run_lossless_test(void)
+{
+    /* Small, non-trivial capacity forces heavy wraparound during the run. */
+    struct ringbuf_mutex *rb =
+        ringbuf_mutex_create(sizeof(struct message), 16, false);
+    if (!rb) {
+        fprintf(stderr, "lossless: ringbuf_mutex_create failed\n");
+        return false;
+    }
+    bool ok = run_lossless_transfer(rb, 2000000u, "lossless");
+    ringbuf_mutex_destroy(rb);
+    return ok;
+}
+
+/* ---- Overwrite mode, single-threaded eviction check ---- */
+
+/* Expects a capacity-4 buffer created with overwrite_on_full = true. Pushes
+ * 10 messages with no pops, so the oldest 6 must be evicted and only seq
+ * 6..9 remain. */
+static bool run_overwrite_basic_on(struct ringbuf_mutex *rb, const char *label)
+{
+    for (uint64_t seq = 0; seq < 10; seq++) {
+        struct message msg;
+        msg.seq = seq;
+        fill_payload(msg.payload, seq);
+        if (!ringbuf_mutex_push(rb, &msg)) {
+            fprintf(stderr, "%s: push unexpectedly failed at seq %" PRIu64 "\n",
+                    label, seq);
+            return false;
+        }
+    }
+
+    size_t dropped = ringbuf_mutex_dropped_count(rb);
+    if (dropped != 6) {
+        fprintf(stderr, "%s: expected 6 dropped, got %zu\n", label, dropped);
+        return false;
+    }
+
+    for (uint64_t expected_seq = 6; expected_seq < 10; expected_seq++) {
+        struct message msg;
+        if (!ringbuf_mutex_pop(rb, &msg)) {
+            fprintf(stderr, "%s: pop unexpectedly failed at seq %" PRIu64 "\n",
+                    label, expected_seq);
+            return false;
+        }
+        if (msg.seq != expected_seq || !payload_ok(msg.payload, expected_seq)) {
+            fprintf(stderr,
+                    "%s: mismatch, expected seq %" PRIu64 ", got %" PRIu64 "\n",
+                    label, expected_seq, msg.seq);
+            return false;
+        }
+    }
+
+    struct message msg;
+    if (ringbuf_mutex_pop(rb, &msg)) {
+        fprintf(stderr, "%s: expected empty buffer after draining\n", label);
+        return false;
+    }
+
+    printf("%s: PASS (dropped=%zu)\n", label, dropped);
+    return true;
+}
+
+static bool run_overwrite_basic_test(void)
+{
+    struct ringbuf_mutex *rb =
+        ringbuf_mutex_create(sizeof(struct message), 4, true);
+    if (!rb) {
+        fprintf(stderr, "overwrite_basic: ringbuf_mutex_create failed\n");
+        return false;
+    }
+    bool ok = run_overwrite_basic_on(rb, "overwrite_basic");
+    ringbuf_mutex_destroy(rb);
+    return ok;
+}
+
+/* ---- Overwrite mode, concurrent stress. A tiny capacity maximizes
+ * eviction-vs-read contention on the shared boundary slot. ---- */
+
+struct stress_producer_args {
+    struct ringbuf_mutex *rb;
+    uint64_t num_messages;
+    atomic_bool *done;
+    bool failed;
+    const char *label;
+};
+
+struct stress_consumer_args {
+    struct ringbuf_mutex *rb;
+    atomic_bool *done;
+    uint64_t received;
+    uint64_t last_seq;
+    bool corrupted;
+    bool out_of_order;
+    bool stalled;
+    const char *label;
+};
+
+static void *stress_producer_main(void *arg)
+{
+    struct stress_producer_args *a = arg;
+    for (uint64_t seq = 0; seq < a->num_messages; seq++) {
+        struct message msg;
+        msg.seq = seq;
+        fill_payload(msg.payload, seq);
+
+        /* The contract under test: in overwrite mode push always succeeds.
+         * No retry loop -- it blocks on the lock instead of failing, so a
+         * false return here is a real regression. This is the one case that
+         * exercises it under heavy contention, with capacity 4 and millions
+         * of messages. */
+        if (!ringbuf_mutex_push(a->rb, &msg)) {
+            fprintf(stderr,
+                    "%s: push returned false in overwrite mode at seq %" PRIu64
+                    " (must never happen)\n",
+                    a->label, seq);
+            a->failed = true;
+            atomic_store_explicit(a->done, true, memory_order_release);
+            return NULL;
+        }
+    }
+    atomic_store_explicit(a->done, true, memory_order_release);
+    return NULL;
+}
+
+static void *stress_consumer_main(void *arg)
+{
+    struct stress_consumer_args *a = arg;
+    bool have_prev = false;
+    uint64_t prev_seq = 0;
+    uint64_t spins = 0;
+
+    for (;;) {
+        struct message msg;
+        if (!ringbuf_mutex_pop(a->rb, &msg)) {
+            if (atomic_load_explicit(a->done, memory_order_acquire)) {
+                if (!ringbuf_mutex_pop(a->rb, &msg))
+                    break; /* producer finished and buffer is fully drained */
+            } else {
+                if (++spins > MAX_SPIN) {
+                    fprintf(stderr,
+                            "%s: consumer stalled after %" PRIu64 " messages\n",
+                            a->label, a->received);
+                    a->stalled = true;
+                    return NULL;
+                }
+                sched_yield();
+                continue;
+            }
+        }
+        spins = 0;
+
+        if (!payload_ok(msg.payload, msg.seq)) {
+            a->corrupted = true;
+            break;
+        }
+        if (have_prev && msg.seq <= prev_seq) {
+            a->out_of_order = true;
+            break;
+        }
+
+        have_prev = true;
+        prev_seq = msg.seq;
+        a->received++;
+        a->last_seq = msg.seq;
+    }
+    return NULL;
+}
+
+static bool run_overwrite_stress_on(struct ringbuf_mutex *rb, uint64_t n,
+                                    const char *label)
+{
+    atomic_bool done = false;
+    struct stress_producer_args pargs = { .rb = rb,
+                                          .num_messages = n,
+                                          .done = &done,
+                                          .failed = false,
+                                          .label = label };
+    struct stress_consumer_args cargs = { .rb = rb,
+                                          .done = &done,
+                                          .received = 0,
+                                          .last_seq = 0,
+                                          .corrupted = false,
+                                          .out_of_order = false,
+                                          .stalled = false,
+                                          .label = label };
+
+    pthread_t producer, consumer;
+    pthread_create(&producer, NULL, stress_producer_main, &pargs);
+    pthread_create(&consumer, NULL, stress_consumer_main, &cargs);
+    pthread_join(producer, NULL);
+    pthread_join(consumer, NULL);
+
+    size_t dropped = ringbuf_mutex_dropped_count(rb);
+
+    if (pargs.failed || cargs.stalled)
+        return false;
+    if (cargs.corrupted) {
+        fprintf(stderr, "%s: payload corruption detected\n", label);
+        return false;
+    }
+    if (cargs.out_of_order) {
+        fprintf(stderr, "%s: out-of-order/duplicate seq detected\n", label);
+        return false;
+    }
+    if (cargs.last_seq != n - 1) {
+        fprintf(stderr,
+                "%s: did not observe final message (last_seq=%" PRIu64 ")\n",
+                label, cargs.last_seq);
+        return false;
+    }
+    /* The accounting invariant: every message is either received or dropped,
+     * never both and never neither. This is what catches a pop that acted on
+     * a read index sampled before it took the lock. */
+    if (cargs.received + dropped != n) {
+        fprintf(stderr,
+                "%s: received(%" PRIu64 ") + dropped(%zu) != pushed(%" PRIu64
+                ")\n",
+                label, cargs.received, dropped, n);
+        return false;
+    }
+
+    printf("%s: PASS (received=%" PRIu64 ", dropped=%zu)\n", label,
+           cargs.received, dropped);
+    return true;
+}
+
+static bool run_overwrite_stress_test(void)
+{
+    struct ringbuf_mutex *rb =
+        ringbuf_mutex_create(sizeof(struct message), 4, true);
+    if (!rb) {
+        fprintf(stderr, "overwrite_stress: ringbuf_mutex_create failed\n");
+        return false;
+    }
+    bool ok = run_overwrite_stress_on(rb, 2000000u, "overwrite_stress");
+    ringbuf_mutex_destroy(rb);
+    return ok;
+}
+
+#ifdef RINGBUF_TEST_HOOKS
+
+/* ---- Counter-overflow tests.
+ *
+ * The internal counters are monotonic and only mapped onto slots via a mask,
+ * so they eventually overflow SIZE_MAX. Reaching that organically would take
+ * 2^64 pushes, so these tests park the counters just below the boundary with
+ * ringbuf_mutex_test_seed_counters() and then push across it.
+ *
+ * SEED_BASE leaves room for only 2 increments before write_idx wraps, so
+ * every test below ends up with write_idx wrapped to a small value while
+ * read_idx is still near SIZE_MAX. That is precisely the state an absolute
+ * `read_idx >= cached_write` empty check mis-reports as permanently empty.
+ * ---- */
+
+#define SEED_BASE (SIZE_MAX - 2)
+
+/* Sharp regression test: single-threaded, so a failure can only come from
+ * the full/empty arithmetic rather than from a race. */
+static bool run_wrap_boundary_test(void)
+{
+    const uint64_t capacity = 16;
+    struct ringbuf_mutex *rb =
+        ringbuf_mutex_create(sizeof(struct message), (size_t)capacity, false);
+    if (!rb) {
+        fprintf(stderr, "wrap_boundary: ringbuf_mutex_create failed\n");
+        return false;
+    }
+    ringbuf_mutex_test_seed_counters(rb, SEED_BASE);
+
+    if (!ringbuf_mutex_is_empty_approx(rb)) {
+        fprintf(stderr,
+                "wrap_boundary: should read empty right after seeding\n");
+        goto fail;
+    }
+
+    /* Fill to exactly capacity; write_idx crosses SIZE_MAX partway through. */
+    for (uint64_t seq = 0; seq < capacity; seq++) {
+        struct message msg;
+        msg.seq = seq;
+        fill_payload(msg.payload, seq);
+        if (!ringbuf_mutex_push(rb, &msg)) {
+            fprintf(stderr,
+                    "wrap_boundary: push failed at seq %" PRIu64
+                    " (expected room)\n",
+                    seq);
+            goto fail;
+        }
+    }
+
+    if (!ringbuf_mutex_is_full_approx(rb)) {
+        fprintf(stderr,
+                "wrap_boundary: should read full after %" PRIu64 " pushes\n",
+                capacity);
+        goto fail;
+    }
+
+    /* Non-overwrite buffer: the next push must be refused, not wrap around
+     * and clobber unread data. */
+    {
+        struct message msg;
+        msg.seq = capacity;
+        fill_payload(msg.payload, capacity);
+        if (ringbuf_mutex_push(rb, &msg)) {
+            fprintf(stderr, "wrap_boundary: push succeeded on a full buffer\n");
+            goto fail;
+        }
+    }
+
+    /* write_idx has now wrapped past SIZE_MAX while read_idx has not. */
+    for (uint64_t expected_seq = 0; expected_seq < capacity; expected_seq++) {
+        struct message msg;
+        if (!ringbuf_mutex_pop(rb, &msg)) {
+            fprintf(
+                stderr,
+                "wrap_boundary: pop reported empty across the SIZE_MAX boundary "
+                "at seq %" PRIu64 "\n",
+                expected_seq);
+            goto fail;
+        }
+        if (msg.seq != expected_seq || !payload_ok(msg.payload, expected_seq)) {
+            fprintf(stderr,
+                    "wrap_boundary: mismatch, expected seq %" PRIu64
+                    ", got %" PRIu64 "\n",
+                    expected_seq, msg.seq);
+            goto fail;
+        }
+    }
+
+    {
+        struct message msg;
+        if (ringbuf_mutex_pop(rb, &msg)) {
+            fprintf(stderr,
+                    "wrap_boundary: expected empty buffer after draining\n");
+            goto fail;
+        }
+    }
+    if (!ringbuf_mutex_is_empty_approx(rb)) {
+        fprintf(stderr, "wrap_boundary: should read empty after draining\n");
+        goto fail;
+    }
+
+    ringbuf_mutex_destroy(rb);
+    printf("wrap_boundary: PASS (crossed SIZE_MAX, %" PRIu64 " messages)\n",
+           capacity);
+    return true;
+
+fail:
+    ringbuf_mutex_destroy(rb);
+    return false;
+}
+
+/* Overwrite-mode eviction accounting across the same boundary. */
+static bool run_wrap_overwrite_basic_test(void)
+{
+    struct ringbuf_mutex *rb =
+        ringbuf_mutex_create(sizeof(struct message), 4, true);
+    if (!rb) {
+        fprintf(stderr, "wrap_overwrite_basic: ringbuf_mutex_create failed\n");
+        return false;
+    }
+    ringbuf_mutex_test_seed_counters(rb, SEED_BASE);
+    bool ok = run_overwrite_basic_on(rb, "wrap_overwrite_basic");
+    ringbuf_mutex_destroy(rb);
+    return ok;
+}
+
+/* Concurrent coverage of the boundary, for ThreadSanitizer. Smaller counts
+ * than the main stress tests: the boundary is crossed in the first handful
+ * of pushes, so the rest is just ordinary running. */
+static bool run_wrap_lossless_concurrent_test(void)
+{
+    struct ringbuf_mutex *rb =
+        ringbuf_mutex_create(sizeof(struct message), 16, false);
+    if (!rb) {
+        fprintf(stderr,
+                "wrap_lossless_concurrent: ringbuf_mutex_create failed\n");
+        return false;
+    }
+    ringbuf_mutex_test_seed_counters(rb, SEED_BASE);
+    bool ok = run_lossless_transfer(rb, 200000u, "wrap_lossless_concurrent");
+    ringbuf_mutex_destroy(rb);
+    return ok;
+}
+
+static bool run_wrap_overwrite_stress_test(void)
+{
+    struct ringbuf_mutex *rb =
+        ringbuf_mutex_create(sizeof(struct message), 4, true);
+    if (!rb) {
+        fprintf(stderr, "wrap_overwrite_stress: ringbuf_mutex_create failed\n");
+        return false;
+    }
+    ringbuf_mutex_test_seed_counters(rb, SEED_BASE);
+    bool ok = run_overwrite_stress_on(rb, 200000u, "wrap_overwrite_stress");
+    ringbuf_mutex_destroy(rb);
+    return ok;
+}
+
+#endif /* RINGBUF_TEST_HOOKS */
+
+int main(void)
+{
+    bool ok = true;
+    ok &= run_lossless_test();
+    ok &= run_overwrite_basic_test();
+    ok &= run_overwrite_stress_test();
+#ifdef RINGBUF_TEST_HOOKS
+    ok &= run_wrap_boundary_test();
+    ok &= run_wrap_overwrite_basic_test();
+    ok &= run_wrap_lossless_concurrent_test();
+    ok &= run_wrap_overwrite_stress_test();
+#else
+    printf(
+        "counter-overflow tests SKIPPED (build with -DRINGBUF_TEST_HOOKS)\n");
+#endif
+
+    if (!ok) {
+        printf("FAIL\n");
+        return 1;
+    }
+
+    printf("PASS\n");
+    return 0;
+}

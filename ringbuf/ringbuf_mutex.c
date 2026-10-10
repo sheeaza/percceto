@@ -1,0 +1,291 @@
+#define _POSIX_C_SOURCE 200112L
+
+#include <pthread.h>
+#include <stdatomic.h>
+#include <stddef.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "ringbuf_mutex.h"
+
+struct ringbuf_mutex {
+    size_t capacity;
+    size_t mask;
+    size_t slot_size;
+    bool overwrite_on_full;
+
+    atomic_size_t dropped_count;
+
+    /* Single-writer: only the producer ever stores to write_idx, in either
+     * mode, so a cheap relaxed-load / release-store pair is enough. */
+    _Alignas(64) atomic_size_t write_idx;
+    size_t cached_read; /* producer-private cache of read_idx */
+
+    /* Retirement counter, and the one place the clean SPSC split breaks:
+     * in overwrite mode the producer advances it too, when it evicts.
+     *
+     * `lock` is what reconciles those two writers -- see the file-level
+     * comment on ringbuf_mutex_push. It is held by every pop, and by the
+     * eviction branch of push. Unused, and not even initialized, in
+     * lossless mode.
+     *
+     * The lock sits on this cache line rather than its own: an eviction
+     * takes it and then immediately stores read_idx, so pairing them costs
+     * one line transfer instead of two. The line is still split off from
+     * write_idx, which the producer owns. */
+    _Alignas(64) pthread_mutex_t lock;
+    atomic_size_t read_idx;
+
+    /* Consumer-private cache of write_idx. Plain size_t, deliberately: the
+     * producer never touches it. This is what keeps ringbuf_mutex_pop
+     * single-caller even though read_idx itself is now mutex-guarded --
+     * two concurrent poppers would race here regardless. (In overwrite
+     * mode it happens to be touched only under the lock, but the lock is a
+     * producer-vs-consumer lock, not a consumer-vs-consumer one.) */
+    size_t cached_write;
+
+    /* Slot data. Lives in this one allocation, so the control block and the
+     * slots it describes share cache lines at the boundary instead of
+     * sitting in unrelated heap regions, and create/destroy are a single
+     * malloc/free. Unlike ringbuf.c there is no trailing lock array -- the
+     * single mutex above replaces it. */
+    _Alignas(64) char slots[];
+};
+
+static size_t next_pow2(size_t v)
+{
+    if (v < 2)
+        return 2;
+    size_t p = 1;
+    while (p < v)
+        p <<= 1;
+    return p;
+}
+
+/* a + b, or 0 on overflow. 0 is never a legitimate total here (the header
+ * alone is non-empty), so callers treat it as failure. */
+static size_t add_checked(size_t a, size_t b)
+{
+    if (a > SIZE_MAX - b)
+        return 0;
+    return a + b;
+}
+
+struct ringbuf_mutex *ringbuf_mutex_create(size_t slot_size,
+                                           size_t min_capacity,
+                                           bool overwrite_on_full)
+{
+    if (slot_size == 0)
+        return NULL;
+
+    size_t capacity = next_pow2(min_capacity);
+
+    /* One allocation: header, then capacity*slot_size bytes of slots. Both
+     * steps are overflow-checked because slot_size and min_capacity are
+     * caller-supplied; an unchecked capacity*slot_size could wrap and
+     * under-allocate, turning every later slot write into a heap
+     * overflow. */
+    if (slot_size > SIZE_MAX / capacity)
+        return NULL;
+    size_t data_bytes = capacity * slot_size;
+
+    size_t total =
+        add_checked(offsetof(struct ringbuf_mutex, slots), data_bytes);
+    if (total == 0)
+        return NULL;
+
+    struct ringbuf_mutex *rb = NULL;
+    if (posix_memalign((void **)&rb, _Alignof(struct ringbuf_mutex), total) !=
+        0)
+        return NULL;
+
+    /* Only overwrite mode has two writers to reconcile, so only it pays for
+     * a mutex. ringbuf_mutex_destroy mirrors this guard. */
+    if (overwrite_on_full && pthread_mutex_init(&rb->lock, NULL) != 0) {
+        free(rb);
+        return NULL;
+    }
+
+    rb->capacity = capacity;
+    rb->mask = capacity - 1;
+    rb->slot_size = slot_size;
+    rb->overwrite_on_full = overwrite_on_full;
+    atomic_init(&rb->dropped_count, (size_t)0);
+    atomic_init(&rb->write_idx, (size_t)0);
+    rb->cached_read = 0;
+    atomic_init(&rb->read_idx, (size_t)0);
+    rb->cached_write = 0;
+
+    return rb;
+}
+
+void ringbuf_mutex_destroy(struct ringbuf_mutex *rb)
+{
+    if (!rb)
+        return;
+    if (rb->overwrite_on_full)
+        pthread_mutex_destroy(&rb->lock);
+    free(rb);
+}
+
+bool ringbuf_mutex_push(struct ringbuf_mutex *rb, const void *data)
+{
+    size_t write_idx =
+        atomic_load_explicit(&rb->write_idx, memory_order_relaxed);
+    size_t next = write_idx + 1;
+    size_t idx = write_idx & rb->mask;
+
+    if (next - rb->cached_read > rb->capacity) {
+        /* Acquire, and NOT redundant with the lock below: the fast path
+         * underneath reads read_idx without ever taking the mutex, so this
+         * load is what synchronizes with the consumer's release store and
+         * makes the consumer's finished read visible before we overwrite
+         * the slot it was reading. */
+        rb->cached_read =
+            atomic_load_explicit(&rb->read_idx, memory_order_acquire);
+        if (next - rb->cached_read > rb->capacity) {
+            if (!rb->overwrite_on_full)
+                return false; /* genuinely full */
+
+            /* Full, so our slot is the one the consumer may be reading.
+             * Take the lock and evict under it; this is the only push path
+             * that locks, and the only one that can block. */
+            pthread_mutex_lock(&rb->lock);
+
+            size_t fresh_read =
+                atomic_load_explicit(&rb->read_idx, memory_order_relaxed);
+            if (next - fresh_read > rb->capacity) {
+                /* Still full. Retire message `fresh_read` as dropped. The
+                 * lock means no pop can be mid-read of that slot, and no
+                 * pop can observe read_idx between this store and the
+                 * memcpy below -- so unlike ringbuf.c this needs no CAS to
+                 * stay single-valued. Release so the unlocked fast pop
+                 * path above cannot see the advance before the data. */
+                atomic_store_explicit(&rb->read_idx, fresh_read + 1,
+                                      memory_order_release);
+                atomic_fetch_add_explicit(&rb->dropped_count, 1,
+                                          memory_order_relaxed);
+                rb->cached_read = fresh_read + 1;
+            } else {
+                /* Consumer drained the slot normally while we were waiting
+                 * on the lock, so there is nothing to evict. */
+                rb->cached_read = fresh_read;
+            }
+
+            memcpy(rb->slots + idx * rb->slot_size, data, rb->slot_size);
+            atomic_store_explicit(&rb->write_idx, next, memory_order_release);
+            pthread_mutex_unlock(&rb->lock);
+            return true;
+        }
+    }
+
+    /* Not full, so write_idx - read_idx < capacity, which means
+     * write_idx & mask != read_idx & mask: this slot cannot be the one an
+     * in-flight pop is reading. The indices only alias when full, and that
+     * is exactly the branch above. Hence no lock here -- this is the hot
+     * path and it stays as cheap as the lock-free variant's. */
+    memcpy(rb->slots + idx * rb->slot_size, data, rb->slot_size);
+    atomic_store_explicit(&rb->write_idx, next, memory_order_release);
+    return true;
+}
+
+bool ringbuf_mutex_pop(struct ringbuf_mutex *rb, void *data)
+{
+    if (!rb->overwrite_on_full) {
+        /* Lossless mode: read_idx has exactly one writer (us), so this is
+         * the plain lock-free path, identical to ringbuf.c. */
+        size_t read_idx =
+            atomic_load_explicit(&rb->read_idx, memory_order_relaxed);
+
+        /* Signed difference so this stays correct when the counters wrap
+         * past SIZE_MAX; a plain `read_idx >= cached_write` would read as
+         * "empty" forever once write_idx wrapped and read_idx had not. */
+        if ((ptrdiff_t)(rb->cached_write - read_idx) <= 0) {
+            rb->cached_write =
+                atomic_load_explicit(&rb->write_idx, memory_order_acquire);
+            if ((ptrdiff_t)(rb->cached_write - read_idx) <= 0)
+                return false; /* genuinely empty */
+        }
+
+        memcpy(data, rb->slots + (read_idx & rb->mask) * rb->slot_size,
+               rb->slot_size);
+        atomic_store_explicit(&rb->read_idx, read_idx + 1,
+                              memory_order_release);
+        return true;
+    }
+
+    /* Overwrite mode: hold the lock across the whole operation, so an
+     * evicting producer cannot touch our slot mid-copy. */
+    pthread_mutex_lock(&rb->lock);
+
+    /* Both indices are re-read HERE, under the lock, rather than reusing a
+     * value sampled before it. This is load-bearing, and it is what
+     * replaces ringbuf.c's CAS-failure path: while we waited on the lock
+     * the producer may have evicted the very message we were about to
+     * take, counted it in dropped_count, and refilled the slot. Acting on
+     * a stale read_idx would hand out that new message as if it were the
+     * evicted one and break received + dropped == pushed. Re-deriving
+     * means we either take a message that is genuinely still ours or
+     * report empty -- never a spurious failure. */
+    size_t read_idx = atomic_load_explicit(&rb->read_idx, memory_order_relaxed);
+    if ((ptrdiff_t)(rb->cached_write - read_idx) <= 0) {
+        rb->cached_write =
+            atomic_load_explicit(&rb->write_idx, memory_order_acquire);
+        if ((ptrdiff_t)(rb->cached_write - read_idx) <= 0) {
+            pthread_mutex_unlock(&rb->lock);
+            return false; /* genuinely empty */
+        }
+    }
+
+    memcpy(data, rb->slots + (read_idx & rb->mask) * rb->slot_size,
+           rb->slot_size);
+
+    /* Release, not relaxed: the unlocked fast push path reads read_idx
+     * without the mutex, so the unlock's release does not cover it. This
+     * store is what tells that path our read of the slot is complete and
+     * the slot is safe to overwrite. */
+    atomic_store_explicit(&rb->read_idx, read_idx + 1, memory_order_release);
+
+    pthread_mutex_unlock(&rb->lock);
+    return true;
+}
+
+size_t ringbuf_mutex_capacity(const struct ringbuf_mutex *rb)
+{
+    return rb->capacity;
+}
+
+size_t ringbuf_mutex_slot_size(const struct ringbuf_mutex *rb)
+{
+    return rb->slot_size;
+}
+
+size_t ringbuf_mutex_dropped_count(const struct ringbuf_mutex *rb)
+{
+    return atomic_load_explicit(&rb->dropped_count, memory_order_relaxed);
+}
+
+bool ringbuf_mutex_is_empty_approx(const struct ringbuf_mutex *rb)
+{
+    size_t w = atomic_load_explicit(&rb->write_idx, memory_order_acquire);
+    size_t r = atomic_load_explicit(&rb->read_idx, memory_order_acquire);
+    return (ptrdiff_t)(w - r) <= 0;
+}
+
+bool ringbuf_mutex_is_full_approx(const struct ringbuf_mutex *rb)
+{
+    size_t w = atomic_load_explicit(&rb->write_idx, memory_order_acquire);
+    size_t r = atomic_load_explicit(&rb->read_idx, memory_order_acquire);
+    return (ptrdiff_t)(w - r) >= (ptrdiff_t)rb->capacity;
+}
+
+#ifdef RINGBUF_TEST_HOOKS
+void ringbuf_mutex_test_seed_counters(struct ringbuf_mutex *rb, size_t start)
+{
+    atomic_store_explicit(&rb->write_idx, start, memory_order_relaxed);
+    atomic_store_explicit(&rb->read_idx, start, memory_order_relaxed);
+    rb->cached_read = start;
+    rb->cached_write = start;
+}
+#endif

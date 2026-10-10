@@ -27,23 +27,51 @@ anchored regex — `-R ringbuf` matches both:
 ctest --test-dir build -R '^ringbuf$'
 ```
 
+With the mutex variant there are now **four** entries — `ringbuf`,
+`ringbuf_mutex`, and the two opt-in `*_tsan` ones — so `-R ringbuf` matches all
+four and the anchored form matters more than before.
+
 `build/` already holds a **Unix Makefiles** cache. `-G Ninja` will refuse to
 reconfigure over it; `rm -rf build` first if you want to switch generators.
 
 ### Running a single test case
 
-Not supported. `main(void)` in `test_ringbuf.c` takes no arguments and runs all
-7 cases unconditionally; there is no filter flag. To isolate one, comment out
-the others in `main` or add arg parsing.
+Not supported. `main(void)` in `test_ringbuf.c` and `test_ringbuf_mutex.c` takes
+no arguments and runs all 7 cases unconditionally; there is no filter flag. To
+isolate one, comment out the others in `main` or add arg parsing.
 
 The two stress tests push 2,000,000 messages each and dominate the ~0.2 s
 runtime; the tsan build takes ~2 s.
 
+## Two implementations
+
+`ringbuf.{c,h}` is the lock-free original. `ringbuf_mutex.{c,h}` is a sibling
+with the **same data structure and the same external SPSC contract**, differing
+only in how overwrite mode reconciles its two writers to `read_idx`. Symbols are
+prefixed (`ringbuf_mutex_push`, `struct ringbuf_mutex`, …) so both can link into
+one binary.
+
+| | `ringbuf` | `ringbuf_mutex` |
+| --- | --- | --- |
+| Overwrite-mode sync | per-slot spinlocks + `read_idx` CAS | one `pthread_mutex_t` |
+| `push` on full | may return `false` transiently | **always** `true`; may block |
+| `pop` returning `false` | empty **or** transient contention | empty, and nothing else |
+| Caller retry loop | required on both sides | consumer only |
+| Lock-free / signal-safe | yes | **no** — `push` can block |
+| Lossless mode | lock-free | identical, lock-free, no mutex initialized |
+
+Pick `ringbuf` when push must never block (signal handlers, hard real-time);
+pick `ringbuf_mutex` when it may and you want readable code. The sections below
+describe `ringbuf.c`; everything about counters, wrapping, capacity rounding, and
+the single allocation applies to both.
+
 ## Architecture
 
-Single-producer / single-consumer lock-free ring buffer. Three source files:
-`ringbuf.{c,h}` (the library) and `test_ringbuf.c`. CMake builds a `ringbuf`
-static library plus the test binaries.
+Single-producer / single-consumer lock-free ring buffer. Two interchangeable
+implementations (see "Two implementations" above): `ringbuf.{c,h}` plus
+`ringbuf_mutex.{c,h}`, with `test_ringbuf.c` and `test_ringbuf_mutex.c`
+mirroring each other case for case. CMake builds a static library per variant
+plus the test binaries.
 
 Exactly one thread may call `ringbuf_push`, exactly one may call `ringbuf_pop`.
 More than one on either side is UB — this is the premise the whole design rests
@@ -95,6 +123,32 @@ Real SPMC would mean dropping or atomicizing `cached_write` and auditing the
 slot locks for consumer-vs-consumer overlap, which they were never designed for.
 The eviction machinery is not the obstacle.
 
+### The mutex variant's two invariants
+
+`ringbuf_mutex.c` replaces both mechanisms above with one lock held by every
+`pop` and by `push`'s eviction branch only. The hot push path stays unlocked,
+because when the buffer is not full `write_idx & mask != read_idx & mask` — the
+indices alias only when full, which is exactly the branch that locks. Two
+details are load-bearing and both are verified by deliberately breaking them:
+
+- **`pop` re-reads `read_idx` *after* acquiring the lock**, never reusing a
+  value sampled before it. While it waited, the producer may have evicted the
+  message it was about to take, counted it in `dropped_count`, and refilled the
+  slot; acting on the stale index hands out that new message as the evicted one.
+  Breaking this fails `overwrite_stress` with duplicate/out-of-order seqs — but
+  **only** in the concurrent cases, so the single-threaded eviction tests pass
+  and cannot be relied on to catch it.
+- **`read_idx` stores stay `memory_order_release` and `push`'s fullness load
+  stays `acquire`, even under the lock.** The unlocked fast push path reads
+  `read_idx` without the mutex, so the unlock's release does not cover it. That
+  acquire/release pair — not the lock — is what makes the consumer's finished
+  read visible before the producer overwrites the slot. `ringbuf_mutex_tsan` is
+  the gate on this.
+
+Because `pop` can no longer fail transiently, the overwrite-mode producers in
+`test_ringbuf_mutex.c` have **no retry loop**: a `false` from push is a hard
+test failure, which is the variant's main observable guarantee.
+
 **Counters are monotonic and mapped to slots with `& mask`, so they wrap at
 `SIZE_MAX`.** Emptiness is therefore a *signed* comparison,
 `(ptrdiff_t)(cached_write - read_idx) <= 0`, never `read_idx >= cached_write` —
@@ -130,7 +184,8 @@ shipped.
 The define must reach `ringbuf.c`, not just the test file, so **the test targets
 compile `ringbuf.c` directly rather than linking the `ringbuf` library.** Linking
 the library instead would silently skip the four wrap tests (`main` `#ifdef`s
-them out). Keep this in mind when touching `CMakeLists.txt`.
+them out). Keep this in mind when touching `CMakeLists.txt`. The mutex variant
+has the identical arrangement with `ringbuf_mutex_test_seed_counters()`.
 
 ## Style
 
