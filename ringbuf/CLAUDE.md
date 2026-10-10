@@ -220,6 +220,42 @@ headers before project headers via `IncludeBlocks: Regroup`).
 sites. clang-format cannot enforce this, so it needs attention in review. The
 only `_t` names should be standard-library ones (`size_t`, `pthread_t`, …).
 
+### Function comments
+
+**Every function definition and public declaration carries a kernel-doc
+block**, in the kernel's format:
+
+```c
+/**
+ * ringbuf_push - copy one message into the buffer
+ * @rb: the buffer
+ * @data: slot_size bytes to copy in
+ *
+ * Producer side only. Free-form body for the things a caller cannot infer
+ * from the signature.
+ *
+ * Return: true if the message was stored; false if the buffer is full.
+ */
+```
+
+`/**` opener, `name - one-line summary` first, one `@param:` line per
+parameter in declaration order, then the optional body, then `Return:` last
+for anything non-void. Continuation lines in a `@param:` entry are indented
+with a tab, which is the one place a tab is correct in this tree. Statics get
+the same treatment — `next_pow2`, the pthread entry points, the benchmark
+helpers. For thread entry points that always return `NULL` and report through
+their args, say so in `Return:` rather than omitting it.
+
+The contract lives in the **header**; the definition's block is shorter and
+points back with "see ringbuf.h", covering only what is specific to the
+implementation (which paths lock, which stores are relaxed and why). Don't
+duplicate the full contract in both places — it drifts.
+
+clang-format does not enforce any of this and will not reflow these blocks,
+so it is a review item like the typedef rule. Internal commentary that
+explains a *line* rather than a function stays an ordinary `/* */` comment
+inside the body; kernel-doc is for the interface.
+
 ```bash
 nix shell nixpkgs#clang-tools --command clang-format -i *.c *.h
 ```

@@ -42,6 +42,12 @@
  * loads that make up the work being measured. */
 static volatile uint64_t sink;
 
+/**
+ * cpu_relax - hint to the core that we are in a spin-wait
+ *
+ * Falls back to a relaxed fence on non-x86, which at least keeps the
+ * compiler from hoisting the load out of the spin loop.
+ */
 static void cpu_relax(void)
 {
 #if defined(__x86_64__) || defined(__i386__)
@@ -51,6 +57,11 @@ static void cpu_relax(void)
 #endif
 }
 
+/**
+ * now_ns - read the monotonic clock
+ *
+ * Return: nanoseconds since an unspecified epoch, suitable for intervals.
+ */
 static uint64_t now_ns(void)
 {
     struct timespec ts;
@@ -58,6 +69,13 @@ static uint64_t now_ns(void)
     return (uint64_t)ts.tv_sec * 1000000000u + (uint64_t)ts.tv_nsec;
 }
 
+/**
+ * pin_to - bind the calling thread to one CPU
+ * @cpu: CPU number to pin to
+ *
+ * Warns rather than failing: an unpinned run still produces numbers, they
+ * are just noisier.
+ */
 static void pin_to(int cpu)
 {
     cpu_set_t set;
@@ -67,6 +85,14 @@ static void pin_to(int cpu)
         fprintf(stderr, "warning: could not pin to cpu %d\n", cpu);
 }
 
+/**
+ * cmp_u64 - qsort comparator for uint64_t
+ * @a: first element
+ * @b: second element
+ *
+ * Return: negative, zero, or positive as *@a orders before, same as, or
+ * after *@b.
+ */
 static int cmp_u64(const void *a, const void *b)
 {
     uint64_t x = *(const uint64_t *)a;
@@ -74,6 +100,14 @@ static int cmp_u64(const void *a, const void *b)
     return (x > y) - (x < y);
 }
 
+/**
+ * cmp_dbl - qsort comparator for double
+ * @a: first element
+ * @b: second element
+ *
+ * Return: negative, zero, or positive as *@a orders before, same as, or
+ * after *@b.
+ */
 static int cmp_dbl(const void *a, const void *b)
 {
     double x = *(const double *)a;
@@ -81,6 +115,13 @@ static int cmp_dbl(const void *a, const void *b)
     return (x > y) - (x < y);
 }
 
+/**
+ * median_dbl - median of a sample set
+ * @v: samples, reordered in place by the sort
+ * @n: number of samples; must be positive
+ *
+ * Return: the median, averaging the middle pair when @n is even.
+ */
 static double median_dbl(double *v, int n)
 {
     qsort(v, (size_t)n, sizeof(*v), cmp_dbl);
@@ -99,6 +140,13 @@ struct mq {
     char *buf;
 };
 
+/**
+ * mq_create - allocate the mutex baseline queue
+ * @slot_size: size of each slot in bytes
+ * @capacity: slot count; must be a power of two
+ *
+ * Return: the new queue, or NULL on allocation failure.
+ */
 static struct mq *mq_create(size_t slot_size, size_t capacity)
 {
     struct mq *q = calloc(1, sizeof(*q));
@@ -116,6 +164,10 @@ static struct mq *mq_create(size_t slot_size, size_t capacity)
     return q;
 }
 
+/**
+ * mq_destroy - free the mutex baseline queue
+ * @q: queue from mq_create(), or NULL
+ */
 static void mq_destroy(struct mq *q)
 {
     if (!q)
@@ -125,6 +177,16 @@ static void mq_destroy(struct mq *q)
     free(q);
 }
 
+/**
+ * mq_push - copy one message into the baseline queue
+ * @q: the queue
+ * @data: slot_size bytes to copy in
+ *
+ * Non-blocking, matching ringbuf_push()'s lossless contract so the two are
+ * comparable.
+ *
+ * Return: true if stored, false if the queue is full.
+ */
 static bool mq_push(struct mq *q, const void *data)
 {
     pthread_mutex_lock(&q->lock);
@@ -138,6 +200,15 @@ static bool mq_push(struct mq *q, const void *data)
     return true;
 }
 
+/**
+ * mq_pop - copy one message out of the baseline queue
+ * @q: the queue
+ * @data: destination for slot_size bytes
+ *
+ * Non-blocking, matching ringbuf_pop()'s lossless contract.
+ *
+ * Return: true if a message was copied out, false if the queue is empty.
+ */
 static bool mq_pop(struct mq *q, void *data)
 {
     pthread_mutex_lock(&q->lock);
@@ -157,6 +228,17 @@ static bool mq_pop(struct mq *q, void *data)
  * atomic cost of one push plus one pop. The slot index still advances each
  * iteration, so the cache behavior stays realistic. */
 
+/**
+ * bench_single_ringbuf - time alternating push/pop on one thread
+ * @slot_size: size of each slot in bytes
+ * @capacity: slot count to create the buffer with
+ * @overwrite: create the buffer in overwrite mode
+ *
+ * Warms the slots before each timed loop so page faults do not land in the
+ * measurement.
+ *
+ * Return: median messages/sec over REPS repetitions.
+ */
 static double bench_single_ringbuf(size_t slot_size, size_t capacity,
                                    bool overwrite)
 {
@@ -192,6 +274,13 @@ static double bench_single_ringbuf(size_t slot_size, size_t capacity,
     return median_dbl(rate, REPS);
 }
 
+/**
+ * bench_single_mutex - same single-threaded loop against the mutex baseline
+ * @slot_size: size of each slot in bytes
+ * @capacity: slot count to create the queue with
+ *
+ * Return: median messages/sec over REPS repetitions.
+ */
 static double bench_single_mutex(size_t slot_size, size_t capacity)
 {
     double rate[REPS];
@@ -236,6 +325,12 @@ struct tp_args {
     uint64_t seq_errors;
 };
 
+/**
+ * tp_ringbuf_producer - pin, then push count sequenced messages
+ * @arg: struct tp_args
+ *
+ * Return: NULL always.
+ */
 static void *tp_ringbuf_producer(void *arg)
 {
     struct tp_args *a = arg;
@@ -252,6 +347,15 @@ static void *tp_ringbuf_producer(void *arg)
     return NULL;
 }
 
+/**
+ * tp_ringbuf_consumer - pin, then drain until the producer is done
+ * @arg: struct tp_args
+ *
+ * Counts sequence mismatches into the args, so a broken buffer shows up as
+ * an error line rather than as a plausible-looking throughput number.
+ *
+ * Return: NULL always.
+ */
 static void *tp_ringbuf_consumer(void *arg)
 {
     struct tp_args *a = arg;
@@ -287,6 +391,12 @@ static void *tp_ringbuf_consumer(void *arg)
     return NULL;
 }
 
+/**
+ * tp_mutex_producer - pin, then push count messages into the baseline queue
+ * @arg: struct tp_args
+ *
+ * Return: NULL always.
+ */
 static void *tp_mutex_producer(void *arg)
 {
     struct tp_args *a = arg;
@@ -303,6 +413,12 @@ static void *tp_mutex_producer(void *arg)
     return NULL;
 }
 
+/**
+ * tp_mutex_consumer - pin, then drain the baseline queue until done
+ * @arg: struct tp_args
+ *
+ * Return: NULL always.
+ */
 static void *tp_mutex_consumer(void *arg)
 {
     struct tp_args *a = arg;
@@ -327,7 +443,20 @@ static void *tp_mutex_consumer(void *arg)
     return NULL;
 }
 
-/* Returns median messages/sec; reports drops via *dropped_out. */
+/**
+ * bench_spsc - time a two-thread transfer on pinned CPUs
+ * @use_mutex: measure the mutex baseline instead of ringbuf
+ * @overwrite: create the ringbuf in overwrite mode; ignored for the baseline
+ * @slot_size: size of each slot in bytes
+ * @capacity: slot count to create the queue with
+ * @dropped_out: eviction count from the last repetition, or NULL
+ * @errors_out: sequence-mismatch count from the last repetition, or NULL
+ *
+ * Both out-params report the final repetition only, and stay untouched for
+ * the mutex baseline, which has no eviction or sequence check.
+ *
+ * Return: median messages/sec over REPS repetitions.
+ */
 static double bench_spsc(bool use_mutex, bool overwrite, size_t slot_size,
                          size_t capacity, uint64_t *dropped_out,
                          uint64_t *errors_out)
@@ -388,6 +517,16 @@ struct lat_args {
     uint64_t received;
 };
 
+/**
+ * lat_producer - send count messages at a fixed pace, timestamped
+ * @arg: struct lat_args
+ *
+ * Paces sends LAT_GAP_NS apart to keep the queue near-empty, so the
+ * consumer measures handoff latency rather than queueing delay. Each
+ * payload carries the seq and the send timestamp.
+ *
+ * Return: NULL always.
+ */
 static void *lat_producer(void *arg)
 {
     struct lat_args *a = arg;
@@ -416,6 +555,15 @@ static void *lat_producer(void *arg)
     return NULL;
 }
 
+/**
+ * lat_consumer - drain and record receive-minus-send per message
+ * @arg: struct lat_args
+ *
+ * Writes one sample per message into the args' @samples array, up to
+ * @count of them.
+ *
+ * Return: NULL always.
+ */
 static void *lat_consumer(void *arg)
 {
     struct lat_args *a = arg;
@@ -446,6 +594,16 @@ static void *lat_consumer(void *arg)
     return NULL;
 }
 
+/**
+ * bench_latency - run the paced latency test and print one result row
+ * @label: row label
+ * @use_mutex: measure the mutex baseline instead of ringbuf
+ * @overwrite: create the ringbuf in overwrite mode; ignored for the baseline
+ * @slot_size: size of each slot in bytes; must hold two uint64_t
+ * @capacity: slot count to create the queue with
+ *
+ * Prints min, p50, p99, p99.9, max, and mean in nanoseconds.
+ */
 static void bench_latency(const char *label, bool use_mutex, bool overwrite,
                           size_t slot_size, size_t capacity)
 {
@@ -494,12 +652,26 @@ out:
         ringbuf_destroy(q);
 }
 
+/**
+ * print_row - print one throughput result row
+ * @label: row label
+ * @rate: messages per second
+ * @slot_size: slot size in bytes, used to derive the bandwidth column
+ */
 static void print_row(const char *label, double rate, size_t slot_size)
 {
     printf("  %-26s %9.2f %8.1f %9.1f\n", label, rate / 1e6, 1e9 / rate,
            rate * (double)slot_size / (1024 * 1024 * 1024));
 }
 
+/**
+ * main - run every benchmark and print the tables
+ *
+ * Takes no arguments: the set of benchmarks and their parameters are fixed
+ * at compile time.
+ *
+ * Return: 0 always; this is a measurement, not a pass/fail check.
+ */
 int main(void)
 {
     pin_to(PRODUCER_CPU);

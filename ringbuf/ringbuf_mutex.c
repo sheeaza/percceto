@@ -53,6 +53,13 @@ struct ringbuf_mutex {
     _Alignas(64) char slots[];
 };
 
+/**
+ * next_pow2 - round up to a power of two
+ * @v: value to round
+ *
+ * Return: the smallest power of two >= @v, but never less than 2 -- the
+ * mask-based slot indexing needs both properties.
+ */
 static size_t next_pow2(size_t v)
 {
     if (v < 2)
@@ -63,8 +70,14 @@ static size_t next_pow2(size_t v)
     return p;
 }
 
-/* a + b, or 0 on overflow. 0 is never a legitimate total here (the header
- * alone is non-empty), so callers treat it as failure. */
+/**
+ * add_checked - add two sizes, detecting overflow
+ * @a: first addend
+ * @b: second addend
+ *
+ * Return: @a + @b, or 0 on overflow. 0 is never a legitimate total here
+ * (the header alone is non-empty), so callers treat it as failure.
+ */
 static size_t add_checked(size_t a, size_t b)
 {
     if (a > SIZE_MAX - b)
@@ -72,6 +85,20 @@ static size_t add_checked(size_t a, size_t b)
     return a + b;
 }
 
+/**
+ * ringbuf_mutex_create - allocate a ring buffer
+ * @slot_size: size of each slot in bytes
+ * @min_capacity: lower bound on the slot count
+ * @overwrite_on_full: evict the oldest slot instead of failing on full
+ *
+ * See ringbuf_mutex.h for the caller-visible contract. One allocation
+ * covers the header and the slot data. The mutex is initialized only in
+ * overwrite mode, which is the only mode that has two writers to
+ * reconcile.
+ *
+ * Return: the new buffer, or NULL on allocation failure, mutex-init
+ * failure, or invalid arguments.
+ */
 struct ringbuf_mutex *ringbuf_mutex_create(size_t slot_size,
                                            size_t min_capacity,
                                            bool overwrite_on_full)
@@ -120,6 +147,13 @@ struct ringbuf_mutex *ringbuf_mutex_create(size_t slot_size,
     return rb;
 }
 
+/**
+ * ringbuf_mutex_destroy - free a ring buffer
+ * @rb: buffer from ringbuf_mutex_create(), or NULL
+ *
+ * Destroys the mutex only if create initialized one; the slots need no
+ * separate free, as they live in the same allocation as the header.
+ */
 void ringbuf_mutex_destroy(struct ringbuf_mutex *rb)
 {
     if (!rb)
@@ -129,6 +163,18 @@ void ringbuf_mutex_destroy(struct ringbuf_mutex *rb)
     free(rb);
 }
 
+/**
+ * ringbuf_mutex_push - copy one message into the buffer
+ * @rb: the buffer
+ * @data: slot_size bytes to copy in
+ *
+ * Producer side only. See ringbuf_mutex.h for the caller-visible contract.
+ * The hot path runs unlocked; only the eviction branch takes the mutex,
+ * and it is the only path that can block.
+ *
+ * Return: true if the message was stored; false only when the buffer is
+ * full in lossless mode.
+ */
 bool ringbuf_mutex_push(struct ringbuf_mutex *rb, const void *data)
 {
     size_t write_idx =
@@ -190,6 +236,18 @@ bool ringbuf_mutex_push(struct ringbuf_mutex *rb, const void *data)
     return true;
 }
 
+/**
+ * ringbuf_mutex_pop - copy one message out of the buffer
+ * @rb: the buffer
+ * @data: destination for slot_size bytes
+ *
+ * Consumer side only. See ringbuf_mutex.h for the caller-visible contract.
+ * Lossless mode takes no lock; overwrite mode holds the mutex across the
+ * whole operation and re-reads the indices under it.
+ *
+ * Return: true if a message was copied out; false if and only if the
+ * buffer is empty.
+ */
 bool ringbuf_mutex_pop(struct ringbuf_mutex *rb, void *data)
 {
     if (!rb->overwrite_on_full) {
@@ -251,21 +309,45 @@ bool ringbuf_mutex_pop(struct ringbuf_mutex *rb, void *data)
     return true;
 }
 
+/**
+ * ringbuf_mutex_capacity - slot count of the buffer
+ * @rb: the buffer
+ *
+ * Return: the capacity chosen at create time.
+ */
 size_t ringbuf_mutex_capacity(const struct ringbuf_mutex *rb)
 {
     return rb->capacity;
 }
 
+/**
+ * ringbuf_mutex_slot_size - size of one slot
+ * @rb: the buffer
+ *
+ * Return: the slot size in bytes.
+ */
 size_t ringbuf_mutex_slot_size(const struct ringbuf_mutex *rb)
 {
     return rb->slot_size;
 }
 
+/**
+ * ringbuf_mutex_dropped_count - messages evicted before they were read
+ * @rb: the buffer
+ *
+ * Return: the eviction count; always 0 in lossless mode.
+ */
 size_t ringbuf_mutex_dropped_count(const struct ringbuf_mutex *rb)
 {
     return atomic_load_explicit(&rb->dropped_count, memory_order_relaxed);
 }
 
+/**
+ * ringbuf_mutex_is_empty_approx - diagnostic emptiness check
+ * @rb: the buffer
+ *
+ * Return: true if the buffer looked empty; may be stale on return.
+ */
 bool ringbuf_mutex_is_empty_approx(const struct ringbuf_mutex *rb)
 {
     size_t w = atomic_load_explicit(&rb->write_idx, memory_order_acquire);
@@ -273,6 +355,12 @@ bool ringbuf_mutex_is_empty_approx(const struct ringbuf_mutex *rb)
     return (ptrdiff_t)(w - r) <= 0;
 }
 
+/**
+ * ringbuf_mutex_is_full_approx - diagnostic fullness check
+ * @rb: the buffer
+ *
+ * Return: true if the buffer looked full; may be stale on return.
+ */
 bool ringbuf_mutex_is_full_approx(const struct ringbuf_mutex *rb)
 {
     size_t w = atomic_load_explicit(&rb->write_idx, memory_order_acquire);
@@ -281,6 +369,14 @@ bool ringbuf_mutex_is_full_approx(const struct ringbuf_mutex *rb)
 }
 
 #ifdef RINGBUF_TEST_HOOKS
+/**
+ * ringbuf_mutex_test_seed_counters - reposition both counters, tests only
+ * @rb: the buffer, which must be empty and quiescent
+ * @start: value to park both internal counters at
+ *
+ * Relaxed stores throughout, and no lock taken: the preconditions rule out
+ * any concurrent producer or consumer to synchronize with.
+ */
 void ringbuf_mutex_test_seed_counters(struct ringbuf_mutex *rb, size_t start)
 {
     atomic_store_explicit(&rb->write_idx, start, memory_order_relaxed);

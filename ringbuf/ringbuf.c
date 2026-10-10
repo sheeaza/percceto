@@ -58,6 +58,13 @@ struct ringbuf {
     _Alignas(64) char tail[];
 };
 
+/**
+ * next_pow2 - round up to a power of two
+ * @v: value to round
+ *
+ * Return: the smallest power of two >= @v, but never less than 2 -- the
+ * mask-based slot indexing needs both properties.
+ */
 static size_t next_pow2(size_t v)
 {
     if (v < 2)
@@ -68,8 +75,14 @@ static size_t next_pow2(size_t v)
     return p;
 }
 
-/* a + b, or 0 on overflow. 0 is never a legitimate total here (the header
- * alone is non-empty), so callers treat it as failure. */
+/**
+ * add_checked - add two sizes, detecting overflow
+ * @a: first addend
+ * @b: second addend
+ *
+ * Return: @a + @b, or 0 on overflow. 0 is never a legitimate total here
+ * (the header alone is non-empty), so callers treat it as failure.
+ */
 static size_t add_checked(size_t a, size_t b)
 {
     if (a > SIZE_MAX - b)
@@ -77,7 +90,13 @@ static size_t add_checked(size_t a, size_t b)
     return a + b;
 }
 
-/* Rounds up to a power-of-two alignment, or 0 on overflow. */
+/**
+ * align_up - round up to an alignment boundary
+ * @v: value to round
+ * @align: alignment, which must be a power of two
+ *
+ * Return: @v rounded up to a multiple of @align, or 0 on overflow.
+ */
 static size_t align_up(size_t v, size_t align)
 {
     size_t sum = add_checked(v, align - 1);
@@ -86,6 +105,18 @@ static size_t align_up(size_t v, size_t align)
     return sum & ~(align - 1);
 }
 
+/**
+ * ringbuf_create - allocate a ring buffer
+ * @slot_size: size of each slot in bytes
+ * @min_capacity: lower bound on the slot count
+ * @overwrite_on_full: evict the oldest slot instead of failing on full
+ *
+ * See ringbuf.h for the caller-visible contract. One allocation covers the
+ * header, the slot data, and (in overwrite mode) the trailing lock array.
+ *
+ * Return: the new buffer, or NULL on allocation failure or invalid
+ * arguments.
+ */
 struct ringbuf *ringbuf_create(size_t slot_size, size_t min_capacity,
                                bool overwrite_on_full)
 {
@@ -144,11 +175,29 @@ struct ringbuf *ringbuf_create(size_t slot_size, size_t min_capacity,
     return rb;
 }
 
+/**
+ * ringbuf_destroy - free a ring buffer
+ * @rb: buffer from ringbuf_create(), or NULL
+ *
+ * A single free(), since the slots and lock array live in the same
+ * allocation as the header.
+ */
 void ringbuf_destroy(struct ringbuf *rb)
 {
     free(rb);
 }
 
+/**
+ * ringbuf_push - copy one message into the buffer
+ * @rb: the buffer
+ * @data: slot_size bytes to copy in
+ *
+ * Producer side only. See ringbuf.h for the caller-visible contract.
+ *
+ * Return: true if the message was stored; false if the buffer is full
+ * (lossless mode), or on transient slot-lock contention with an in-flight
+ * pop (overwrite mode).
+ */
 bool ringbuf_push(struct ringbuf *rb, const void *data)
 {
     size_t write_idx =
@@ -206,6 +255,16 @@ bool ringbuf_push(struct ringbuf *rb, const void *data)
     return true;
 }
 
+/**
+ * ringbuf_pop - copy one message out of the buffer
+ * @rb: the buffer
+ * @data: destination for slot_size bytes
+ *
+ * Consumer side only. See ringbuf.h for the caller-visible contract.
+ *
+ * Return: true if a message was copied out; false if the buffer is empty,
+ * or on transient contention with an evicting producer (overwrite mode).
+ */
 bool ringbuf_pop(struct ringbuf *rb, void *data)
 {
     size_t read_idx = atomic_load_explicit(&rb->read_idx, memory_order_relaxed);
@@ -253,21 +312,45 @@ bool ringbuf_pop(struct ringbuf *rb, void *data)
     return true;
 }
 
+/**
+ * ringbuf_capacity - slot count of the buffer
+ * @rb: the buffer
+ *
+ * Return: the capacity chosen at create time.
+ */
 size_t ringbuf_capacity(const struct ringbuf *rb)
 {
     return rb->capacity;
 }
 
+/**
+ * ringbuf_slot_size - size of one slot
+ * @rb: the buffer
+ *
+ * Return: the slot size in bytes.
+ */
 size_t ringbuf_slot_size(const struct ringbuf *rb)
 {
     return rb->slot_size;
 }
 
+/**
+ * ringbuf_dropped_count - messages evicted before they were read
+ * @rb: the buffer
+ *
+ * Return: the eviction count; always 0 in lossless mode.
+ */
 size_t ringbuf_dropped_count(const struct ringbuf *rb)
 {
     return atomic_load_explicit(&rb->dropped_count, memory_order_relaxed);
 }
 
+/**
+ * ringbuf_is_empty_approx - diagnostic emptiness check
+ * @rb: the buffer
+ *
+ * Return: true if the buffer looked empty; may be stale on return.
+ */
 bool ringbuf_is_empty_approx(const struct ringbuf *rb)
 {
     size_t w = atomic_load_explicit(&rb->write_idx, memory_order_acquire);
@@ -275,6 +358,12 @@ bool ringbuf_is_empty_approx(const struct ringbuf *rb)
     return (ptrdiff_t)(w - r) <= 0;
 }
 
+/**
+ * ringbuf_is_full_approx - diagnostic fullness check
+ * @rb: the buffer
+ *
+ * Return: true if the buffer looked full; may be stale on return.
+ */
 bool ringbuf_is_full_approx(const struct ringbuf *rb)
 {
     size_t w = atomic_load_explicit(&rb->write_idx, memory_order_acquire);
@@ -283,6 +372,14 @@ bool ringbuf_is_full_approx(const struct ringbuf *rb)
 }
 
 #ifdef RINGBUF_TEST_HOOKS
+/**
+ * ringbuf_test_seed_counters - reposition both counters, for tests only
+ * @rb: the buffer, which must be empty and quiescent
+ * @start: value to park both internal counters at
+ *
+ * Relaxed stores throughout: the preconditions rule out any concurrent
+ * producer or consumer to synchronize with.
+ */
 void ringbuf_test_seed_counters(struct ringbuf *rb, size_t start)
 {
     atomic_store_explicit(&rb->write_idx, start, memory_order_relaxed);

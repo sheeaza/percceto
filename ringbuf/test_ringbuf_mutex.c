@@ -25,12 +25,24 @@ struct message {
     unsigned char payload[PAYLOAD_LEN];
 };
 
+/**
+ * fill_payload - write the seq-derived payload pattern
+ * @payload: PAYLOAD_LEN bytes to fill
+ * @seq: sequence number the pattern is derived from
+ */
 static void fill_payload(unsigned char *payload, uint64_t seq)
 {
     for (int i = 0; i < PAYLOAD_LEN; i++)
         payload[i] = (unsigned char)((seq + (uint64_t)i) & 0xFF);
 }
 
+/**
+ * payload_ok - check a payload against the pattern for a sequence number
+ * @payload: PAYLOAD_LEN bytes as received
+ * @seq: sequence number the payload should match
+ *
+ * Return: true if @payload is exactly what fill_payload() writes for @seq.
+ */
 static bool payload_ok(const unsigned char *payload, uint64_t seq)
 {
     unsigned char expected[PAYLOAD_LEN];
@@ -61,6 +73,12 @@ struct lossless_consumer_args {
     const char *label;
 };
 
+/**
+ * lossless_producer_main - push num_messages sequenced messages
+ * @arg: struct lossless_producer_args
+ *
+ * Return: NULL always; failure is reported via the args' @failed field.
+ */
 static void *lossless_producer_main(void *arg)
 {
     struct lossless_producer_args *a = arg;
@@ -86,6 +104,12 @@ static void *lossless_producer_main(void *arg)
     return NULL;
 }
 
+/**
+ * lossless_consumer_main - pop num_messages and check seq order and payload
+ * @arg: struct lossless_consumer_args
+ *
+ * Return: NULL always; failure is reported via the args' @failed field.
+ */
 static void *lossless_consumer_main(void *arg)
 {
     struct lossless_consumer_args *a = arg;
@@ -117,7 +141,14 @@ static void *lossless_consumer_main(void *arg)
     return NULL;
 }
 
-/* Runs a two-thread lossless transfer over an already-created buffer. */
+/**
+ * run_lossless_transfer - two-thread lossless transfer over an existing buffer
+ * @rb: buffer created with overwrite_on_full = false
+ * @n: number of messages to send
+ * @label: name used in progress and failure messages
+ *
+ * Return: true if every message arrived in order with an intact payload.
+ */
 static bool run_lossless_transfer(struct ringbuf_mutex *rb, uint64_t n,
                                   const char *label)
 {
@@ -141,6 +172,11 @@ static bool run_lossless_transfer(struct ringbuf_mutex *rb, uint64_t n,
     return true;
 }
 
+/**
+ * run_lossless_test - lossless mode, two threads, heavy wraparound
+ *
+ * Return: true on pass.
+ */
 static bool run_lossless_test(void)
 {
     /* Small, non-trivial capacity forces heavy wraparound during the run. */
@@ -157,9 +193,16 @@ static bool run_lossless_test(void)
 
 /* ---- Overwrite mode, single-threaded eviction check ---- */
 
-/* Expects a capacity-4 buffer created with overwrite_on_full = true. Pushes
- * 10 messages with no pops, so the oldest 6 must be evicted and only seq
- * 6..9 remain. */
+/**
+ * run_overwrite_basic_on - single-threaded eviction check
+ * @rb: capacity-4 buffer created with overwrite_on_full = true
+ * @label: name used in progress and failure messages
+ *
+ * Pushes 10 messages with no pops, so the oldest 6 must be evicted and
+ * only seq 6..9 remain.
+ *
+ * Return: true if the drop count and the four surviving messages match.
+ */
 static bool run_overwrite_basic_on(struct ringbuf_mutex *rb, const char *label)
 {
     for (uint64_t seq = 0; seq < 10; seq++) {
@@ -204,6 +247,11 @@ static bool run_overwrite_basic_on(struct ringbuf_mutex *rb, const char *label)
     return true;
 }
 
+/**
+ * run_overwrite_basic_test - run the eviction check on a fresh buffer
+ *
+ * Return: true on pass.
+ */
 static bool run_overwrite_basic_test(void)
 {
     struct ringbuf_mutex *rb =
@@ -239,6 +287,16 @@ struct stress_consumer_args {
     const char *label;
 };
 
+/**
+ * stress_producer_main - push num_messages into an overwrite-mode buffer
+ * @arg: struct stress_producer_args
+ *
+ * Has no retry loop on purpose: in overwrite mode this variant promises
+ * push never fails, so a false return is a hard failure. Sets *done once
+ * finished, so the consumer knows when to drain and stop.
+ *
+ * Return: NULL always; failure is reported via the args' @failed field.
+ */
 static void *stress_producer_main(void *arg)
 {
     struct stress_producer_args *a = arg;
@@ -266,6 +324,16 @@ static void *stress_producer_main(void *arg)
     return NULL;
 }
 
+/**
+ * stress_consumer_main - drain an overwrite-mode buffer until the producer
+ *	is done, checking payloads and monotonic seq
+ * @arg: struct stress_consumer_args
+ *
+ * Gaps in seq are expected -- those are evictions -- but a repeat or a
+ * step backwards means a message was handed out twice.
+ *
+ * Return: NULL always; results and failures land in the args.
+ */
 static void *stress_consumer_main(void *arg)
 {
     struct stress_consumer_args *a = arg;
@@ -310,6 +378,15 @@ static void *stress_consumer_main(void *arg)
     return NULL;
 }
 
+/**
+ * run_overwrite_stress_on - concurrent eviction stress over an existing buffer
+ * @rb: buffer created with overwrite_on_full = true
+ * @n: number of messages to push
+ * @label: name used in progress and failure messages
+ *
+ * Return: true if push never failed, payloads were intact, seqs strictly
+ * increasing, the final message observed, and received + dropped == @n.
+ */
 static bool run_overwrite_stress_on(struct ringbuf_mutex *rb, uint64_t n,
                                     const char *label)
 {
@@ -368,6 +445,11 @@ static bool run_overwrite_stress_on(struct ringbuf_mutex *rb, uint64_t n,
     return true;
 }
 
+/**
+ * run_overwrite_stress_test - run the eviction stress on a fresh buffer
+ *
+ * Return: true on pass.
+ */
 static bool run_overwrite_stress_test(void)
 {
     struct ringbuf_mutex *rb =
@@ -398,8 +480,15 @@ static bool run_overwrite_stress_test(void)
 
 #define SEED_BASE (SIZE_MAX - 2)
 
-/* Sharp regression test: single-threaded, so a failure can only come from
- * the full/empty arithmetic rather than from a race. */
+/**
+ * run_wrap_boundary_test - fill, refuse, and drain across the SIZE_MAX
+ *	counter boundary
+ *
+ * Sharp regression test: single-threaded, so a failure can only come from
+ * the full/empty arithmetic rather than from a race.
+ *
+ * Return: true on pass.
+ */
 static bool run_wrap_boundary_test(void)
 {
     const uint64_t capacity = 16;
@@ -493,7 +582,11 @@ fail:
     return false;
 }
 
-/* Overwrite-mode eviction accounting across the same boundary. */
+/**
+ * run_wrap_overwrite_basic_test - eviction accounting across the same boundary
+ *
+ * Return: true on pass.
+ */
 static bool run_wrap_overwrite_basic_test(void)
 {
     struct ringbuf_mutex *rb =
@@ -508,9 +601,15 @@ static bool run_wrap_overwrite_basic_test(void)
     return ok;
 }
 
-/* Concurrent coverage of the boundary, for ThreadSanitizer. Smaller counts
- * than the main stress tests: the boundary is crossed in the first handful
- * of pushes, so the rest is just ordinary running. */
+/**
+ * run_wrap_lossless_concurrent_test - concurrent lossless coverage of the
+ *	boundary, for ThreadSanitizer
+ *
+ * Smaller counts than the main stress tests: the boundary is crossed in the
+ * first handful of pushes, so the rest is just ordinary running.
+ *
+ * Return: true on pass.
+ */
 static bool run_wrap_lossless_concurrent_test(void)
 {
     struct ringbuf_mutex *rb =
@@ -526,6 +625,11 @@ static bool run_wrap_lossless_concurrent_test(void)
     return ok;
 }
 
+/**
+ * run_wrap_overwrite_stress_test - concurrent eviction coverage of the boundary
+ *
+ * Return: true on pass.
+ */
 static bool run_wrap_overwrite_stress_test(void)
 {
     struct ringbuf_mutex *rb =
@@ -542,6 +646,14 @@ static bool run_wrap_overwrite_stress_test(void)
 
 #endif /* RINGBUF_TEST_HOOKS */
 
+/**
+ * main - run all seven cases unconditionally
+ *
+ * There is no filter flag; the four wrap_* cases are present only under
+ * -DRINGBUF_TEST_HOOKS.
+ *
+ * Return: 0 if every case passed, 1 otherwise.
+ */
 int main(void)
 {
     bool ok = true;
