@@ -161,12 +161,22 @@ details are load-bearing and both are verified by deliberately breaking them:
   Breaking this fails `overwrite_stress` with duplicate/out-of-order seqs — but
   **only** in the concurrent cases, so the single-threaded eviction tests pass
   and cannot be relied on to catch it.
-- **`read_idx` stores stay `memory_order_release` and `push`'s fullness load
-  stays `acquire`, even under the lock.** The unlocked fast push path reads
-  `read_idx` without the mutex, so the unlock's release does not cover it. That
-  acquire/release pair — not the lock — is what makes the consumer's finished
-  read visible before the producer overwrites the slot. `ringbuf_mutex_tsan` is
-  the gate on this.
+- **`pop`'s `read_idx` store stays `memory_order_release` and `push`'s
+  fullness load stays `acquire`.** A mutex only orders you against threads
+  taking the same mutex, and `push`'s fast path never takes it — so the
+  consumer's unlock gives the producer no edge. That acquire/release pair,
+  *not* the lock, is what makes the consumer's finished read visible before
+  the producer overwrites the slot. `ringbuf_mutex_tsan` is the gate on this:
+  relaxing either end reports a race on the slot data (`__tsan_memcpy`), not
+  on `read_idx` itself.
+
+  The corollary, and the easy thing to get backwards: the two stores inside
+  `push`'s eviction branch are deliberately **relaxed**, because that branch
+  is overwrite-mode-only and there `pop` touches both indices under the same
+  lock, so the unlock/lock edge already covers them. Every ordering in the
+  file that is *not* relaxed has an unlocked access on at least one end; if
+  both ends lock, relaxed is correct. Promoting those two back to `release`
+  is harmless at runtime but muddies that rule.
 
 Because `pop` can no longer fail transiently, the overwrite-mode producers in
 `test_ringbuf_mutex.c` have **no retry loop**: a `false` from push is a hard

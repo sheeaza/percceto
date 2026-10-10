@@ -30,6 +30,11 @@ struct ringbuf_mutex {
      * eviction branch of push. Unused, and not even initialized, in
      * lossless mode.
      *
+     * Still atomic rather than a plain size_t guarded by the lock, because
+     * push's fast path reads it without locking. That one unlocked reader
+     * is why pop's store carries release and push's fullness load carries
+     * acquire; accesses with the lock on both ends are relaxed.
+     *
      * The lock sits on this cache line rather than its own: an eviction
      * takes it and then immediately stores read_idx, so pairing them costs
      * one line transfer instead of two. The line is still split off from
@@ -183,11 +188,17 @@ bool ringbuf_mutex_push(struct ringbuf_mutex *rb, const void *data)
     size_t idx = write_idx & rb->mask;
 
     if (next - rb->cached_read > rb->capacity) {
-        /* Acquire, and NOT redundant with the lock below: the fast path
-         * underneath reads read_idx without ever taking the mutex, so this
-         * load is what synchronizes with the consumer's release store and
-         * makes the consumer's finished read visible before we overwrite
-         * the slot it was reading. */
+        /* Acquire, and NOT redundant with the lock below. A mutex only
+         * orders you against threads that take the same mutex, and this
+         * load runs before we take it -- the fast path underneath never
+         * takes it at all. So the consumer's unlock gives us no edge here;
+         * this acquire pairing with pop's release store is what makes the
+         * consumer's finished read visible before we overwrite the slot.
+         *
+         * That pair (this load, and the release store at the end of pop)
+         * is the only ordering in this file doing real work. The two
+         * stores inside the eviction branch below are relaxed, because
+         * there both sides hold the lock. */
         rb->cached_read =
             atomic_load_explicit(&rb->read_idx, memory_order_acquire);
         if (next - rb->cached_read > rb->capacity) {
@@ -206,10 +217,16 @@ bool ringbuf_mutex_push(struct ringbuf_mutex *rb, const void *data)
                  * lock means no pop can be mid-read of that slot, and no
                  * pop can observe read_idx between this store and the
                  * memcpy below -- so unlike ringbuf.c this needs no CAS to
-                 * stay single-valued. Release so the unlocked fast pop
-                 * path above cannot see the advance before the data. */
+                 * stay single-valued.
+                 *
+                 * Relaxed, unlike every other read_idx access here. This
+                 * branch runs only in overwrite mode, where pop reads
+                 * read_idx exclusively under this same lock, so the
+                 * unlock/lock edge already orders us against it. See the
+                 * note on the fullness load above for the accesses that do
+                 * need explicit ordering. */
                 atomic_store_explicit(&rb->read_idx, fresh_read + 1,
-                                      memory_order_release);
+                                      memory_order_relaxed);
                 atomic_fetch_add_explicit(&rb->dropped_count, 1,
                                           memory_order_relaxed);
                 rb->cached_read = fresh_read + 1;
@@ -220,7 +237,12 @@ bool ringbuf_mutex_push(struct ringbuf_mutex *rb, const void *data)
             }
 
             memcpy(rb->slots + idx * rb->slot_size, data, rb->slot_size);
-            atomic_store_explicit(&rb->write_idx, next, memory_order_release);
+            /* Relaxed, unlike the fast path's identical store below: this
+             * branch is overwrite-mode-only, and there pop reads write_idx
+             * under this same lock, so the unlock already publishes the
+             * memcpy above. The fast path has no such edge and needs the
+             * release. */
+            atomic_store_explicit(&rb->write_idx, next, memory_order_relaxed);
             pthread_mutex_unlock(&rb->lock);
             return true;
         }
@@ -299,8 +321,9 @@ bool ringbuf_mutex_pop(struct ringbuf_mutex *rb, void *data)
     memcpy(data, rb->slots + (read_idx & rb->mask) * rb->slot_size,
            rb->slot_size);
 
-    /* Release, not relaxed: the unlocked fast push path reads read_idx
-     * without the mutex, so the unlock's release does not cover it. This
+    /* Release, not relaxed, and the one store under this lock that is not:
+     * push's fast path reads read_idx (see its fullness load) without ever
+     * taking the mutex, so the unlock's release does not reach it. This
      * store is what tells that path our read of the slot is complete and
      * the slot is safe to overwrite. */
     atomic_store_explicit(&rb->read_idx, read_idx + 1, memory_order_release);
