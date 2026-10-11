@@ -53,16 +53,29 @@ struct ringbuf_zcopy {
 
     atomic_size_t dropped_count;
 
-    /* Single-writer: only the producer ever stores to write_idx, in either
-     * mode, exactly as in ringbuf_mutex.c. The split push does not change
-     * that -- reserve() is single-caller, and submit() touches only the
-     * stamp, never this counter.
+    /* Single-writer: only reserve() ever stores to write_idx, in either mode,
+     * exactly as in ringbuf_mutex.c. The split push does not change that --
+     * submit() touches only the stamp, never this counter.
+     *
+     * Note what "single-writer" rests on: reserve() being serialized, not
+     * single-threaded. With several producers under the caller's push mutex
+     * there is still only one store in flight, which is why this stays a
+     * plain counter rather than becoming a CAS target like ringbuf_mpsc.c's.
      *
      * Relaxed throughout, which is the one ordering that got WEAKER than
      * ringbuf_mutex.c's. There the release store on write_idx is what
      * publishes the message; here publication is the stamp's job, and nothing
-     * reads write_idx to decide a slot is ready: only the producer itself,
-     * the locked eviction path, and the two advisory *_approx helpers. */
+     * reads write_idx to decide a slot is ready: only reserve itself, the
+     * locked eviction path, and the two advisory *_approx helpers.
+     *
+     * The relaxed load/store pair is also the one place the MULTI-producer
+     * arrangement depends on the caller rather than on this file: producer B's
+     * load must observe producer A's store, and relaxed atomics alone promise
+     * no such thing -- the caller's unlock/lock supplies the edge. Hence the
+     * header's rule that the mutex be a real lock. Deliberately not promoted
+     * to acquire/release: that would duplicate a mandatory mutex on every
+     * reserve, buying nothing, while implying this counter could carry
+     * concurrent producers on its own, which it cannot. */
     _Alignas(64) atomic_size_t write_idx;
 
     /* Retirement counter, and the one place the clean SPSC split breaks: in
@@ -71,10 +84,13 @@ struct ringbuf_zcopy {
      *
      * `lock` is what reconciles them, held by every pop and by reserve's
      * eviction branch only -- the arrangement from ringbuf_mutex.c, kept
-     * unchanged because a single producer still makes it sufficient. In
-     * particular read_idx needs no CAS: a plain store under this lock is
-     * already single-valued. Unused, and not even initialized, in lossless
-     * mode.
+     * unchanged because there are still just TWO kinds of writer, not N+1 as
+     * in ringbuf_mpsc.c, however many producers the caller runs: only one of
+     * them can be inside the eviction branch at a time. In particular read_idx
+     * needs no CAS -- a plain store under this lock is already single-valued --
+     * whereas ringbuf_mpsc.c needs advance_read_idx()'s store-max loop
+     * precisely because it declined to serialize its producers. Unused, and
+     * not even initialized, in lossless mode.
      *
      * Still atomic rather than a plain size_t, because the *_approx helpers
      * read it without locking.
@@ -240,9 +256,11 @@ void ringbuf_zcopy_destroy(struct ringbuf_zcopy *rb)
  * @rb: the buffer
  * @rsv: handle to fill in, valid only on a true return
  *
- * Producer side only, single-caller. See ringbuf_zcopy.h for the
- * caller-visible contract. The hot path runs unlocked; only the eviction
- * branch takes the mutex, and it is the only path that can block.
+ * Producer side only, and single-caller AT A TIME: either one producer thread,
+ * or several serialized by the caller's own push mutex. See ringbuf_zcopy.h
+ * for the caller-visible contract and the rules that mutex must follow. The
+ * hot path takes no lock of ours; only the eviction branch takes the internal
+ * mutex, and it is the only path that can block.
  *
  * ORDERING, and the one part of this file with no counterpart in the other
  * variants. Everywhere else an acquire/release pair brackets a window inside
@@ -260,6 +278,11 @@ void ringbuf_zcopy_destroy(struct ringbuf_zcopy *rb)
  * holds whether submit runs on the filler thread or back on this one after a
  * join.
  *
+ * With several producers there is a FOURTH edge, also the caller's: the push
+ * mutex's unlock/lock, which is what carries one producer's relaxed write_idx
+ * store to the next producer's relaxed load. Edge 2 and that one are the
+ * caller's whole contribution, and neither can be supplied from in here.
+ *
  * Return: true if a slot was claimed; false if the buffer is full (lossless
  * mode) or the slot it needs is reserved but unsubmitted (either mode).
  */
@@ -276,17 +299,21 @@ bool ringbuf_zcopy_reserve(struct ringbuf_zcopy *rb, struct ringbuf_rsv *rsv)
     size_t st = atomic_load_explicit(&rb->stamp[idx], memory_order_acquire);
 
     if (st != w) {
-        /* Not free. The single producer is what keeps this exhaustive: slot
-         * idx last held ticket p = w - capacity, so the stamp is either p (p
-         * is reserved and NOT yet submitted) or p + 1 (p was submitted and is
-         * still unread). Two states, no others.
+        /* Not free. Slot idx last held ticket p = w - capacity, so the stamp
+         * is either p (p is reserved and NOT yet submitted) or p + 1 (p was
+         * submitted and is still unread). Two states, no others.
          *
          * A stamp past w in particular is impossible, so there is no
          * staleness case to retry: only the holder of reservation w can
-         * publish w, w is handed out by this function alone, and this
-         * function is single-caller. Were there a second producer, w could be
-         * stale the instant it was loaded and everything below would need a
-         * retry loop. */
+         * publish w, w is handed out by this function alone, and no two calls
+         * to this function overlap. That last clause is what the exhaustiveness
+         * really needs -- SERIALIZED claims, not same-threaded ones -- which is
+         * why the caller's push mutex is enough to make this code support N
+         * producers unchanged. Drop the serialization and this is the first
+         * thing to break: two concurrent reserves both read w, both pass the
+         * checks below, and both hand out the same slot, which is why
+         * ringbuf_mpsc.c needs a validating CAS and a retry loop exactly
+         * here. */
         if (st == w - rb->capacity) {
             /* A filler may be writing these bytes right now, so this slot
              * cannot be evicted, in either mode. Only the caller's own submit
@@ -316,13 +343,13 @@ bool ringbuf_zcopy_reserve(struct ringbuf_zcopy *rb, struct ringbuf_rsv *rsv)
             /* Still unread, so retire it as dropped.
              *
              * read_idx is exactly w - capacity here, which is why eviction
-             * never has to search for a victim or skip over reserved slots,
-             * and it is the one place the single-producer premise does
-             * visible work. Reservations are handed out in ticket order by
-             * one thread, so every ticket older than w - capacity has already
-             * been retired -- its slot could not have been re-reserved
-             * otherwise -- while w - capacity itself is unread by the stamp
-             * we just read. */
+             * never has to search for a victim or skip over reserved slots.
+             * Reservations are handed out in ticket ORDER, so every ticket
+             * older than w - capacity has already been retired -- its slot
+             * could not have been re-reserved otherwise -- while w - capacity
+             * itself is unread by the stamp we just read. An argument about
+             * issue order rather than thread identity, so N producers under
+             * one mutex satisfy it exactly as a single producer does. */
             atomic_store_explicit(&rb->read_idx, w - rb->capacity + 1,
                                   memory_order_relaxed);
             atomic_fetch_add_explicit(&rb->dropped_count, 1,
@@ -369,7 +396,13 @@ bool ringbuf_zcopy_reserve(struct ringbuf_zcopy *rb, struct ringbuf_rsv *rsv)
  * only ever touches a slot whose stamp it has observed as submitted, and a
  * submitted ticket is by definition not this one, so no eviction can be
  * racing us here. Concurrent submits of distinct reservations touch distinct
- * slots, since at most `capacity` tickets can be outstanding.
+ * slots, since at most `capacity` tickets can be outstanding -- across all
+ * producers, when the caller runs several.
+ *
+ * Nothing here reads write_idx or read_idx, which is what makes submit safe to
+ * call WITHOUT the caller's push mutex. That is not merely convenient: a
+ * producer spinning on reserve() is usually blocked by a peer's unsubmitted
+ * slot, so a caller that needed its own mutex here would deadlock.
  *
  * The release is edge 3 of the three in ringbuf_zcopy_reserve: it publishes
  * the caller's fill to pop's acquire load. ticket + 1 is what marks the slot
@@ -465,6 +498,10 @@ static bool take_submitted(struct ringbuf_zcopy *rb, void *data, size_t r)
  * single-caller here is read_idx itself, stored plainly by one writer, so two
  * concurrent poppers would both read the same r and deliver the same message
  * twice.
+ *
+ * This is also the one restriction a caller-held mutex cannot lift, however
+ * many producers it is running: that mutex serializes producers against each
+ * other and says nothing about consumers. Do not take it here.
  *
  * Return: true if a message was copied out; false if the buffer is empty or
  * the oldest slot is still awaiting its submit.

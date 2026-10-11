@@ -5,8 +5,9 @@
 #include <stddef.h>
 
 /*
- * Single-producer / single-consumer ring buffer with a split push:
- * reserve a slot, fill it in place, then submit it.
+ * Ring buffer with a split push: reserve a slot, fill it in place, then submit
+ * it. Single-producer / single-consumer by default, and multi-producer when
+ * the caller serializes the claims -- see "SEVERAL PRODUCERS" below.
  *
  * Every other variant in this tree copies the payload inside push(), from a
  * buffer the caller already filled. This one hands the caller a pointer to
@@ -34,11 +35,55 @@
  * The contract, which is SPSC like ringbuf.h and ringbuf_mutex.h:
  *
  *   - Exactly ONE thread may call ringbuf_zcopy_reserve() (or the push()
- *     convenience wrapper). More than one is undefined behavior.
+ *     convenience wrapper). More than one is undefined behavior -- UNLESS the
+ *     caller serializes them, which is a supported arrangement in its own
+ *     right; see "SEVERAL PRODUCERS" below.
  *   - Exactly ONE thread may call ringbuf_zcopy_pop(). More than one is
- *     undefined behavior.
+ *     undefined behavior, and no caller-held lock fixes it: pop advances the
+ *     read index with a plain single-writer store, so two poppers would
+ *     deliver the same message twice.
  *   - ringbuf_zcopy_submit() may be called from ANY thread, which is the
  *     point: it is what the filler threads call when they finish.
+ *
+ * SEVERAL PRODUCERS. Any number of threads may reserve, provided EVERY call to
+ * reserve() (and push()) is serialized by one mutex the CALLER supplies.
+ * Nothing in this file synchronizes producers against each other; what makes
+ * the arrangement work is that reserve's internals need the claims
+ * SERIALIZED, not same-threaded.
+ *
+ *	pthread_mutex_lock(&my_push_mu);		-- serialize the CLAIM
+ *	bool got = ringbuf_zcopy_reserve(rb, &rsv);
+ *	pthread_mutex_unlock(&my_push_mu);
+ *
+ *	if (got) {
+ *		fill(rsv.data);			-- OUTSIDE the lock, so
+ *		ringbuf_zcopy_submit(rb, &rsv);	   every producer's fill
+ *	}					   overlaps every other's
+ *
+ * That is worth doing only because the lock covers so little. Claiming a slot
+ * is a few atomics on fixed state; filling it is a memcpy, a read(2), a
+ * serialization pass -- unbounded, and the part that costs. A mutex around an
+ * ordinary push() necessarily covers the payload copy too, which serializes
+ * exactly the work you wanted to overlap.
+ *
+ * Three rules come with it:
+ *
+ *   1. Hold the mutex across reserve() ONLY. Holding it across the fill is
+ *      correct but pointless -- that is a serialized push with extra steps.
+ *   2. NEVER require it on the submit path. A producer spinning on reserve()
+ *      is usually blocked by a PEER's unsubmitted slot, so if that peer needs
+ *      the same mutex to submit, the two deadlock. Retry with the mutex
+ *      released.
+ *   3. It must be a real lock. reserve() reads and writes the internal write
+ *      index with relaxed atomics, so one producer's store reaches the next
+ *      producer's load only through the mutex's own release/acquire edges. Any
+ *      pthread_mutex_t or correctly built spinlock supplies them; a "lock"
+ *      assembled from relaxed atomics does not, and would compile and mostly
+ *      appear to work.
+ *
+ * Delivery is then by RESERVATION order -- the order the mutex granted claims
+ * in -- so two producers racing for it may be delivered in either order, while
+ * each producer's own messages stay in the order it reserved them.
  *
  * EVERY SUCCESSFUL RESERVATION MUST BE SUBMITTED, exactly once. There is no
  * cancel. Abandoning a reservation stalls delivery permanently: the consumer
@@ -53,10 +98,16 @@
  * will stall.
  *
  * Relation to the other variants. This is ringbuf_mutex.h with push() split
- * in two: same data structure, same SPSC contract, same two modes, and
- * overwrite mode is still reconciled with one internal mutex, so
- * reserve()/push() may BLOCK and neither is async-signal-safe. Use ringbuf.h
- * if that matters.
+ * in two: same data structure, same two modes, and overwrite mode is still
+ * reconciled with one internal mutex, so reserve()/push() may BLOCK and
+ * neither is async-signal-safe. Use ringbuf.h if that matters.
+ *
+ * ringbuf_mpsc.h is the other way to take several producers: it synchronizes
+ * them itself with a ticket CAS, needing no caller-held mutex and staying
+ * lock-free and signal-safe, but its push copies the payload internally. Pick
+ * that one when producers must not block or you cannot hold a lock; pick this
+ * one when you can hold a short lock and want the payload written in place,
+ * with several fills in flight.
  *
  * The one structural difference follows from out-of-order submit. In
  * ringbuf_mutex.h the write index doubles as the readiness marker: everything
@@ -138,9 +189,11 @@ void ringbuf_zcopy_destroy(struct ringbuf_zcopy *rb);
  *     not been submitted yet. This happens in BOTH modes -- an unsubmitted
  *     slot is never evicted, since a filler may be writing to it. It is
  *     about the reservation's age rather than how many are outstanding:
- *     the slot wanted here was reserved exactly capacity tickets ago. Only
- *     your own submit can clear it, so retrying without submitting
- *     something will spin forever.
+ *     the slot wanted here was reserved exactly capacity tickets ago. With one
+ *     producer only your own submit can clear it, so retrying without
+ *     submitting something will spin forever; with several, the blocking
+ *     reservation is usually a peer's, so retrying -- with the push mutex
+ *     released -- is the correct response.
  *
  * Return: true if a slot was claimed and @rsv filled in; false if the
  * buffer is full (lossless mode) or the slot it needs is reserved but

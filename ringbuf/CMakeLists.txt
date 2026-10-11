@@ -81,6 +81,15 @@ target_include_directories(ringbuf_zcopy PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_options(ringbuf_zcopy PRIVATE ${RINGBUF_WARNINGS})
 target_link_libraries(ringbuf_zcopy PUBLIC Threads::Threads)
 
+# There is deliberately NO ringbuf_zcopy_mpsc library target. Several
+# producers are supported by ringbuf_zcopy itself, provided the caller
+# serializes reserve() with a mutex it owns -- that file's single-producer
+# reasoning needs the reserves serialized, not same-threaded. A separate
+# implementation was written first and came out token-for-token identical to
+# ringbuf_zcopy.c, so it was deleted rather than maintained in parallel. What
+# remains is test_ringbuf_zcopy_mpsc.c, which links the same library and is
+# the only place the multi-producer discipline is exercised.
+
 # Variable-length variant: byte-packed, length-prefixed records instead of
 # fixed-size slots, with the ring mapped twice back to back so a record
 # spanning the physical end stays contiguous.
@@ -140,6 +149,20 @@ if(RINGBUF_BUILD_TESTS)
     target_compile_options(test_ringbuf_zcopy PRIVATE ${RINGBUF_WARNINGS})
     target_link_libraries(test_ringbuf_zcopy PRIVATE Threads::Threads)
     add_test(NAME ringbuf_zcopy COMMAND test_ringbuf_zcopy)
+
+    # The multi-producer cases for the SAME library: several producers are
+    # legal when the caller serializes reserve() with its own mutex, which no
+    # single-producer test file can demonstrate. Compiles ringbuf_zcopy.c
+    # directly like the target above -- it is a second test binary over one
+    # library, not a second implementation -- and needs the define for its own
+    # counter-overflow case.
+    add_executable(test_ringbuf_zcopy_mpsc
+        ringbuf_zcopy.c test_ringbuf_zcopy_mpsc.c)
+    target_compile_definitions(test_ringbuf_zcopy_mpsc PRIVATE
+        RINGBUF_TEST_HOOKS)
+    target_compile_options(test_ringbuf_zcopy_mpsc PRIVATE ${RINGBUF_WARNINGS})
+    target_link_libraries(test_ringbuf_zcopy_mpsc PRIVATE Threads::Threads)
+    add_test(NAME ringbuf_zcopy_mpsc COMMAND test_ringbuf_zcopy_mpsc)
 
     # And again for the variable-length variant, when it is available.
     if(RINGBUF_HAVE_VAR)
@@ -214,7 +237,30 @@ if(RINGBUF_BUILD_TESTS)
             Threads::Threads)
         add_test(NAME ringbuf_zcopy_tsan COMMAND test_ringbuf_zcopy_tsan)
 
-        # Weaker evidence than the other four tsan targets, deliberately
+        # The real gate on the multi-producer discipline, and the one place
+        # its central claim can actually be checked. ringbuf_zcopy.c's
+        # accesses to write_idx are relaxed at both ends, which is correct
+        # under several producers ONLY because the caller's mutex supplies the
+        # release/acquire edge between consecutive reserves -- nothing in the
+        # library provides it. No logic test can observe that edge; tsan can,
+        # and reports a race in the caller's fill (two producers handed the
+        # same slot) if the mutex stops covering the claim. Verified by
+        # removing it. The mpsc_* cases, with four producers handing write_idx
+        # between them, are what drive it.
+        add_executable(test_ringbuf_zcopy_mpsc_tsan
+            ringbuf_zcopy.c test_ringbuf_zcopy_mpsc.c)
+        target_compile_definitions(test_ringbuf_zcopy_mpsc_tsan PRIVATE
+            RINGBUF_TEST_HOOKS)
+        target_compile_options(test_ringbuf_zcopy_mpsc_tsan PRIVATE
+            ${RINGBUF_WARNINGS} -O1 -g -fsanitize=thread)
+        target_link_options(test_ringbuf_zcopy_mpsc_tsan PRIVATE
+            -fsanitize=thread)
+        target_link_libraries(test_ringbuf_zcopy_mpsc_tsan PRIVATE
+            Threads::Threads)
+        add_test(NAME ringbuf_zcopy_mpsc_tsan
+            COMMAND test_ringbuf_zcopy_mpsc_tsan)
+
+        # Weaker evidence than the other five tsan targets, deliberately
         # kept anyway. tsan keys shadow memory by virtual address, so the
         # two views of the mirrored mapping look like unrelated locations
         # and a race on a record spanning the ring end can be hidden. It
