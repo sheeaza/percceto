@@ -51,6 +51,11 @@ message EventName {
     optional string name = 2;
 }
 
+// Categories are not emitted by libpftrace -- a category is Perfetto's
+// mechanism for enabling groups of trace points at runtime, which this
+// library does not implement. The fields are kept here so the checkers can
+// assert they are absent rather than merely unparsed: a trace carrying one
+// means something regressed.
 message EventCategory {
     optional uint64 iid = 1;
     optional string name = 2;

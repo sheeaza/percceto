@@ -31,23 +31,20 @@ def main():
 
     uuids = set()
     names = {}
-    cats = {}
     begins = ends = instants = counters = 0
-    unknown_track = unresolved_name = unresolved_cat = 0
+    unknown_track = unresolved_name = stray_cat = 0
 
     for p in trace.packet:
         # SEQ_INCREMENTAL_STATE_CLEARED restarts interning, which is what
         # makes each snapshot window independently readable.
         if p.sequence_flags & 1:
             names.clear()
-            cats.clear()
         if p.HasField("track_descriptor"):
             uuids.add(p.track_descriptor.uuid)
         if p.HasField("interned_data"):
             for e in p.interned_data.event_names:
                 names[e.iid] = e.name
-            for e in p.interned_data.event_categories:
-                cats[e.iid] = e.name
+            stray_cat += len(p.interned_data.event_categories)
         if not p.HasField("track_event"):
             continue
 
@@ -56,9 +53,7 @@ def main():
             unknown_track += 1
         if ev.name_iid and ev.name_iid not in names:
             unresolved_name += 1
-        for iid in ev.category_iids:
-            if iid not in cats:
-                unresolved_cat += 1
+        stray_cat += len(ev.category_iids) + len(ev.categories)
         if ev.type == TrackEvent.TYPE_SLICE_BEGIN:
             begins += 1
         elif ev.type == TrackEvent.TYPE_SLICE_END:
@@ -76,7 +71,10 @@ def main():
     # events in it dangling.
     assert unknown_track == 0, f"{unknown_track} events on undeclared tracks"
     assert unresolved_name == 0, f"{unresolved_name} unresolvable name_iids"
-    assert unresolved_cat == 0, f"{unresolved_cat} unresolvable category iids"
+    # The library no longer emits categories at all. Asserting they are
+    # absent rather than merely valid is what catches a half-reverted
+    # change, where a category is written but nothing interns it.
+    assert stray_cat == 0, f"{stray_cat} category fields in a trace that should have none"
     assert uuids, "no tracks declared"
     assert begins > 0, "no slices in trace"
 

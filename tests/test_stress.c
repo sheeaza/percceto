@@ -48,7 +48,7 @@ static void *worker_fn(void *p)
 {
     struct worker_arg *a = p;
     for (unsigned i = 0; i < a->n; i++) {
-        pf_slice_begin(a->t, a->track, "work", "stress");
+        pf_slice_begin(a->t, a->track, "work");
         pf_counter_set_int(a->t, a->track, i);
         pf_slice_end(a->t, a->track);
     }
@@ -83,15 +83,15 @@ static void test_snapshot_window(void)
 
     /* "early" appears only at the very start, so if it survives to the
      * dump the ring is not actually recycling. */
-    pf_instant_event(t, track, "early_marker", "stress");
+    pf_instant_event(t, track, "early_marker");
 
     for (unsigned i = 0; i < EVENTS; i++) {
-        pf_slice_begin(t, track, "compute", "stress");
+        pf_slice_begin(t, track, "compute");
         pf_slice_end(t, track);
     }
 
     /* The stall the program just noticed. */
-    pf_instant_event(t, track, "perf_drop_detected", "stress");
+    pf_instant_event(t, track, "perf_drop_detected");
     CHECK(pf_trace_dump(t) == 0, "dump");
 
     struct pf_stats s;
@@ -239,9 +239,9 @@ static void test_continuous_paced(void)
      * and far below what the drain thread sustains. */
     const unsigned rounds = 20000;
     for (unsigned i = 0; i < rounds; i++) {
-        pf_slice_begin(t, track, "request", "paced");
+        pf_slice_begin(t, track, "request");
         pf_counter_set_int(t, track, i % 97);
-        pf_instant_event(t, track, "checkpoint", "paced");
+        pf_instant_event(t, track, "checkpoint");
         pf_slice_end(t, track);
         if (i % 200 == 0)
             usleep(1000);
@@ -303,8 +303,15 @@ static void test_continuous_paced(void)
     printf("  ok\n");
 }
 
-/* Names longer than the record's 255-byte field must be truncated and
- * counted, never written out of bounds. */
+/* A name far longer than a record must still reach the file intact.
+ *
+ * Names are no longer copied into the ring -- the record holds a pointer
+ * and the drain thread reads the characters -- so there is no 255-byte
+ * field to overflow and nothing to truncate. What is still worth pinning
+ * is that a name much larger than the 40-byte record encodes correctly
+ * and lands in the output: the staging buffers are presized for typical
+ * names (PF_NAME_WARM), so a long one exercises pb_buf's growth path on
+ * the drain thread. */
 static void test_long_names(void)
 {
     printf("long names:\n");
@@ -326,22 +333,46 @@ static void test_long_names(void)
     uint64_t proc = pf_track_process(t, 4323, "names");
     uint64_t track = pf_track_thread(t, proc, 4323, 1, "main");
 
-    char huge[1024];
-    memset(huge, 'x', sizeof(huge) - 1);
-    huge[sizeof(huge) - 1] = '\0';
+/* 520 characters: longer than the old 255-byte cap and than the whole
+ * record, and a literal, so the compile-time check accepts it. */
+#define LONG_NAME                                                              \
+    "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"         \
+    "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"         \
+    "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"         \
+    "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"         \
+    "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"         \
+    "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"         \
+    "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"         \
+    "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"         \
+    "xxxxxxxx"
 
     for (unsigned i = 0; i < 50; i++) {
-        pf_slice_begin(t, track, huge, huge);
+        pf_slice_begin(t, track, LONG_NAME);
         pf_slice_end(t, track);
     }
     CHECK(pf_trace_dump(t) == 0, "dump");
 
     struct pf_stats s;
     pf_trace_stats(t, &s);
-    printf("  truncated=%" PRIu64 "\n", s.truncated_names);
-    CHECK(s.truncated_names == 100, "both name and category counted per event");
+    CHECK(s.events == 100, "50 begin/end pairs published, got %" PRIu64,
+          s.events);
 
     pf_trace_close(t);
+
+    /* The name must appear in the file in full -- interned once, so one
+     * occurrence is all that is expected. */
+    size_t want = strlen(LONG_NAME);
+    CHECK(want == 520, "the test name is %zu bytes", want);
+    FILE *f = fopen(path, "rb");
+    CHECK(f != NULL, "reopen %s", path);
+    if (f) {
+        static char buf[1024 * 1024];
+        size_t n = fread(buf, 1, sizeof(buf), f);
+        fclose(f);
+        CHECK(memmem(buf, n, LONG_NAME, want) != NULL,
+              "the full %zu-byte name reached the file", want);
+    }
+#undef LONG_NAME
     printf("  ok\n");
 }
 

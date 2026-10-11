@@ -33,12 +33,10 @@
 #define SEQ_NEEDS_INCREMENTAL_STATE 2u
 
 /* TrackEvent */
-#define FN_EVENT_CATEGORY_IIDS 3
 #define FN_EVENT_TYPE 9
 #define FN_EVENT_NAME_IID 10
 #define FN_EVENT_TRACK_UUID 11
 #define FN_EVENT_COUNTER_VALUE 30
-#define FN_EVENT_CATEGORIES_STR 22
 #define FN_EVENT_NAME_STR 23
 #define FN_EVENT_DOUBLE_COUNTER_VALUE 44
 
@@ -65,8 +63,7 @@
 /* CounterDescriptor */
 #define FN_COUNTER_UNIT 3
 
-/* InternedData / EventName / EventCategory */
-#define FN_INTERNED_EVENT_CATEGORIES 1
+/* InternedData / EventName */
 #define FN_INTERNED_EVENT_NAMES 2
 #define FN_IID 1
 #define FN_NAME_STR 2
@@ -76,22 +73,29 @@
  * room for; everything after it is plain bytes written by the owning
  * producer alone.
  *
- * Variable-length by design: a slice_end carries no name and no value and
- * so costs 32 bytes, against the 48 a fixed-stride slot would spend on
- * every event regardless. Strings are copied in raw and converted to iids
- * later by the drain thread, which keeps the intern table (and its
- * hashing) off the hot path entirely.
+ * Fixed size, which is what lets pf_ring drop its length bookkeeping
+ * entirely -- see pf_ring.h. The name is a borrowed pointer rather than
+ * inline bytes: names are string literals, so copying them would spend up
+ * to 255 bytes and a memcpy per event to duplicate something immortal.
+ * The drain thread dereferences the pointer and interns it, which keeps
+ * both the strlen and the hashing off the hot path.
  *
- *   0       8       16      24 25 26 27  28
- *   +-------+-------+-------+--+--+--+--+---------------------------+
- *   | hdr   | ts    | track |ty|nl|cl|fl| value? | name   | category |
- *   +-------+-------+-------+--+--+--+--+---------------------------+
- *                                        \- 8 bytes, iff RF_HAS_VALUE
+ * @name and @value share eight bytes because no event carries both. A
+ * slice or instant has a name and no value; a counter has a value and no
+ * name, which is not a shortcut but Perfetto's own rule -- "most other
+ * TrackEvent fields (e.g. categories, name, ..) are not supported for
+ * TYPE_COUNTER events". RF_HAS_VALUE selects the arm.
+ *
+ *   0       8       16      24      32   36   40
+ *   +-------+-------+-------+-------+----+----+
+ *   | hdr   | ts    | track | name  |type|flag|
+ *   |       |       |       | value |    |    |
+ *   +-------+-------+-------+-------+----+----+
  *
  * Overlaid on the ring rather than copied field by field, which is sound
  * because every member is naturally aligned: pf_ring hands out 8-byte
- * aligned records (PF_REC_ALIGN), and the four one-byte fields sit in the
- * 24..27 tail. Any buffer this is cast onto must be 8-byte aligned too --
+ * aligned records (PF_REC_ALIGN) and the two 4-byte fields sit in the
+ * 32..39 tail. Any buffer this is cast onto must be 8-byte aligned too --
  * see pf_trace.rec_copy.
  */
 struct pf_rec {
@@ -101,43 +105,44 @@ struct pf_rec {
 
     uint64_t ts; /* timestamp, ns */
     uint64_t track; /* track_uuid */
-    uint8_t type; /* TYPE_* */
-    uint8_t nlen; /* name bytes, following the value */
-    uint8_t clen; /* category bytes, following the name */
-    uint8_t flags; /* see RF_* */
 
-    /* value (8 bytes, counters only), then name, then category. */
-    uint8_t body[];
+    /* Borrowed string literal, or a counter's value; see RF_HAS_VALUE. */
+    union {
+        const char *name;
+        uint64_t value;
+    } u;
+
+    uint32_t type; /* TYPE_* */
+    uint32_t flags; /* see RF_* */
 };
 
 #define RF_HAS_VALUE 0x1u
 #define RF_VALUE_IS_DOUBLE 0x2u
 
-#define PF_NAME_MAX 255u
-
-/* The layout is the on-ring wire format, so pin it. Note this is
- * offsetof(body) and not sizeof: the struct's 8-byte alignment rounds
- * sizeof up to 32, and spending those 4 bytes on every record -- or
- * shifting where the body begins -- is exactly the regression to catch. */
+/* The layout is the on-ring wire format, so pin it. The size is pinned
+ * against pf_ring's stride, which is what the ring's arithmetic assumes;
+ * the two must not drift apart. */
+_Static_assert(sizeof(struct pf_rec) == PF_REC_BYTES,
+               "the record is exactly pf_ring's stride");
 _Static_assert(offsetof(struct pf_rec, hdr) == 0, "the tag leads the record");
 _Static_assert(offsetof(struct pf_rec, ts) == 8, "ts follows the tag");
 _Static_assert(offsetof(struct pf_rec, track) == 16, "track follows ts");
-_Static_assert(offsetof(struct pf_rec, type) == 24, "header tail at 24");
-_Static_assert(offsetof(struct pf_rec, nlen) == 25, "no padding before nlen");
-_Static_assert(offsetof(struct pf_rec, clen) == 26, "no padding before clen");
-_Static_assert(offsetof(struct pf_rec, flags) == 27, "no padding before flags");
-_Static_assert(offsetof(struct pf_rec, body) == 28, "body packs against flags");
-
-/* The largest record this layout can produce, which is what pf_ring sizes
- * its claim limit against. Keeps that header's arithmetic honest rather
- * than merely commented. */
-#define PF_REC_WORST (offsetof(struct pf_rec, body) + 8u + 2u * PF_NAME_MAX)
-_Static_assert((PF_REC_WORST + 7u) / 8u * 8u == PF_REC_MAX,
-               "PF_REC_MAX matches the worst case: value + name + category");
+_Static_assert(offsetof(struct pf_rec, u) == 24, "name/value follows track");
+_Static_assert(offsetof(struct pf_rec, type) == 32, "type follows name/value");
+_Static_assert(offsetof(struct pf_rec, flags) == 36, "no padding before flags");
 
 /* Cap on a track's stored name. Fixed so the track table is one
  * allocation at open and never grows. */
 #define PF_TRACK_NAME_MAX 64
+
+/* How much to presize the staging buffers for. These are hints, not
+ * limits: an event name is a borrowed literal of any length, so pb_buf
+ * grows if one exceeds this. Sized generously enough that the steady state
+ * never reallocates -- pb_buf_warm's whole purpose -- while staying an
+ * honest typical name rather than a worst case the ring no longer
+ * imposes. */
+#define PF_NAME_WARM 256u
+#define PF_PACKET_WARM (PF_REC_BYTES + PF_NAME_WARM)
 
 /* Flush the staging buffer once it passes this, so one write() carries
  * many packets instead of one syscall per event. */
@@ -155,22 +160,24 @@ _Static_assert((PF_REC_WORST + 7u) / 8u * 8u == PF_REC_MAX,
 #define PF_SNAPSHOT_RETAIN_NUM 3
 #define PF_SNAPSHOT_RETAIN_DEN 4
 
-static size_t round_up8(size_t v)
-{
-    return (v + 7u) & ~(size_t)7u;
-}
-
-/* --- Interning tables -------------------------------------------------
- * Fixed-capacity open-addressing hash tables (string -> iid). Owned
+/* --- Interning table --------------------------------------------------
+ * Fixed-capacity open-addressing hash table (name -> iid). Owned
  * exclusively by whichever thread is draining, serialized by
- * pf_trace.out_lock, so they need no locking of their own. If a table
- * ever fills up, callers fall back to inline string fields instead of
- * iids -- always correct, just less deduplicated. */
+ * pf_trace.out_lock, so it needs no locking of its own. If it ever fills
+ * up, callers fall back to inline string fields instead of iids -- always
+ * correct, just less deduplicated.
+ *
+ * Keyed on the name's *address*, not its bytes. Names are string literals
+ * (pf_slice_begin enforces it), so one call site always presents the same
+ * pointer and a hit is a single comparison with no hashing of characters.
+ * Two identical literals in different translation units may not coalesce,
+ * which costs a duplicate iid for the same text -- harmless, and the
+ * Perfetto UI shows both as the same name. */
 
 #define PF_INTERN_CAP 1021 /* prime */
 
 struct intern_slot {
-    char key[PF_NAME_MAX + 1]; /* empty string = free slot */
+    const char *key; /* NULL = free slot */
     uint64_t iid;
 };
 
@@ -180,14 +187,11 @@ struct intern_table {
     uint64_t next_iid;
 };
 
-static uint64_t fnv1a_len(const char *s, size_t len)
+/* Fibonacci hashing, to mix an address whose low bits are often
+ * predictable (literals land adjacent in .rodata) into the whole index. */
+static uint64_t hash_ptr(const char *p)
 {
-    uint64_t h = 14695981039346656037ULL;
-    for (size_t i = 0; i < len; i++) {
-        h ^= (unsigned char)s[i];
-        h *= 1099511628211ULL;
-    }
-    return h;
+    return (uint64_t)(uintptr_t)p * 11400714819323198485ULL >> 32;
 }
 
 /* Returns true if `key` is now represented by *iid_out (found or newly
@@ -195,24 +199,22 @@ static uint64_t fnv1a_len(const char *s, size_t len)
  * entry that still needs an InternedData record emitted. Returns false
  * only when the table is full and `key` wasn't already present. */
 static bool intern_lookup_or_insert(struct intern_table *tab, const char *key,
-                                    size_t len, uint64_t *iid_out,
-                                    bool *is_new_out)
+                                    uint64_t *iid_out, bool *is_new_out)
 {
-    size_t idx = (size_t)(fnv1a_len(key, len) % PF_INTERN_CAP);
+    size_t idx = (size_t)(hash_ptr(key) % PF_INTERN_CAP);
     for (size_t probe = 0; probe < PF_INTERN_CAP; probe++) {
         struct intern_slot *slot = &tab->slots[idx];
-        if (slot->key[0] == '\0') {
+        if (!slot->key) {
             if (tab->count >= PF_INTERN_CAP)
                 return false;
-            memcpy(slot->key, key, len);
-            slot->key[len] = '\0';
+            slot->key = key;
             slot->iid = tab->next_iid++;
             tab->count++;
             *iid_out = slot->iid;
             *is_new_out = true;
             return true;
         }
-        if (strlen(slot->key) == len && memcmp(slot->key, key, len) == 0) {
+        if (slot->key == key) {
             *iid_out = slot->iid;
             *is_new_out = false;
             return true;
@@ -302,14 +304,12 @@ struct pf_trace {
      * Aligned because emit_record overlays struct pf_rec on whatever it is
      * handed, and in this mode that is this buffer rather than the ring's
      * own 8-byte aligned slot. */
-    _Alignas(struct pf_rec) uint8_t rec_copy[PF_REC_MAX];
+    _Alignas(struct pf_rec) uint8_t rec_copy[PF_REC_BYTES];
 
     struct intern_table name_table;
-    struct intern_table cat_table;
     bool header_written;
 
     _Atomic uint64_t bytes_written;
-    _Atomic uint64_t truncated_names;
 };
 
 static uint64_t now_ns(void)
@@ -451,10 +451,8 @@ static int emit_track_header(struct pf_trace *t, bool restart)
     pthread_mutex_unlock(&t->track_lock);
 
     unsigned first = restart ? 0 : t->tracks_emitted;
-    if (restart) {
+    if (restart)
         intern_table_reset(&t->name_table);
-        intern_table_reset(&t->cat_table);
-    }
 
     for (unsigned i = first; i < count; i++) {
         /* The flag belongs on the first packet of the restarted
@@ -489,19 +487,15 @@ static int emit_record(struct pf_trace *t, const uint8_t *rec)
     const struct pf_rec *r = (const struct pf_rec *)rec;
     uint64_t ts = r->ts;
     uint64_t track_uuid = r->track;
-    uint8_t type = r->type;
-    uint8_t nlen = r->nlen;
-    uint8_t clen = r->clen;
-    uint8_t flags = r->flags;
+    uint32_t type = r->type;
+    uint32_t flags = r->flags;
 
-    const uint8_t *body = r->body;
-    uint64_t raw_value = 0;
-    if (flags & RF_HAS_VALUE) {
-        memcpy(&raw_value, body, 8);
-        body += 8;
-    }
-    const char *name = (const char *)body;
-    const char *category = (const char *)body + nlen;
+    bool has_value = (flags & RF_HAS_VALUE) != 0;
+    uint64_t raw_value = has_value ? r->u.value : 0;
+    /* Only dereferenced here, on the drain thread -- the hot path stored
+     * the address and nothing else. */
+    const char *name = has_value ? NULL : r->u.name;
+    size_t nlen = name ? strlen(name) : 0;
 
     struct pb_buf *interned = &t->scratch_a;
     struct pb_buf *ev = &t->scratch_b;
@@ -516,24 +510,11 @@ static int emit_record(struct pf_trace *t, const uint8_t *rec)
     bool name_interned = false;
     if (nlen) {
         bool is_new = false;
-        name_interned = intern_lookup_or_insert(&t->name_table, name, nlen,
-                                                &name_iid, &is_new);
+        name_interned =
+            intern_lookup_or_insert(&t->name_table, name, &name_iid, &is_new);
         if (name_interned && is_new) {
             add_interned_entry(interned, FN_INTERNED_EVENT_NAMES, name_iid,
                                name, nlen, entry);
-            have_interned = true;
-        }
-    }
-
-    uint64_t cat_iid = 0;
-    bool cat_interned = false;
-    if (clen) {
-        bool is_new = false;
-        cat_interned = intern_lookup_or_insert(&t->cat_table, category, clen,
-                                               &cat_iid, &is_new);
-        if (cat_interned && is_new) {
-            add_interned_entry(interned, FN_INTERNED_EVENT_CATEGORIES, cat_iid,
-                               category, clen, entry);
             have_interned = true;
         }
     }
@@ -546,13 +527,7 @@ static int emit_record(struct pf_trace *t, const uint8_t *rec)
         else
             pb_put_string_field(ev, FN_EVENT_NAME_STR, name, nlen);
     }
-    if (clen) {
-        if (cat_interned)
-            pb_put_varint_field(ev, FN_EVENT_CATEGORY_IIDS, cat_iid);
-        else
-            pb_put_string_field(ev, FN_EVENT_CATEGORIES_STR, category, clen);
-    }
-    if (flags & RF_HAS_VALUE) {
+    if (has_value) {
         if (flags & RF_VALUE_IS_DOUBLE)
             pb_put_fixed64_field(ev, FN_EVENT_DOUBLE_COUNTER_VALUE, raw_value);
         else
@@ -583,29 +558,30 @@ static int drain_locked(struct pf_trace *t)
     pf_ring_read_begin(&t->ring, &rd);
 
     const uint8_t *rec;
-    uint32_t len;
-    while ((rec = pf_ring_next(&t->ring, &rd, &len)) != NULL) {
-        uint64_t rec_pos = rd.pos - len;
+    while ((rec = pf_ring_next(&t->ring, &rd)) != NULL) {
+        uint64_t rec_pos = rd.pos - PF_REC_BYTES;
 
         /* Snapshot mode has no backpressure, so a producer may be
          * overwriting this record right now. Copy it out before touching
          * it, then verify the source bytes were stable for the whole copy:
-         * the lap check in pf_ring_next opened this seqlock and
+         * the tag check in pf_ring_next opened this seqlock and
          * pf_ring_still_valid closes it.
          *
          * Copying first is what makes the rest safe. Encoding straight
-         * from the ring would feed a half-overwritten name into the
-         * intern table, and since the table outlives the rolled-back
-         * packet, a later valid event could reference an iid whose
-         * InternedData record was never written -- an unreadable trace.
-         * A non-overwriting ring cannot be overwritten under the reader,
-         * so it skips the copy entirely and encodes in place. */
+         * from the ring would feed a torn record into the intern table,
+         * and since the table outlives the rolled-back packet, a later
+         * valid event could reference an iid whose InternedData record was
+         * never written -- an unreadable trace. A non-overwriting ring
+         * cannot be overwritten under the reader, so it skips the copy
+         * entirely and encodes in place. */
         const uint8_t *src = rec;
         if (t->ring.overwrite) {
-            memcpy(t->rec_copy, rec, len);
+            memcpy(t->rec_copy, rec, PF_REC_BYTES);
             if (!pf_ring_still_valid(&t->ring, rec_pos)) {
-                /* Lapped: the reader's position is no longer a known
-                 * record boundary, so nothing after this can be trusted.
+                /* Lapped mid-copy. The position is still a valid boundary
+                 * -- every multiple of the stride is -- but everything
+                 * from here to head-minus-a-ring has been recycled too, so
+                 * walking on would mostly re-read overwritten slots.
                  * Restart from head, keeping what was already staged. */
                 pf_ring_resync(&t->ring);
                 return out_flush(t);
@@ -713,37 +689,18 @@ static void maybe_wake_drain(struct pf_trace *t, uint32_t need)
 }
 
 /* --- Event emission (hot path) ------------------------------------------
- * Reserve a byte range, fill it, submit it. No allocation, no I/O, and no
- * lock: concurrent producers own disjoint ranges, so their copies proceed
+ * Reserve a slot, fill it, submit it. No allocation, no I/O, and no
+ * lock: concurrent producers own disjoint slots, so their writes proceed
  * in parallel and only the reservation itself is serialized, by one
- * atomic. */
+ * atomic.
+ *
+ * Six stores and no string work at all: the name is stored by address,
+ * and the drain thread is what eventually reads the characters. */
 
-static size_t clamp_len(struct pf_trace *t, const char *s, size_t *len_out)
+static void emit_event(struct pf_trace *t, uint32_t type, uint64_t track_uuid,
+                       const char *name, bool has_value, uint64_t raw_value,
+                       bool value_is_double)
 {
-    if (!s) {
-        *len_out = 0;
-        return 0;
-    }
-    size_t n = strnlen(s, PF_NAME_MAX + 1);
-    if (n > PF_NAME_MAX) {
-        n = PF_NAME_MAX;
-        atomic_fetch_add_explicit(&t->truncated_names, 1, memory_order_relaxed);
-    }
-    *len_out = n;
-    return n;
-}
-
-static void emit_event(struct pf_trace *t, uint8_t type, uint64_t track_uuid,
-                       const char *name, const char *category, bool has_value,
-                       uint64_t raw_value, bool value_is_double)
-{
-    size_t nlen, clen;
-    clamp_len(t, name, &nlen);
-    clamp_len(t, category, &clen);
-
-    uint32_t need = (uint32_t)round_up8(offsetof(struct pf_rec, body) +
-                                        (has_value ? 8u : 0u) + nlen + clen);
-
     /* Timestamp before reserving, not after. The reservation can spin
      * briefly when producers collide, and a timestamp taken afterwards
      * would include that delay -- attributing contention in the tracer to
@@ -754,55 +711,47 @@ static void emit_event(struct pf_trace *t, uint8_t type, uint64_t track_uuid,
      * by timestamp. */
     uint64_t ts = now_ns();
 
-    struct pf_rec_res res = pf_ring_reserve(&t->ring, need);
+    struct pf_rec_res res = pf_ring_reserve(&t->ring);
     if (!res.rec)
         return; /* continuous mode, reader behind; counted as dropped */
 
     struct pf_rec *r = (struct pf_rec *)res.rec;
     r->ts = ts;
     r->track = track_uuid;
+    /* Mutually exclusive by construction -- see the layout comment. */
+    if (has_value)
+        r->u.value = raw_value;
+    else
+        r->u.name = name;
     r->type = type;
-    r->nlen = (uint8_t)nlen;
-    r->clen = (uint8_t)clen;
-    r->flags = (uint8_t)((has_value ? RF_HAS_VALUE : 0u) |
-                         (value_is_double ? RF_VALUE_IS_DOUBLE : 0u));
-
-    uint8_t *body = r->body;
-    if (has_value) {
-        memcpy(body, &raw_value, 8);
-        body += 8;
-    }
-    if (nlen)
-        memcpy(body, name, nlen);
-    if (clen)
-        memcpy(body + nlen, category, clen);
+    r->flags = (has_value ? RF_HAS_VALUE : 0u) |
+               (value_is_double ? RF_VALUE_IS_DOUBLE : 0u);
 
     pf_ring_submit(&t->ring, res);
-    maybe_wake_drain(t, need);
+    maybe_wake_drain(t, PF_REC_BYTES);
 }
 
-void pf_slice_begin(struct pf_trace *t, uint64_t track_uuid, const char *name,
-                    const char *category)
+void pf_slice_begin_impl(struct pf_trace *t, uint64_t track_uuid,
+                         const char *name)
 {
-    emit_event(t, TYPE_SLICE_BEGIN, track_uuid, name, category, false, 0,
-               false);
+    emit_event(t, TYPE_SLICE_BEGIN, track_uuid, name, false, 0, false);
 }
 
-void pf_instant_event(struct pf_trace *t, uint64_t track_uuid, const char *name,
-                      const char *category)
+void pf_instant_event_impl(struct pf_trace *t, uint64_t track_uuid,
+                           const char *name)
 {
-    emit_event(t, TYPE_INSTANT, track_uuid, name, category, false, 0, false);
+    emit_event(t, TYPE_INSTANT, track_uuid, name, false, 0, false);
 }
 
 void pf_slice_end(struct pf_trace *t, uint64_t track_uuid)
 {
-    emit_event(t, TYPE_SLICE_END, track_uuid, NULL, NULL, false, 0, false);
+    emit_event(t, TYPE_SLICE_END, track_uuid, NULL, false, 0, false);
 }
 
 void pf_counter_set_int(struct pf_trace *t, uint64_t counter_track_uuid,
                         int64_t value)
 {
-    emit_event(t, TYPE_COUNTER, counter_track_uuid, NULL, NULL, true,
+    emit_event(t, TYPE_COUNTER, counter_track_uuid, NULL, true,
                (uint64_t)value, false);
 }
 
@@ -811,8 +760,7 @@ void pf_counter_set_double(struct pf_trace *t, uint64_t counter_track_uuid,
 {
     uint64_t bits;
     memcpy(&bits, &value, 8);
-    emit_event(t, TYPE_COUNTER, counter_track_uuid, NULL, NULL, true, bits,
-               true);
+    emit_event(t, TYPE_COUNTER, counter_track_uuid, NULL, true, bits, true);
 }
 
 /* --- Tracks ------------------------------------------------------------ */
@@ -921,14 +869,13 @@ struct pf_trace *pf_trace_open(const struct pf_config *cfg)
     pb_buf_init(&t->scratch_b);
     pb_buf_init(&t->scratch_c);
     pb_buf_init(&t->scratch_entry);
-    pb_buf_warm(&t->out, PF_OUT_FLUSH_THRESHOLD + PF_REC_MAX + 1024);
-    pb_buf_warm(&t->scratch_a, PF_REC_MAX + 256);
-    pb_buf_warm(&t->scratch_b, PF_REC_MAX + 256);
-    pb_buf_warm(&t->scratch_c, PF_REC_MAX + 512);
-    pb_buf_warm(&t->scratch_entry, PF_NAME_MAX + 64);
+    pb_buf_warm(&t->out, PF_OUT_FLUSH_THRESHOLD + PF_PACKET_WARM + 1024);
+    pb_buf_warm(&t->scratch_a, PF_PACKET_WARM + 256);
+    pb_buf_warm(&t->scratch_b, PF_PACKET_WARM + 256);
+    pb_buf_warm(&t->scratch_c, PF_PACKET_WARM + 512);
+    pb_buf_warm(&t->scratch_entry, PF_NAME_WARM + 64);
 
     intern_table_reset(&t->name_table);
-    intern_table_reset(&t->cat_table);
 
     pthread_mutex_init(&t->out_lock, NULL);
     pthread_mutex_init(&t->track_lock, NULL);
@@ -936,7 +883,6 @@ struct pf_trace *pf_trace_open(const struct pf_config *cfg)
     pthread_cond_init(&t->drain_cv, NULL);
     atomic_init(&t->wake_pending, 0);
     atomic_init(&t->bytes_written, 0);
-    atomic_init(&t->truncated_names, 0);
 
     if (pthread_create(&t->drain_thread, NULL, drain_thread_fn, t) != 0) {
         pthread_cond_destroy(&t->drain_cv);
@@ -991,8 +937,6 @@ void pf_trace_stats(const struct pf_trace *t, struct pf_stats *out)
     out->bytes_written =
         atomic_load_explicit(&m->bytes_written, memory_order_relaxed);
     out->dropped = atomic_load_explicit(&m->ring.dropped, memory_order_relaxed);
-    out->truncated_names =
-        atomic_load_explicit(&m->truncated_names, memory_order_relaxed);
     out->resyncs = atomic_load_explicit(&m->ring.resyncs, memory_order_relaxed);
 }
 

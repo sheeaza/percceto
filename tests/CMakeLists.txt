@@ -33,3 +33,31 @@ target_link_libraries(bench PRIVATE pftrace Threads::Threads)
 add_test(NAME ring COMMAND test_ring)
 add_test(NAME stress COMMAND test_stress)
 add_test(NAME noalloc COMMAND test_noalloc)
+
+# The name contract is enforced by the compiler, so the test for it has to
+# be a compilation. Each mode is an object-only build of the same file:
+# name_literal_ok must succeed, and the other three must fail, which is
+# what WILL_FAIL asserts. Without the negative cases a macro that stopped
+# rejecting anything would look exactly like a passing test suite.
+#
+# EXCLUDE_FROM_ALL so a deliberately-failing compile is not part of a
+# normal build; each test drives its own via --target.
+foreach(mode OK VARIABLE STACK_BUFFER EMPTY)
+  string(TOLOWER "${mode}" lower)
+  add_library(name_literal_${lower} OBJECT EXCLUDE_FROM_ALL
+    test_name_literal.c
+  )
+  target_link_libraries(name_literal_${lower} PRIVATE pftrace)
+  target_compile_definitions(name_literal_${lower} PRIVATE MODE_${mode})
+
+  add_test(NAME name_literal_${lower}
+    COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR}
+            --target name_literal_${lower} --config $<CONFIG>
+  )
+endforeach()
+
+# Only the literal form may compile.
+set_tests_properties(name_literal_variable name_literal_stack_buffer
+                     name_literal_empty
+  PROPERTIES WILL_FAIL TRUE
+)

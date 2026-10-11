@@ -27,15 +27,15 @@ static struct tracks setup_tracks(struct pf_trace *t)
 static void do_work(struct pf_trace *t, const struct tracks *tr, int rounds)
 {
     for (int i = 0; i < rounds; i++) {
-        pf_slice_begin(t, tr->main_thread, "compute", "app");
+        pf_slice_begin(t, tr->main_thread, "compute");
         pf_counter_set_int(t, tr->queue_depth, 10 - i % 4 * 3);
         usleep(500);
 
-        pf_slice_begin(t, tr->main_thread, "parse", "app");
+        pf_slice_begin(t, tr->main_thread, "parse");
         usleep(500);
         pf_slice_end(t, tr->main_thread); /* parse */
 
-        pf_slice_begin(t, tr->main_thread, "render", "app");
+        pf_slice_begin(t, tr->main_thread, "render");
         usleep(500);
         pf_slice_end(t, tr->main_thread); /* render */
 
@@ -43,10 +43,10 @@ static void do_work(struct pf_trace *t, const struct tracks *tr, int rounds)
     }
 
     for (int i = 0; i < rounds; i++) {
-        pf_slice_begin(t, tr->worker_thread, "work_item", "worker");
+        pf_slice_begin(t, tr->worker_thread, "work_item");
         pf_counter_set_double(t, tr->queue_depth, 4.5 + i);
         if (i % 2 == 0)
-            pf_instant_event(t, tr->worker_thread, "cache_miss", "worker");
+            pf_instant_event(t, tr->worker_thread, "cache_miss");
         usleep(500);
         pf_slice_end(t, tr->worker_thread);
     }
@@ -57,10 +57,9 @@ static void report(const char *label, struct pf_trace *t)
     struct pf_stats s;
     pf_trace_stats(t, &s);
     printf("  %s: %llu events, %llu bytes written, %llu dropped, "
-           "%llu truncated, %llu resyncs\n",
+           "%llu resyncs\n",
            label, (unsigned long long)s.events,
            (unsigned long long)s.bytes_written, (unsigned long long)s.dropped,
-           (unsigned long long)s.truncated_names,
            (unsigned long long)s.resyncs);
 }
 
@@ -91,7 +90,7 @@ static int run_snapshot(void)
     do_work(t, &tr, 40);
 
     /* Pretend the program noticed a stall here. */
-    pf_instant_event(t, tr.main_thread, "perf_drop_detected", "app");
+    pf_instant_event(t, tr.main_thread, "perf_drop_detected");
     if (pf_trace_dump(t) != 0) {
         perror("pf_trace_dump");
         pf_trace_close(t);

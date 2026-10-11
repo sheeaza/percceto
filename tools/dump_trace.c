@@ -27,12 +27,10 @@
 
 #define SEQ_INCREMENTAL_STATE_CLEARED 1u
 
-#define FN_EVENT_CATEGORY_IIDS 3
 #define FN_EVENT_TYPE 9
 #define FN_EVENT_NAME_IID 10
 #define FN_EVENT_TRACK_UUID 11
 #define FN_EVENT_COUNTER_VALUE 30
-#define FN_EVENT_CATEGORIES_STR 22
 #define FN_EVENT_NAME_STR 23
 #define FN_EVENT_DOUBLE_COUNTER_VALUE 44
 
@@ -42,7 +40,6 @@
 #define TYPE_COUNTER 4
 
 #define FN_TRACK_UUID 1
-#define FN_INTERNED_EVENT_CATEGORIES 1
 #define FN_INTERNED_EVENT_NAMES 2
 #define FN_IID 1
 
@@ -120,14 +117,13 @@ struct state {
     /* Interning is per-sequence and reset by INCREMENTAL_STATE_CLEARED,
      * so a snapshot dump's window resolves independently of earlier ones. */
     bool name_iid[MAX_IIDS];
-    bool cat_iid[MAX_IIDS];
 
     uint64_t depth[MAX_TRACKS]; /* open slices per track, parallel to tracks */
     uint64_t last_ts;
 
     uint64_t n_packets, n_begin, n_end, n_instant, n_counter, n_descriptors;
     uint64_t n_state_clears;
-    uint64_t unknown_track, unresolved_name, unresolved_cat, ts_regressions;
+    uint64_t unknown_track, unresolved_name, ts_regressions;
     uint64_t max_ts_regression;
     uint64_t unbalanced_end;
 };
@@ -160,8 +156,7 @@ static void parse_interned(struct state *s, const uint8_t *p, size_t len)
             break;
         unsigned field = (unsigned)(tag >> 3);
         unsigned wt = (unsigned)(tag & 7);
-        if (wt == 2 && (field == FN_INTERNED_EVENT_NAMES ||
-                        field == FN_INTERNED_EVENT_CATEGORIES)) {
+        if (wt == 2 && field == FN_INTERNED_EVENT_NAMES) {
             uint64_t sub_len = get_varint(&c);
             if (c.bad || (uint64_t)(c.end - c.p) < sub_len)
                 break;
@@ -176,12 +171,8 @@ static void parse_interned(struct state *s, const uint8_t *p, size_t len)
                 else if (!skip_field(&e, (unsigned)(etag & 7)))
                     break;
             }
-            if (iid && iid < MAX_IIDS) {
-                if (field == FN_INTERNED_EVENT_NAMES)
-                    s->name_iid[iid] = true;
-                else
-                    s->cat_iid[iid] = true;
-            }
+            if (iid && iid < MAX_IIDS)
+                s->name_iid[iid] = true;
             c.p += sub_len;
         } else if (!skip_field(&c, wt)) {
             break;
@@ -193,8 +184,8 @@ static void parse_track_event(struct state *s, const uint8_t *p, size_t len,
                               uint64_t ts)
 {
     struct cursor c = { p, p + len, false };
-    uint64_t type = 0, track_uuid = 0, name_iid = 0, cat_iid = 0;
-    bool has_name_str = false, has_cat_str = false;
+    uint64_t type = 0, track_uuid = 0, name_iid = 0;
+    bool has_name_str = false;
 
     while (c.p < c.end && !c.bad) {
         uint64_t tag = get_varint(&c);
@@ -215,9 +206,6 @@ static void parse_track_event(struct state *s, const uint8_t *p, size_t len,
             case FN_EVENT_NAME_IID:
                 name_iid = v;
                 break;
-            case FN_EVENT_CATEGORY_IIDS:
-                cat_iid = v;
-                break;
             case FN_EVENT_COUNTER_VALUE:
                 break;
             default:
@@ -227,16 +215,10 @@ static void parse_track_event(struct state *s, const uint8_t *p, size_t len,
             has_name_str = true;
             if (!skip_field(&c, wt))
                 break;
-        } else if (wt == 2 && field == FN_EVENT_CATEGORIES_STR) {
-            has_cat_str = true;
-            if (!skip_field(&c, wt))
-                break;
         } else if (!skip_field(&c, wt)) {
             break;
         }
     }
-
-    (void)has_cat_str;
 
     size_t ti = track_index(s, track_uuid);
     if (ti == (size_t)-1)
@@ -245,8 +227,6 @@ static void parse_track_event(struct state *s, const uint8_t *p, size_t len,
     if (name_iid && name_iid < MAX_IIDS && !s->name_iid[name_iid] &&
         !has_name_str)
         s->unresolved_name++;
-    if (cat_iid && cat_iid < MAX_IIDS && !s->cat_iid[cat_iid])
-        s->unresolved_cat++;
 
     if (ts < s->last_ts) {
         s->ts_regressions++;
@@ -333,7 +313,6 @@ static void parse_packet(struct state *s, const uint8_t *p, size_t len)
      * referring to an older iid afterwards would be unreadable. */
     if (flags & SEQ_INCREMENTAL_STATE_CLEARED) {
         memset(s->name_iid, 0, sizeof(s->name_iid));
-        memset(s->cat_iid, 0, sizeof(s->cat_iid));
         s->n_state_clears++;
     }
 
@@ -443,9 +422,6 @@ int main(int argc, char **argv)
     CHECK(s->unresolved_name == 0,
           "%" PRIu64 " events used an unresolvable name_iid",
           s->unresolved_name);
-    CHECK(s->unresolved_cat == 0,
-          "%" PRIu64 " events used an unresolvable category iid",
-          s->unresolved_cat);
     /* Slices left open at the end of a window are expected -- a snapshot
      * cuts the trace mid-flight -- so only report the depth. */
     uint64_t still_open = 0;

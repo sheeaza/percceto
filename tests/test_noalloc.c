@@ -101,9 +101,9 @@ static void check_mode(const char *label, enum pf_mode mode, bool dump)
     /* Touch every distinct event shape once before arming, so lazily
      * initialized libc state (stdio buffers, locale, the first
      * clock_gettime) is not mistaken for per-event allocation. */
-    pf_slice_begin(t, track, "warm", "warm");
+    pf_slice_begin(t, track, "warm");
     pf_slice_end(t, track);
-    pf_instant_event(t, track, "warm", "warm");
+    pf_instant_event(t, track, "warm");
     pf_counter_set_int(t, ctr, 1);
     pf_counter_set_double(t, ctr, 1.0);
     if (dump)
@@ -116,9 +116,9 @@ static void check_mode(const char *label, enum pf_mode mode, bool dump)
      * while armed. */
     const unsigned n = 200000;
     for (unsigned i = 0; i < n; i++) {
-        pf_slice_begin(t, track, "compute", "app");
+        pf_slice_begin(t, track, "compute");
         pf_counter_set_int(t, ctr, (int64_t)i);
-        pf_instant_event(t, track, "mark", "app");
+        pf_instant_event(t, track, "mark");
         pf_counter_set_double(t, ctr, (double)i * 1.5);
         pf_slice_end(t, track);
     }

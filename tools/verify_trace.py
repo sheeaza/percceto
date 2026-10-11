@@ -58,7 +58,7 @@ def main():
     instant_events = 0
     event_names_seen = defaultdict(set)
     interned_names = {}
-    interned_cats = {}
+    stray_cat = 0
     unknown_track = 0
     unresolved_name = 0
 
@@ -67,12 +67,10 @@ def main():
         # snapshot window stays self-contained.
         if p.sequence_flags & 1:
             interned_names.clear()
-            interned_cats.clear()
         if p.HasField("interned_data"):
             for en in p.interned_data.event_names:
                 interned_names[en.iid] = en.name
-            for ec in p.interned_data.event_categories:
-                interned_cats[ec.iid] = ec.name
+            stray_cat += len(p.interned_data.event_categories)
         if not p.HasField("track_event"):
             continue
         ev = p.track_event
@@ -80,6 +78,7 @@ def main():
             unknown_track += 1
         if ev.name_iid and ev.name_iid not in interned_names:
             unresolved_name += 1
+        stray_cat += len(ev.category_iids) + len(ev.categories)
         if ev.type == TrackEvent.TYPE_SLICE_BEGIN:
             begins[ev.track_uuid] += 1
             name = interned_names.get(ev.name_iid, ev.name) if (ev.name_iid or ev.name) else None
@@ -96,13 +95,15 @@ def main():
     print(f"counter events: {counter_events}")
     print(f"instant events: {instant_events}")
     print(f"interned event names (current generation): {interned_names}")
-    print(f"interned event categories: {interned_cats}")
 
     # Every event must resolve against data present in this same file --
     # the property that actually breaks if a ring overwrites a descriptor
     # or an InternedData packet before it is written out.
     assert unknown_track == 0, f"{unknown_track} events referenced an undeclared track"
     assert unresolved_name == 0, f"{unresolved_name} events used an unresolvable name_iid"
+    # The library no longer emits categories. Asserting their absence
+    # catches a half-reverted change that writes one without interning it.
+    assert stray_cat == 0, f"{stray_cat} category fields in a trace that should have none"
 
     total_begins = sum(begins.values())
     total_ends = sum(ends.values())

@@ -12,7 +12,7 @@
  * In an overwriting (snapshot) ring a producer may be overwriting the very
  * record a reader is inspecting -- that is the mode's defining behaviour,
  * not a defect. The reader therefore treats everything it loads from the
- * ring as provisional: the tag's lap check (pf_ring_next) opens a seqlock
+ * ring as provisional: the tag check (pf_ring_next) opens a seqlock
  * and pf_ring_still_valid closes it, so bytes that were being rewritten
  * are discarded rather than trusted. Loading the tag atomically is what
  * keeps that check itself well defined; ThreadSanitizer will still flag
@@ -25,9 +25,12 @@ static _Atomic uint64_t *tag_at(const struct pf_ring *r, uint64_t pos)
     return &((struct pf_rec_hdr *)at)->tag;
 }
 
-static uint64_t tag_make(const struct pf_ring *r, uint64_t pos, uint32_t len)
+/* The tag a record at @pos carries once published: its own end position.
+ * Biased past @pos so it is never zero, which is what distinguishes a
+ * published record from the zeroed pages a fresh mapping starts as. */
+static uint64_t tag_make(uint64_t pos)
 {
-    return ((pos >> r->log2cap) << 32) | (uint64_t)len;
+    return pos + PF_REC_BYTES;
 }
 
 static size_t round_up_pow2(size_t v)
@@ -42,14 +45,6 @@ static size_t round_up_pow2(size_t v)
     return p;
 }
 
-static unsigned log2_exact(size_t v)
-{
-    unsigned n = 0;
-    while ((((size_t)1) << n) != v)
-        n++;
-    return n;
-}
-
 int pf_ring_init(struct pf_ring *r, size_t want_bytes, bool overwrite)
 {
     memset(r, 0, sizeof(*r));
@@ -58,10 +53,10 @@ int pf_ring_init(struct pf_ring *r, size_t want_bytes, bool overwrite)
         want_bytes = PF_RING_MIN_BYTES;
     size_t cap = round_up_pow2(want_bytes);
 
-    /* The ring must hold more than one maximum-size record for the
-     * dropping mode's space check to ever succeed. PF_RING_MIN_BYTES is far
-     * above PF_REC_MAX, so this only guards absurd configs. */
-    if (cap < 2 * PF_REC_MAX) {
+    /* The ring must hold more than one record for the dropping mode's
+     * space check to ever succeed. PF_RING_MIN_BYTES is far above a single
+     * record, so this only guards absurd configs. */
+    if (cap < 2 * PF_REC_BYTES) {
         errno = EINVAL;
         return -1;
     }
@@ -109,7 +104,6 @@ int pf_ring_init(struct pf_ring *r, size_t want_bytes, bool overwrite)
     r->base = base;
     r->cap = cap;
     r->mask = cap - 1;
-    r->log2cap = log2_exact(cap);
     r->overwrite = overwrite;
     atomic_init(&r->head, 0);
     atomic_init(&r->tail, 0);
@@ -128,43 +122,47 @@ void pf_ring_destroy(struct pf_ring *r)
     r->cap = 0;
 }
 
-/* The reservation for a record of @len bytes at absolute @pos, with the
- * tag submit will store precomputed -- see struct pf_rec_res. */
-static struct pf_rec_res res_at(const struct pf_ring *r, uint64_t pos,
-                                uint32_t len)
+/* The reservation for the record at absolute @pos, with the tag submit
+ * will store precomputed -- see struct pf_rec_res. */
+static struct pf_rec_res res_at(const struct pf_ring *r, uint64_t pos)
 {
     void *at = r->base + (pos & r->mask);
-    return (struct pf_rec_res){ .rec = at, .tag = tag_make(r, pos, len) };
+    return (struct pf_rec_res){ .rec = at, .tag = tag_make(pos) };
 }
 
-struct pf_rec_res pf_ring_reserve(struct pf_ring *r, uint32_t need)
+struct pf_rec_res pf_ring_reserve(struct pf_ring *r)
 {
     uint64_t off;
 
     if (r->overwrite) {
         /* Snapshot mode: overwriting the oldest record is intended, so
          * the reservation cannot fail and needs no loop. */
-        off = atomic_fetch_add_explicit(&r->head, need, memory_order_relaxed);
+        off = atomic_fetch_add_explicit(&r->head, PF_REC_BYTES,
+                                        memory_order_relaxed);
 
-        /* Keep @tail inside the window this reservation leaves intact.
+        /* Keep @tail within one ring of the @head this reservation just
+         * produced.
          *
          * Nothing stops producers from lapping it: that is the mode's
-         * defining behaviour. But @tail must stay on a record boundary that
-         * has not been overwritten, or the reader has no position it can
-         * walk from. Checking here rather than in a caller's "am I near the
-         * end" heuristic is what makes that hold -- the check sees the
-         * @head this reservation actually produced, so there is no window
-         * between deciding and reserving for another producer to slip
-         * through.
+         * defining behaviour. But once @head - @tail exceeds @cap the
+         * reader's starting point is a position whose record has already
+         * been recycled, and pf_ring_next rejects it immediately -- the
+         * ring would read as empty and a dump would produce nothing.
+         * Checking here rather than in a caller's "am I near the end"
+         * heuristic is what makes that hold: the check sees the @head this
+         * reservation actually produced, so there is no window between
+         * deciding and reserving for another producer to slip through.
          *
-         * Trimming to half the ring, not to the brink: @tail only has to be
-         * recoverable, and leaving a margin means the next few reservations
-         * find it already correct and skip the walk entirely. */
+         * Note this is about the width of the window, not about landing on
+         * a boundary -- with a fixed stride every position is a boundary.
+         * Trimming to half the ring, not to the brink, so the next few
+         * reservations find @tail already inside the window and skip the
+         * call entirely. */
         uint64_t tail = atomic_load_explicit(&r->tail, memory_order_relaxed);
-        if (off + need - tail > r->cap)
+        if (off + PF_REC_BYTES - tail > r->cap)
             pf_ring_trim(r, r->cap / 2);
 
-        return res_at(r, off, need);
+        return res_at(r, off);
     }
 
     /* Continuous mode: decide before moving @head, so that a refusal
@@ -172,16 +170,17 @@ struct pf_rec_res pf_ring_reserve(struct pf_ring *r, uint32_t need)
     off = atomic_load_explicit(&r->head, memory_order_relaxed);
     for (;;) {
         uint64_t tail = atomic_load_explicit(&r->tail, memory_order_acquire);
-        if (off + need - tail > r->cap) {
+        if (off + PF_REC_BYTES - tail > r->cap) {
             atomic_fetch_add_explicit(&r->dropped, 1, memory_order_relaxed);
             return (struct pf_rec_res){ .rec = NULL };
         }
         /* On failure @off is reloaded with the current head, so the
          * space check is redone against it. */
-        if (atomic_compare_exchange_weak_explicit(&r->head, &off, off + need,
+        if (atomic_compare_exchange_weak_explicit(&r->head, &off,
+                                                  off + PF_REC_BYTES,
                                                   memory_order_relaxed,
                                                   memory_order_relaxed))
-            return res_at(r, off, need);
+            return res_at(r, off);
     }
 }
 
@@ -199,28 +198,22 @@ void pf_ring_read_begin(struct pf_ring *r, struct pf_ring_reader *rd)
     rd->end = atomic_load_explicit(&r->head, memory_order_acquire);
 }
 
-const uint8_t *pf_ring_next(struct pf_ring *r, struct pf_ring_reader *rd,
-                            uint32_t *len_out)
+const uint8_t *pf_ring_next(struct pf_ring *r, struct pf_ring_reader *rd)
 {
     if (rd->pos >= rd->end)
         return NULL;
 
     uint64_t w = atomic_load_explicit(tag_at(r, rd->pos), memory_order_acquire);
-    uint32_t len = (uint32_t)w;
-    uint64_t lap = w >> 32;
 
     /* One comparison rejects not-yet-written (zero tag), mid-write (stale
-     * tag) and lapped (newer tag) records alike. */
-    if (lap != (rd->pos >> r->log2cap) || len == 0)
-        return NULL;
-    if (len > PF_REC_MAX || (len & (PF_REC_ALIGN - 1)) != 0)
-        return NULL; /* corrupt; stop rather than walk into nonsense */
-    if (rd->pos + len > rd->end)
+     * tag) and lapped (newer tag) records alike. The fixed stride is what
+     * reduces it to this: there is no length to validate, and @end is a
+     * whole number of records ahead, so a published record always fits. */
+    if (w != tag_make(rd->pos))
         return NULL;
 
     const uint8_t *p = r->base + (rd->pos & r->mask);
-    rd->pos += len;
-    *len_out = len;
+    rd->pos += PF_REC_BYTES;
     return p;
 }
 
@@ -239,7 +232,7 @@ void pf_ring_read_commit(struct pf_ring *r, struct pf_ring_reader *rd)
     atomic_store_explicit(&r->tail, rd->pos, memory_order_release);
 }
 
-bool pf_ring_trim(struct pf_ring *r, size_t retain_bytes)
+void pf_ring_trim(struct pf_ring *r, size_t retain_bytes)
 {
     if (retain_bytes > r->cap)
         retain_bytes = r->cap;
@@ -247,43 +240,30 @@ bool pf_ring_trim(struct pf_ring *r, size_t retain_bytes)
     uint64_t head = atomic_load_explicit(&r->head, memory_order_acquire);
     uint64_t tail = atomic_load_explicit(&r->tail, memory_order_relaxed);
     if (head - tail <= retain_bytes)
-        return true;
+        return;
 
-    uint64_t target = head - retain_bytes;
-    uint64_t pos = tail;
-
-    /* Walk record by record so @tail lands on a real boundary; a bare
-     * seek to @target would leave it mid-record and unrecoverable.
+    /* Round the retained span down to whole records, so @pos lands on a
+     * boundary and retains at least @retain_bytes. @head is a multiple of
+     * the stride -- it starts at 0 and only ever advances by one record --
+     * so @pos is too. Callers pass fractions of @cap, which is a power of
+     * two and so never a multiple of the stride; rounding here is what
+     * reconciles the two.
      *
-     * The walk starts at the oldest record, which is also the one most
-     * likely to be recycled underneath it. That is unavoidable: record
-     * lengths are only discoverable forwards, so there is no way to find a
-     * boundary near @head without starting from a known one. When a
-     * producer wins that race the walk resyncs, which is correct rather
-     * than exceptional -- see pf_ring_resync. Trimming often enough that
-     * @tail stays well clear of @head is what keeps it rare. */
-    while (pos < target) {
-        uint64_t w = atomic_load_explicit(tag_at(r, pos), memory_order_acquire);
-        uint32_t len = (uint32_t)w;
-        if ((w >> 32) != (pos >> r->log2cap) || len == 0 || len > PF_REC_MAX ||
-            (len & (PF_REC_ALIGN - 1)) != 0) {
-            pf_ring_resync(r);
-            return false;
-        }
-        pos += len;
-    }
+     * This is the whole of what a variable-length ring needed a
+     * record-by-record walk for, and the walk could lose its boundary to a
+     * producer recycling the record it started from. */
+    uint64_t pos = head - retain_bytes / PF_REC_BYTES * PF_REC_BYTES;
 
     /* Only ever advance. Trims can run concurrently (a producer trimming
      * inline while the drain thread does the same), and a plain store of a
      * staler @pos would drag @tail backwards onto bytes already recycled. */
-    uint64_t cur = atomic_load_explicit(&r->tail, memory_order_relaxed);
+    uint64_t cur = tail;
     while (cur < pos) {
         if (atomic_compare_exchange_weak_explicit(&r->tail, &cur, pos,
                                                   memory_order_release,
                                                   memory_order_relaxed))
             break;
     }
-    return true;
 }
 
 void pf_ring_resync(struct pf_ring *r)

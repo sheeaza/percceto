@@ -28,7 +28,10 @@ static int failures;
 
 /* Test records: pf_ring's tag, an 8-byte sequence number, then a
  * byte-pattern payload derived from that number so corruption is
- * detectable rather than merely suspected. */
+ * detectable rather than merely suspected.
+ *
+ * Fixed size, like every record the ring now carries: the payload fills
+ * whatever the stride leaves after the tag and the sequence number. */
 struct t_rec {
     struct pf_rec_hdr hdr;
     uint64_t seq;
@@ -37,27 +40,21 @@ struct t_rec {
 
 #define T_SEQ offsetof(struct t_rec, seq)
 #define T_PAYLOAD offsetof(struct t_rec, payload)
+#define T_PAYLOAD_BYTES (PF_REC_BYTES - T_PAYLOAD)
 
-static uint32_t rec_size(uint32_t payload)
-{
-    return (uint32_t)((T_PAYLOAD + payload + 7u) & ~7u);
-}
-
-static void fill_rec(uint8_t *rec, uint64_t seq, uint32_t payload)
+static void fill_rec(uint8_t *rec, uint64_t seq)
 {
     memcpy(rec + T_SEQ, &seq, 8);
-    for (uint32_t i = 0; i < payload; i++)
+    for (uint32_t i = 0; i < T_PAYLOAD_BYTES; i++)
         rec[T_PAYLOAD + i] = (uint8_t)(seq + i);
 }
 
-static bool check_rec(const uint8_t *rec, uint32_t len, uint64_t *seq_out)
+static bool check_rec(const uint8_t *rec, uint64_t *seq_out)
 {
     uint64_t seq;
     memcpy(&seq, rec + T_SEQ, 8);
     *seq_out = seq;
-    /* len is rounded up, so only the bytes we know were written are
-     * checked; trailing pad bytes are unspecified. */
-    for (uint32_t i = 0; i + T_PAYLOAD < len; i++) {
+    for (uint32_t i = 0; i < T_PAYLOAD_BYTES; i++) {
         uint8_t want = (uint8_t)(seq + i);
         if (rec[T_PAYLOAD + i] != want)
             return false;
@@ -76,7 +73,6 @@ static void test_geometry(void)
     CHECK(pf_ring_init(&r, 100 * 1024, true) == 0, "init 100KiB");
     CHECK(r.cap == 128 * 1024, "cap rounded to 128KiB, got %zu", r.cap);
     CHECK((r.cap & r.mask) == 0, "cap is a power of two");
-    CHECK(((size_t)1 << r.log2cap) == r.cap, "log2cap matches cap");
     pf_ring_destroy(&r);
 
     CHECK(pf_ring_init(&r, 1, true) == 0, "init below floor");
@@ -96,8 +92,11 @@ static void test_geometry(void)
 
 /* --- 2. Straddling the end -------------------------------------------- */
 
-/* The case the mirror exists for. Positions a record so it crosses cap,
- * writes it with one memcpy, and reads it back as one contiguous span.
+/* The case the mirror exists for. The stride does not divide cap --
+ * gcd(40, 2^n) is 8 -- so as head advances the in-buffer offset visits
+ * every multiple of 8, and a record eventually starts close enough to the
+ * end to cross it. This finds that record, writes it with one memcpy, and
+ * reads it back as one contiguous span.
  *
  * Trimming as it fills mirrors what the drain thread does in snapshot
  * mode: an untrimmed ring is exactly full by the time head reaches the
@@ -110,47 +109,54 @@ static void test_straddle(void)
     struct pf_ring r;
     CHECK(pf_ring_init(&r, PF_RING_MIN_BYTES, true) == 0, "init");
 
-    /* Walk head to 32 bytes before the end, then write a 64-byte record
-     * so 32 bytes land past cap. */
-    const uint32_t big = 64;
+    /* Advance until the next record would cross cap, i.e. starts in the
+     * last PF_REC_BYTES of the buffer without landing exactly on the end.
+     * Reachable because the stride is coprime to cap beyond a factor 8. */
+    const uint64_t marker = 0xFEEDFACEu;
     struct pf_rec_res res;
+    size_t straddle_off;
+    uint64_t guard = 0;
     while (true) {
         uint64_t head = atomic_load_explicit(&r.head, memory_order_relaxed);
-        if (head % r.cap == r.cap - 32)
+        size_t off = (size_t)(head & r.mask);
+        if (off > r.cap - PF_REC_BYTES)
             break;
-        res = pf_ring_reserve(&r, 32);
+        CHECK(guard++ < r.cap, "straddling offset is reachable");
+        if (guard > r.cap)
+            break;
+        res = pf_ring_reserve(&r);
         CHECK(res.rec != NULL, "reserve filler");
-        fill_rec((uint8_t *)res.rec, head, 32 - T_PAYLOAD);
+        fill_rec((uint8_t *)res.rec, head);
         pf_ring_submit(&r, res);
         pf_ring_trim(&r, r.cap / 2);
     }
 
-    res = pf_ring_reserve(&r, big);
+    res = pf_ring_reserve(&r);
     CHECK(res.rec != NULL, "reserve straddling record");
     /* Offset within the buffer, which is all this check needs; the
      * absolute position lives in the reservation's tag. */
-    size_t straddle_off = (size_t)((uint8_t *)res.rec - r.base);
-    CHECK(straddle_off == r.cap - 32, "record starts 32B before end");
-    fill_rec((uint8_t *)res.rec, 0xFEEDFACEu, big - T_PAYLOAD);
+    straddle_off = (size_t)((uint8_t *)res.rec - r.base);
+    CHECK(straddle_off > r.cap - PF_REC_BYTES,
+          "record starts in the last stride, at %zu of %zu", straddle_off,
+          r.cap);
+    fill_rec((uint8_t *)res.rec, marker);
     pf_ring_submit(&r, res);
 
-    /* The tail half must be visible at the front of the buffer. */
-    CHECK(memcmp(r.base + straddle_off + 32, r.base, 32) == 0,
-          "bytes past cap alias the front");
+    /* The part past cap must be visible at the front of the buffer. */
+    size_t past = straddle_off + PF_REC_BYTES - r.cap;
+    CHECK(memcmp(r.base + r.cap, r.base, past) == 0,
+          "the %zu bytes past cap alias the front", past);
 
     /* And the reader must see it as one undivided record. */
     struct pf_ring_reader rd;
     pf_ring_read_begin(&r, &rd);
     bool found = false;
     const uint8_t *got;
-    uint32_t len;
-    while ((got = pf_ring_next(&r, &rd, &len)) != NULL) {
+    while ((got = pf_ring_next(&r, &rd)) != NULL) {
         uint64_t seq;
-        CHECK(check_rec(got, len, &seq), "record intact at len %u", len);
-        if (seq == 0xFEEDFACEu) {
+        CHECK(check_rec(got, &seq), "record intact");
+        if (seq == marker)
             found = true;
-            CHECK(len == big, "straddling record len %u, want %u", len, big);
-        }
     }
     CHECK(found, "straddling record was read back");
 
@@ -161,7 +167,9 @@ static void test_straddle(void)
 /* --- 3. Concurrent producers ------------------------------------------ */
 
 #define NTHREADS 8
+#ifndef PER_THREAD
 #define PER_THREAD 100000
+#endif
 
 struct producer_arg {
     struct pf_ring *ring;
@@ -173,17 +181,12 @@ static void *producer_fn(void *p)
 {
     struct producer_arg *a = p;
     for (unsigned i = 0; i < PER_THREAD; i++) {
-        /* Vary the size so records are genuinely variable-length and
-         * straddles happen at many different offsets. */
-        uint32_t payload = (uint32_t)((a->id * 13u + i * 7u) % 200u);
-        uint32_t need = rec_size(payload);
-        struct pf_rec_res res = pf_ring_reserve(a->ring, need);
+        struct pf_rec_res res = pf_ring_reserve(a->ring);
         if (!res.rec)
             continue; /* dropping-mode drop; counted by the ring */
         /* Sequence encodes which producer wrote it, so a torn record
          * shows up as a payload mismatch rather than going unnoticed. */
-        fill_rec((uint8_t *)res.rec, ((uint64_t)a->id << 32) | i,
-                 need - T_PAYLOAD);
+        fill_rec((uint8_t *)res.rec, ((uint64_t)a->id << 32) | i);
         pf_ring_submit(a->ring, res);
         a->published++;
     }
@@ -220,11 +223,10 @@ static void test_concurrent_dropping(void)
         struct pf_ring_reader rd;
         pf_ring_read_begin(&r, &rd);
         const uint8_t *got;
-        uint32_t len;
         uint64_t before = consumed;
-        while ((got = pf_ring_next(&r, &rd, &len)) != NULL) {
+        while ((got = pf_ring_next(&r, &rd)) != NULL) {
             uint64_t seq;
-            if (!check_rec(got, len, &seq))
+            if (!check_rec(got, &seq))
                 corrupt = true;
             consumed++;
         }
@@ -309,17 +311,16 @@ static void test_concurrent_overwriting(void)
               (uint64_t)NTHREADS * PER_THREAD,
           "every event published");
 
-    /* Whatever survives must be well formed: the lap tag has to keep the
+    /* Whatever survives must be well formed: the tag has to keep the
      * reader out of records that were overwritten under it. */
     pf_ring_trim(&r, r.cap / 2);
     struct pf_ring_reader rd;
     pf_ring_read_begin(&r, &rd);
     const uint8_t *got;
-    uint32_t len;
     uint64_t seen = 0, torn = 0;
-    while ((got = pf_ring_next(&r, &rd, &len)) != NULL) {
-        uint64_t pos = rd.pos - len, seq;
-        bool ok = check_rec(got, len, &seq);
+    while ((got = pf_ring_next(&r, &rd)) != NULL) {
+        uint64_t pos = rd.pos - PF_REC_BYTES, seq;
+        bool ok = check_rec(got, &seq);
         /* Only hold a record to account if it was not overwritten while
          * being examined -- the same seqlock the drainer uses. */
         if (pf_ring_still_valid(&r, pos)) {
@@ -346,40 +347,38 @@ static void test_drop_accounting(void)
     struct pf_ring r;
     CHECK(pf_ring_init(&r, PF_RING_MIN_BYTES, false) == 0, "init");
 
-    const uint32_t need = 64;
     uint64_t ok = 0;
     for (unsigned i = 0; i < 100000; i++) {
-        struct pf_rec_res res = pf_ring_reserve(&r, need);
+        struct pf_rec_res res = pf_ring_reserve(&r);
         if (!res.rec)
             continue;
-        fill_rec((uint8_t *)res.rec, i, need - T_PAYLOAD);
+        fill_rec((uint8_t *)res.rec, i);
         pf_ring_submit(&r, res);
         ok++;
     }
 
     uint64_t dropped = atomic_load_explicit(&r.dropped, memory_order_relaxed);
     printf("  accepted=%" PRIu64 " dropped=%" PRIu64 "\n", ok, dropped);
-    CHECK(ok == r.cap / need, "accepted exactly a ringful: %" PRIu64 " vs %zu",
-          ok, r.cap / need);
+    CHECK(ok == r.cap / PF_REC_BYTES,
+          "accepted exactly a ringful: %" PRIu64 " vs %zu", ok,
+          r.cap / PF_REC_BYTES);
     CHECK(ok + dropped == 100000, "all attempts accounted for");
 
     /* head must not have advanced past what was actually published: a
      * refused reservation has to leave no hole. */
     uint64_t head = atomic_load_explicit(&r.head, memory_order_relaxed);
-    CHECK(head == ok * need,
+    CHECK(head == ok * PF_REC_BYTES,
           "no gap left by refused reservations: head=%" PRIu64 " want=%" PRIu64,
-          head, ok * need);
+          head, ok * PF_REC_BYTES);
 
     /* Draining frees space, so claims must succeed again. */
     struct pf_ring_reader rd;
     pf_ring_read_begin(&r, &rd);
-    uint32_t len;
-    while (pf_ring_next(&r, &rd, &len) != NULL) {
+    while (pf_ring_next(&r, &rd) != NULL) {
     }
     pf_ring_read_commit(&r, &rd);
 
-    CHECK(pf_ring_reserve(&r, need).rec != NULL,
-          "reserve succeeds after drain");
+    CHECK(pf_ring_reserve(&r).rec != NULL, "reserve succeeds after drain");
 
     pf_ring_destroy(&r);
     printf("  ok\n");
@@ -388,10 +387,9 @@ static void test_drop_accounting(void)
 /* --- 5. One producer, many wraps -------------------------------------- */
 
 /* The uncontended path, which is also the deterministic one: with a single
- * thread and no reader racing it, trimming often enough must avoid every
- * resync, where the concurrent cases above can only tolerate them. A
- * regression that made trimming lose boundaries on its own, rather than
- * under contention, would show up here and nowhere else. */
+ * thread and no reader racing it, no resync may happen at all. Snapshot
+ * mode can still resync under contention, when a producer laps a record
+ * the reader is mid-copy, but nothing here should trigger it. */
 static void test_uncontended_wraps(void)
 {
     printf("one producer, many wraps:\n");
@@ -399,14 +397,13 @@ static void test_uncontended_wraps(void)
     struct pf_ring r;
     CHECK(pf_ring_init(&r, PF_RING_MIN_BYTES, true) == 0, "init");
 
-    /* 5000 records of up to ~216B is several times the 64KiB ring, so it
-     * wraps repeatedly; trimming as we go is what keeps tail on a live
-     * boundary, exactly as the snapshot-mode drain thread does. */
+    /* 5000 records is several times the 64KiB ring, so it wraps
+     * repeatedly; trimming as we go is what keeps tail inside the window,
+     * exactly as the snapshot-mode drain thread does. */
     for (unsigned i = 0; i < 5000; i++) {
-        uint32_t need = rec_size(i % 100u);
-        struct pf_rec_res res = pf_ring_reserve(&r, need);
+        struct pf_rec_res res = pf_ring_reserve(&r);
         CHECK(res.rec != NULL, "reserve %u", i);
-        fill_rec((uint8_t *)res.rec, i, need - T_PAYLOAD);
+        fill_rec((uint8_t *)res.rec, i);
         pf_ring_submit(&r, res);
         if (i % 16 == 0)
             pf_ring_trim(&r, r.cap / 4 * 3);
@@ -416,16 +413,15 @@ static void test_uncontended_wraps(void)
     struct pf_ring_reader rd;
     pf_ring_read_begin(&r, &rd);
     const uint8_t *got;
-    uint32_t len;
     uint64_t seen = 0;
-    while ((got = pf_ring_next(&r, &rd, &len)) != NULL) {
+    while ((got = pf_ring_next(&r, &rd)) != NULL) {
         uint64_t seq;
-        CHECK(check_rec(got, len, &seq), "record intact");
+        CHECK(check_rec(got, &seq), "record intact");
         seen++;
     }
     CHECK(seen > 0, "records readable after repeated wraps");
     CHECK(atomic_load_explicit(&r.resyncs, memory_order_relaxed) == 0,
-          "trimming often enough avoids any resync");
+          "an uncontended producer never resyncs");
 
     pf_ring_destroy(&r);
     printf("  ok\n");

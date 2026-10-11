@@ -34,7 +34,14 @@ int main(void)
 {
     /* Producer cost with no draining at all: snapshot mode, ring big
      * enough that the trim thread stays idle. This is the pure
-     * reserve+memcpy+submit path. */
+     * reserve+fill+submit path.
+     *
+     * Sized so the whole run fits without wrapping: N events of
+     * PF_REC_BYTES each, times the number of measured loops, with room to
+     * spare. A ring that wraps mid-run would charge the loop for
+     * pf_ring_trim calls and report them as per-event cost -- which is
+     * exactly what made an earlier version of this benchmark appear to
+     * show named events costing twice what they do. */
     const char *path = "bench.pftrace";
     unlink(path);
 
@@ -42,7 +49,7 @@ int main(void)
     pf_config_init(&cfg);
     cfg.path = path;
     cfg.mode = PF_MODE_SNAPSHOT;
-    cfg.ring_bytes = 64 * 1024 * 1024;
+    cfg.ring_bytes = 512 * 1024 * 1024;
 
     struct pf_trace *t = pf_trace_open(&cfg);
     if (!t) {
@@ -61,21 +68,21 @@ int main(void)
     for (unsigned i = 0; i < N; i++)
         pf_slice_end(t, trk);
     uint64_t t1 = now_ns();
-    printf("producer, slice_end (32B record):      %6.1f ns/event\n",
+    printf("producer, slice_end:                   %6.1f ns/event\n",
            (double)(t1 - t0) / N);
 
     t0 = now_ns();
     for (unsigned i = 0; i < N; i++)
-        pf_slice_begin(t, trk, "compute", "app");
+        pf_slice_begin(t, trk, "compute");
     t1 = now_ns();
-    printf("producer, slice_begin+name+cat (48B):  %6.1f ns/event\n",
+    printf("producer, slice_begin+name:            %6.1f ns/event\n",
            (double)(t1 - t0) / N);
 
     t0 = now_ns();
     for (unsigned i = 0; i < N; i++)
         pf_counter_set_int(t, trk, i);
     t1 = now_ns();
-    printf("producer, counter (40B record):        %6.1f ns/event\n",
+    printf("producer, counter:                     %6.1f ns/event\n",
            (double)(t1 - t0) / N);
 
     pf_trace_close(t);
@@ -99,7 +106,7 @@ int main(void)
 
     const unsigned fill = 400000;
     for (unsigned i = 0; i < fill; i++) {
-        pf_slice_begin(t, trk, "compute", "app");
+        pf_slice_begin(t, trk, "compute");
         pf_slice_end(t, trk);
     }
 

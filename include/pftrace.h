@@ -74,22 +74,18 @@ struct pf_config {
  *      thread had not yet written. Only ever nonzero in
  *      %PF_MODE_CONTINUOUS, where it means the output file has a gap:
  *      either the ring or the drain interval is too small.
- * @truncated_names: Names or categories longer than 255 bytes, which are
- *      recorded truncated.
  * @resyncs: Times the drain thread lost its place in the ring and skipped
  *      to the newest data. Only possible in %PF_MODE_SNAPSHOT, which has
- *      no backpressure: a producer can recycle the oldest record while the
- *      reader is deriving a boundary from it. Expected to be small and
- *      tolerable rather than zero -- each one costs part of the retained
- *      history, not the dump, so a snapshot still captures the window
- *      leading up to it. Growing steadily means the ring is too small for
- *      the event rate.
+ *      no backpressure: a producer can recycle a record while the reader
+ *      is copying it out. Expected to be small and tolerable rather than
+ *      zero -- each one costs part of the retained history, not the dump,
+ *      so a snapshot still captures the window leading up to it. Growing
+ *      steadily means the ring is too small for the event rate.
  */
 struct pf_stats {
     uint64_t events;
     uint64_t bytes_written;
     uint64_t dropped;
-    uint64_t truncated_names;
     uint64_t resyncs;
 };
 
@@ -204,20 +200,57 @@ PF_API uint64_t pf_track_counter(struct pf_trace *t, uint64_t parent_uuid,
                                  const char *name, enum pf_unit unit);
 
 /**
+ * PF_NAME_LITERAL() - Assert at compile time that @s is a string literal.
+ * @s: The candidate name.
+ *
+ * Event names are stored in the ring as a borrowed pointer and read much
+ * later, on the drain thread, so they must outlive the trace. A string
+ * literal always does. This rejects anything else where the mistake is
+ * cheap to fix -- at the call site, during compilation -- rather than
+ * leaving it to surface as garbled output or a crash in a dump.
+ *
+ * `"" s ""` is only a valid expression if @s is a string literal; for a
+ * pointer or an array it is a syntax error. The sizeof test additionally
+ * rejects an empty name, which would produce an unnamed slice.
+ *
+ * Deliberately not applied to pf_track_*(): those copy the name into the
+ * track table at registration, so their storage is already owned and a
+ * computed name (snprintf into a buffer) is perfectly safe there.
+ */
+#define PF_NAME_LITERAL(s) \
+    ((void)sizeof(char[sizeof("" s "") > 1 ? 1 : -1]), ("" s ""))
+
+/**
  * pf_slice_begin() - Begin a slice on a track.
  * @t: Trace context.
  * @track_uuid: Track to begin the slice on.
- * @name: Slice name. Truncated at 255 bytes.
- * @category: Slice category, or %NULL. Truncated at 255 bytes.
+ * @name: Slice name. Must be a string literal -- see PF_NAME_LITERAL().
  *
  * Copies its arguments into the ring and returns; no allocation, no
- * I/O, and no lock unless the ring is being drained.
+ * I/O, and no lock unless the ring is being drained. The name itself is
+ * not copied, only its address, which is why it has to be a literal.
  *
  * Slices on a given track must be ended in stack (LIFO) order via
  * pf_slice_end().
  */
-PF_API void pf_slice_begin(struct pf_trace *t, uint64_t track_uuid,
-                           const char *name, const char *category);
+#define pf_slice_begin(t, track_uuid, name) \
+    pf_slice_begin_impl((t), (track_uuid), PF_NAME_LITERAL(name))
+
+/**
+ * pf_slice_begin_impl() - pf_slice_begin() without the literal check.
+ * @t: Trace context.
+ * @track_uuid: Track to begin the slice on.
+ * @name: Slice name, or %NULL. Borrowed, not copied: it must remain valid
+ *      and unchanged until the trace is closed.
+ *
+ * Call pf_slice_begin() instead. This is the real function behind that
+ * macro, exposed for the rare caller whose name is genuinely not a
+ * literal but is still immortal -- a pointer into a string table, say.
+ * The lifetime requirement is then yours to honour, and violating it is
+ * undiagnosed: the drain thread may read the name long after the call.
+ */
+PF_API void pf_slice_begin_impl(struct pf_trace *t, uint64_t track_uuid,
+                                const char *name);
 
 /**
  * pf_slice_end() - End the most recently begun slice on a track.
@@ -231,13 +264,22 @@ PF_API void pf_slice_end(struct pf_trace *t, uint64_t track_uuid);
  * pf_instant_event() - Record a single-point-in-time marker.
  * @t: Trace context.
  * @track_uuid: Track to record the marker on.
- * @name: Marker name. Truncated at 255 bytes.
- * @category: Marker category, or %NULL. Truncated at 255 bytes.
+ * @name: Marker name. Must be a string literal -- see PF_NAME_LITERAL().
  *
  * Emits Perfetto's TYPE_INSTANT event -- there is no matching _end call.
  */
-PF_API void pf_instant_event(struct pf_trace *t, uint64_t track_uuid,
-                             const char *name, const char *category);
+#define pf_instant_event(t, track_uuid, name) \
+    pf_instant_event_impl((t), (track_uuid), PF_NAME_LITERAL(name))
+
+/**
+ * pf_instant_event_impl() - pf_instant_event() without the literal check.
+ * @t: Trace context.
+ * @track_uuid: Track to record the marker on.
+ * @name: Marker name, or %NULL. Borrowed, not copied; see
+ *      pf_slice_begin_impl() for the lifetime requirement.
+ */
+PF_API void pf_instant_event_impl(struct pf_trace *t, uint64_t track_uuid,
+                                  const char *name);
 
 /**
  * pf_counter_set_int() - Sample a counter track with an integer value.
