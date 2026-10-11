@@ -43,14 +43,27 @@ with four CTest entries instead of six.
 
 `.github/workflows/tests.yml` runs on every push and PR. Two jobs:
 
-- **`test`** — a `[gcc, clang]` matrix on `ubuntu-latest`, configuring with
-  `-DRINGBUF_BUILD_TSAN=ON` and `-DCMAKE_C_FLAGS=-Werror`, then the full
-  `ctest` with `--timeout 300`.
+- **`test`** — a four-way matrix, `{x86-64, arm64} x {gcc, clang}`, configuring
+  with `-DRINGBUF_BUILD_TSAN=ON` and `-DCMAKE_C_FLAGS=-Werror`, then the full
+  `ctest` with `--timeout 300`. arm64 uses the native `ubuntu-24.04-arm`
+  runner.
 - **`format`** — `clang-format --dry-run --Werror *.c *.h`, plus a `grep` for
   the no-struct-typedef rule that clang-format cannot express.
 
-Three things about it are deliberate:
+Four things about it are deliberate:
 
+- **arm64 is the sharpest gate in the matrix, not a portability courtesy.**
+  x86-64 is TSO, so the acquire/release pairs this tree depends on compile to
+  *plain `mov`s* — a store that should carry `release` but was left `relaxed`
+  usually still behaves there. aarch64 compiles them to real instructions and
+  genuinely reorders without them. Measured, cross-compiling at `-O2`:
+  `ringbuf.o` emits 7 `ldar` / 5 `stlr`, `ringbuf_vslot.o` emits 7 `ldar` /
+  9 `stlr`, while the x86-64 object has **zero** fences for the same source
+  (only 4 `lock` ops, for the CAS and fetch-add that need them anyway). Since
+  CLAUDE.md describes that pair as the only ordering doing real work, arm64 is
+  where getting it wrong stops being invisible. Native runners, not qemu —
+  emulation does not faithfully model the relaxed memory model, so it would
+  not reproduce the reorderings this is here to catch.
 - **Both compilers, because they do not warn about the same things.** GCC's
   `-Wmaybe-uninitialized` caught a real bug in `test_ringbuf_vslot.c` that
   clang was silent on (`message_ok` returning early without setting `*seq`,
@@ -63,11 +76,21 @@ Three things about it are deliberate:
   bias. That is why the flag is passed at configure time rather than added to
   `RINGBUF_WARNINGS` in `CMakeLists.txt`.
 
-The `--timeout 300` is a backstop, not a tuning knob — the suite is ~15 s. The
-tests' own `MAX_SPIN` bounds a *stalled* push/pop, but a corrupted-yet-
-progressing stream resets that counter on every success, so a regression of
-that shape would otherwise hang the runner for the full six hours. A
-deliberate-break check during development did exactly that.
+Nothing is `apt-get install`ed: both runner images already ship gcc, clang,
+clang-format and CMake (checked against `actions/runner-images`). The jobs
+print the compiler and `uname -m` instead, so a future image change shows up
+as an obvious diff rather than a mystery failure.
+
+The `--timeout 300` is a backstop, not a tuning knob — the suite is ~15 s on
+x86-64. The tests' own `MAX_SPIN` bounds a *stalled* push/pop, but a
+corrupted-yet-progressing stream resets that counter on every success, so a
+regression of that shape would otherwise hang the runner for the full six
+hours. A deliberate-break check during development did exactly that.
+
+If the arm64 tsan entries ever abort with `unsupported VMA range`, that is a
+known ThreadSanitizer/aarch64 limitation on 39-bit-VA kernels rather than a
+bug here; the current runners are 48-bit-VA Azure hosts, so it should not
+arise, and the three non-tsan entries still gate the logic regardless.
 
 ### Benchmark
 

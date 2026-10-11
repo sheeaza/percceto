@@ -20,18 +20,41 @@ concurrency:
 
 jobs:
   test:
-    # Linux only, and not just a default: ringbuf_vslot needs memfd_create,
-    # and both benchmarks need pthread_setaffinity_np. On another runner the
-    # CMake gate would quietly drop two of the six CTest entries.
-    runs-on: ubuntu-latest
-
-    # Both compilers, because they do not warn about the same things. GCC
-    # caught a -Wmaybe-uninitialized in test_ringbuf_vslot.c that clang was
-    # silent on; a single-compiler matrix would have shipped it.
+    # Four jobs: {x86-64, arm64} x {gcc, clang}.
+    #
+    # The arm64 half is the point of this matrix, not a portability
+    # courtesy. x86-64 is TSO: acquire/release compiles to plain movs
+    # there, so a store that should carry release but was left relaxed
+    # usually still behaves. aarch64 compiles the same orderings to real
+    # instructions -- ldar/stlr -- and reorders without them. Every variant
+    # here rests on one acquire/release pair that CLAUDE.md calls the only
+    # ordering doing real work, so arm64 is where getting it wrong becomes
+    # observable rather than merely incorrect.
+    #
+    # Concretely, cross-compiled for aarch64 at -O2: ringbuf.o emits
+    # 7 ldar / 5 stlr and ringbuf_vslot.o emits 7 ldar / 9 stlr. None of
+    # those instructions exist in the x86-64 objects.
+    #
+    # Linux only on both, and not just a default: ringbuf_vslot needs
+    # memfd_create, and both benchmarks need pthread_setaffinity_np. On
+    # another OS the CMake gate would quietly drop two of the six CTest
+    # entries and the job would still go green.
+    #
+    # ubuntu-24.04-arm is a native arm64 runner (free for public repos), so
+    # this is real weak-memory hardware rather than qemu -- emulation would
+    # not reproduce the reorderings this is here to catch, since qemu-user
+    # does not faithfully model the relaxed memory model.
     strategy:
       fail-fast: false
       matrix:
-        compiler: [gcc, clang]
+        include:
+          - { arch: x86-64, runner: ubuntu-latest, compiler: gcc }
+          - { arch: x86-64, runner: ubuntu-latest, compiler: clang }
+          - { arch: arm64, runner: ubuntu-24.04-arm, compiler: gcc }
+          - { arch: arm64, runner: ubuntu-24.04-arm, compiler: clang }
+
+    name: test (${{ matrix.arch }}, ${{ matrix.compiler }})
+    runs-on: ${{ matrix.runner }}
 
     env:
       CC: ${{ matrix.compiler }}
@@ -39,17 +62,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install clang
-        if: matrix.compiler == 'clang'
-        # ubuntu-latest normally ships clang already; this is idempotent and
-        # costs a few seconds, but it means the job does not silently start
-        # depending on whatever the runner image happens to preinstall.
+      - name: Report compiler and architecture
+        # Both runner images ship gcc, clang and cmake (checked against
+        # actions/runner-images), so nothing is installed here. Printing the
+        # versions keeps a record in the log of what actually built it, and
+        # turns a future image change into an obvious diff rather than a
+        # mystery failure.
         run: |
-          sudo apt-get update
-          sudo apt-get install -y clang
-
-      - name: Report compiler version
-        run: ${{ matrix.compiler }} --version
+          ${{ matrix.compiler }} --version
+          cmake --version | head -1
+          uname -m
+          nproc
 
       - name: Configure
         # Warnings are errors here but not in the normal build: a local
@@ -65,28 +88,30 @@ jobs:
         run: cmake --build build -j
 
       - name: Test
-        # The whole suite is ~15 s, dominated by the four stress tests at
-        # 2,000,000 messages each. The timeout is a backstop against a
-        # regression that wedges the buffer: the tests' own MAX_SPIN bounds
-        # a stalled push/pop, but a corrupted-yet-progressing stream resets
-        # that counter on every success and would otherwise hang the runner
-        # for the full six hours.
+        # The whole suite is ~15 s on x86-64; the arm64 runners are smaller,
+        # so the timeout is generous rather than tight. It is a backstop
+        # against a regression that wedges the buffer: the tests' own
+        # MAX_SPIN bounds a stalled push/pop, but a corrupted-yet-
+        # progressing stream resets that counter on every success and would
+        # otherwise hang the runner for the full six hours.
+        #
+        # The arm64 tsan entries are expected to run: these runners are
+        # 48-bit-VA Azure hosts. Should a future image move to a 39-bit VA
+        # kernel, tsan aborts with "unsupported VMA range" -- that is a
+        # known ThreadSanitizer/aarch64 limitation, not a bug in this tree,
+        # and the three non-tsan entries still gate the logic there.
         run: ctest --test-dir build --output-on-failure --timeout 300
 
   format:
+    # Architecture-independent, so this runs once rather than per-arch.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install clang-format
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y clang-format
-
       - name: Check formatting
-        # --dry-run --Werror reports a diff as a failure without touching
-        # the tree. The .clang-format in the repo is the single source of
-        # truth, so this needs no flags of its own.
+        # clang-format ships on the runner image. --dry-run --Werror reports
+        # a diff as a failure without touching the tree. The .clang-format in
+        # the repo is the single source of truth, so this needs no flags.
         run: clang-format --dry-run --Werror *.c *.h
 
       - name: Check for struct typedefs
