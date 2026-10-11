@@ -71,6 +71,16 @@ target_include_directories(ringbuf_mpsc PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_options(ringbuf_mpsc PRIVATE ${RINGBUF_WARNINGS})
 target_link_libraries(ringbuf_mpsc PUBLIC Threads::Threads)
 
+# Reserve/submit variant: ringbuf_mutex with push split in two, so the
+# caller fills the slot in place and several fills can overlap. Still SPSC.
+# Out-of-order submit means write_idx can no longer double as the readiness
+# marker -- stored slots stop being a prefix of the ring -- so publication
+# moves to a per-slot stamp. Plain C11 + POSIX, so not Linux-gated.
+add_library(ringbuf_zcopy ringbuf_zcopy.c ringbuf_zcopy.h)
+target_include_directories(ringbuf_zcopy PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_options(ringbuf_zcopy PRIVATE ${RINGBUF_WARNINGS})
+target_link_libraries(ringbuf_zcopy PUBLIC Threads::Threads)
+
 # Variable-length variant: byte-packed, length-prefixed records instead of
 # fixed-size slots, with the ring mapped twice back to back so a record
 # spanning the physical end stays contiguous.
@@ -122,6 +132,14 @@ if(RINGBUF_BUILD_TESTS)
     target_compile_options(test_ringbuf_mpsc PRIVATE ${RINGBUF_WARNINGS})
     target_link_libraries(test_ringbuf_mpsc PRIVATE Threads::Threads)
     add_test(NAME ringbuf_mpsc COMMAND test_ringbuf_mpsc)
+
+    # Same deal for the reserve/submit variant: compile ringbuf_zcopy.c
+    # directly, or the five counter-overflow tests vanish.
+    add_executable(test_ringbuf_zcopy ringbuf_zcopy.c test_ringbuf_zcopy.c)
+    target_compile_definitions(test_ringbuf_zcopy PRIVATE RINGBUF_TEST_HOOKS)
+    target_compile_options(test_ringbuf_zcopy PRIVATE ${RINGBUF_WARNINGS})
+    target_link_libraries(test_ringbuf_zcopy PRIVATE Threads::Threads)
+    add_test(NAME ringbuf_zcopy COMMAND test_ringbuf_zcopy)
 
     # And again for the variable-length variant, when it is available.
     if(RINGBUF_HAVE_VAR)
@@ -178,7 +196,25 @@ if(RINGBUF_BUILD_TESTS)
             Threads::Threads)
         add_test(NAME ringbuf_mpsc_tsan COMMAND test_ringbuf_mpsc_tsan)
 
-        # Weaker evidence than the other three tsan targets, deliberately
+        # The real gate on the reserve/submit variant, and the one whose
+        # ordering is hardest to get right: the window between reserve and
+        # submit spans threads, so correctness rests on a three-edge chain
+        # (reserve's acquire, the caller's own handoff to the filler, and
+        # submit's release). The parallel_fill cases are what drive it, and
+        # nothing in their logic checks can observe a missing release
+        # directly.
+        add_executable(test_ringbuf_zcopy_tsan
+            ringbuf_zcopy.c test_ringbuf_zcopy.c)
+        target_compile_definitions(test_ringbuf_zcopy_tsan PRIVATE
+            RINGBUF_TEST_HOOKS)
+        target_compile_options(test_ringbuf_zcopy_tsan PRIVATE
+            ${RINGBUF_WARNINGS} -O1 -g -fsanitize=thread)
+        target_link_options(test_ringbuf_zcopy_tsan PRIVATE -fsanitize=thread)
+        target_link_libraries(test_ringbuf_zcopy_tsan PRIVATE
+            Threads::Threads)
+        add_test(NAME ringbuf_zcopy_tsan COMMAND test_ringbuf_zcopy_tsan)
+
+        # Weaker evidence than the other four tsan targets, deliberately
         # kept anyway. tsan keys shadow memory by virtual address, so the
         # two views of the mirrored mapping look like unrelated locations
         # and a race on a record spanning the ring end can be hidden. It
