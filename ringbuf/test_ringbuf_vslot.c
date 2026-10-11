@@ -102,7 +102,9 @@ static bool message_bytes_ok(const unsigned char *buf, size_t len, uint64_t seq)
  * message_ok - check a received message against what its seq implies
  * @buf: received body
  * @len: received length, as reported by ringbuf_vslot_pop
- * @seq: out-parameter for the decoded sequence number
+ * @seq: out-parameter for the decoded sequence number, set on EVERY return
+ *	so a caller's failure message can print it unconditionally. A body
+ *	too short to hold one reads back as 0.
  *
  * Checks the length first, since a wrong length is the failure mode
  * specific to this variant, then the payload pattern.
@@ -111,6 +113,7 @@ static bool message_bytes_ok(const unsigned char *buf, size_t len, uint64_t seq)
  */
 static bool message_ok(const unsigned char *buf, size_t len, uint64_t *seq)
 {
+    *seq = 0;
     if (len < sizeof(*seq))
         return false;
     memcpy(seq, buf, sizeof(*seq));

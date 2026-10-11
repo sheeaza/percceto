@@ -39,6 +39,36 @@ a `message(STATUS)` skip rather than a `FATAL_ERROR` — unlike the benchmarks,
 which are opt-in and so can fail loudly. On a non-Linux host the build succeeds
 with four CTest entries instead of six.
 
+### CI
+
+`.github/workflows/tests.yml` runs on every push and PR. Two jobs:
+
+- **`test`** — a `[gcc, clang]` matrix on `ubuntu-latest`, configuring with
+  `-DRINGBUF_BUILD_TSAN=ON` and `-DCMAKE_C_FLAGS=-Werror`, then the full
+  `ctest` with `--timeout 300`.
+- **`format`** — `clang-format --dry-run --Werror *.c *.h`, plus a `grep` for
+  the no-struct-typedef rule that clang-format cannot express.
+
+Three things about it are deliberate:
+
+- **Both compilers, because they do not warn about the same things.** GCC's
+  `-Wmaybe-uninitialized` caught a real bug in `test_ringbuf_vslot.c` that
+  clang was silent on (`message_ok` returning early without setting `*seq`,
+  which the caller's error path then printed). A single-compiler matrix would
+  have shipped it.
+- **tsan is always ON in CI**, though it is opt-in locally. It is the gate on
+  the lock-free ordering, so CI is where it should not be skippable.
+- **`-Werror` in CI only, never in the local build.** Locally it turns an
+  unrelated toolchain quirk into a hard stop mid-task; CI wants the opposite
+  bias. That is why the flag is passed at configure time rather than added to
+  `RINGBUF_WARNINGS` in `CMakeLists.txt`.
+
+The `--timeout 300` is a backstop, not a tuning knob — the suite is ~15 s. The
+tests' own `MAX_SPIN` bounds a *stalled* push/pop, but a corrupted-yet-
+progressing stream resets that counter on every success, so a regression of
+that shape would otherwise hang the runner for the full six hours. A
+deliberate-break check during development did exactly that.
+
 ### Benchmark
 
 Opt-in, and deliberately **not** CTest entries — they are measurements, not

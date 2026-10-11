@@ -1,0 +1,101 @@
+name: tests
+
+# Runs the full CTest suite on every push and PR. The sanitizer build is
+# opt-in locally (-DRINGBUF_BUILD_TSAN=ON) but always ON here: tsan is the
+# gate on the lock-free ordering in ringbuf.c and on the mutex variant's
+# unlocked push path, so CI is exactly where it should not be skippable.
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  # Supersede an in-flight run for the same ref rather than queueing both.
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    # Linux only, and not just a default: ringbuf_vslot needs memfd_create,
+    # and both benchmarks need pthread_setaffinity_np. On another runner the
+    # CMake gate would quietly drop two of the six CTest entries.
+    runs-on: ubuntu-latest
+
+    # Both compilers, because they do not warn about the same things. GCC
+    # caught a -Wmaybe-uninitialized in test_ringbuf_vslot.c that clang was
+    # silent on; a single-compiler matrix would have shipped it.
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler: [gcc, clang]
+
+    env:
+      CC: ${{ matrix.compiler }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install clang
+        if: matrix.compiler == 'clang'
+        # ubuntu-latest normally ships clang already; this is idempotent and
+        # costs a few seconds, but it means the job does not silently start
+        # depending on whatever the runner image happens to preinstall.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang
+
+      - name: Report compiler version
+        run: ${{ matrix.compiler }} --version
+
+      - name: Configure
+        # Warnings are errors here but not in the normal build: a local
+        # -Werror turns an unrelated toolchain quirk into a hard stop
+        # mid-task, whereas CI wants the opposite bias.
+        run: >
+          cmake -B build
+          -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          -DRINGBUF_BUILD_TSAN=ON
+          -DCMAKE_C_FLAGS=-Werror
+
+      - name: Build
+        run: cmake --build build -j
+
+      - name: Test
+        # The whole suite is ~15 s, dominated by the four stress tests at
+        # 2,000,000 messages each. The timeout is a backstop against a
+        # regression that wedges the buffer: the tests' own MAX_SPIN bounds
+        # a stalled push/pop, but a corrupted-yet-progressing stream resets
+        # that counter on every success and would otherwise hang the runner
+        # for the full six hours.
+        run: ctest --test-dir build --output-on-failure --timeout 300
+
+  format:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install clang-format
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-format
+
+      - name: Check formatting
+        # --dry-run --Werror reports a diff as a failure without touching
+        # the tree. The .clang-format in the repo is the single source of
+        # truth, so this needs no flags of its own.
+        run: clang-format --dry-run --Werror *.c *.h
+
+      - name: Check for struct typedefs
+        # A style rule clang-format cannot express (see CLAUDE.md): structs
+        # are never typedef'd, and the only _t names should come from the
+        # standard library. Matches `typedef struct ... ;` on one line and
+        # the closing `} name_t;` of a multi-line form.
+        run: |
+          if grep -nE '^\s*typedef\s+struct|^\}\s*[A-Za-z_][A-Za-z0-9_]*_t\s*;' *.c *.h; then
+            echo "::error::struct typedefs are not used in this tree (see CLAUDE.md)"
+            exit 1
+          fi
