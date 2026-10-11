@@ -235,4 +235,15 @@ if(RINGBUF_BUILD_BENCH)
         ${RINGBUF_WARNINGS} -O2 -g)
     target_link_libraries(bench_ringbuf_vs_ringbuf_mutex PRIVATE
         Threads::Threads)
+
+    # Multi-producer fan-in: ringbuf_mpsc against ringbuf_mutex made usable
+    # from N producers by a caller-held push mutex. Unlike the comparison
+    # above, the two sides do not share a contract -- the external mutex is
+    # what a caller would have to write, and pricing it is the point.
+    add_executable(bench_ringbuf_mpsc_vs_ringbuf_mutex
+        bench_ringbuf_mpsc_vs_ringbuf_mutex.c ringbuf_mpsc.c ringbuf_mutex.c)
+    target_compile_options(bench_ringbuf_mpsc_vs_ringbuf_mutex PRIVATE
+        ${RINGBUF_WARNINGS} -O2 -g)
+    target_link_libraries(bench_ringbuf_mpsc_vs_ringbuf_mutex PRIVATE
+        Threads::Threads)
 endif()

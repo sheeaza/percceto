@@ -101,15 +101,16 @@ pass/fail checks, and they run for tens of seconds to minutes:
 
 ```bash
 cmake -B build -DRINGBUF_BUILD_BENCH=ON && cmake --build build -j
-./build/bench_ringbuf                      # ringbuf vs an internal toy mutex ring
-./build/bench_ringbuf_vs_ringbuf_mutex     # the two real variants (~4 min)
+./build/bench_ringbuf                        # ringbuf vs an internal toy mutex ring
+./build/bench_ringbuf_vs_ringbuf_mutex       # the two real SPSC variants (~4 min)
+./build/bench_ringbuf_mpsc_vs_ringbuf_mutex  # multi-producer fan-in (~4.5 min)
 ```
 
-Both are always compiled `-O2` regardless of `CMAKE_BUILD_TYPE`, so a stray
-Debug configure cannot silently produce meaningless numbers. Linux-only: they
-pin the producer and consumer to fixed CPUs with `pthread_setaffinity_np`,
-without which a mid-run migration shows up as a throughput cliff unrelated to
-the code. CMake fails at configure time on other platforms.
+All three are always compiled `-O2` regardless of `CMAKE_BUILD_TYPE`, so a
+stray Debug configure cannot silently produce meaningless numbers. Linux-only:
+they pin threads to fixed CPUs with `pthread_setaffinity_np`, without which a
+mid-run migration shows up as a throughput cliff unrelated to the code. CMake
+fails at configure time on other platforms.
 
 `bench_ringbuf.c` measures `ringbuf` against an internal `struct mq` baseline —
 a mutex-protected ring with the *same* non-blocking contract (lock, check, copy,
@@ -144,6 +145,50 @@ traffic. Notably `ringbuf`'s overwrite-mode cost is on the consumer's hot path
 rather than in locking: `ringbuf_pop` does two atomic RMWs (slot-lock CAS plus
 `read_idx` CAS) on *every* pop, measured at 2.45× slower uncontended with no
 lock involved on either side.
+
+`bench_ringbuf_mpsc_vs_ringbuf_mutex.c` is the multi-producer one, written up
+in `BENCHMARK_ringbuf_mpsc_vs_ringbuf_mutex.md`. **It is the one benchmark here
+whose two sides do not share a contract**, and that drives its whole shape:
+`ringbuf_mpsc_push` takes N concurrent producers, `ringbuf_mutex_push` takes
+exactly one, so two threads calling the latter is UB rather than a slow result.
+The baseline is therefore what a caller would have to write — `ringbuf_mutex`
+plus their own producer mutex (`lock / one push attempt / unlock`), labelled
+`ringbuf_mutex+mu`. That wrapper is legal because the SPSC contract forbids
+*concurrent* pushers, not a rotating producer identity: `cached_read` and the
+release store to `write_idx` pass between producers through the external
+mutex's own acquire/release edges. Three things about it are deliberate:
+
+- **The retry loop is outside the push lock.** Spinning on a full buffer while
+  holding it would block every other producer behind a condition only the
+  consumer can clear — a bug in the wrapper, not a property of the variant.
+- **A `finish spread` column** (slowest producer's wall time ÷ fastest's) that
+  the SPSC benchmark has no use for. With N producers on one queue, fairness is
+  a property of the synchronization, and it is the one axis the mutex wins.
+- **Failed pushes/pops yield after 64 consecutive failures** rather than
+  spinning forever. Load-bearing for the oversubscribed scenario: `ringbuf_mpsc`
+  can have a producer holding an unpublished ticket, which blocks delivery
+  head-of-line until it is rescheduled, so a pure spin there is not a
+  measurement. Applied identically to both sides.
+
+Its `cpu/wall` saturates near `producers+1`, not 2.0, so **its numbers are not
+comparable with the SPSC benchmark's** even where the scenarios look alike.
+
+Headline result: `ringbuf_mpsc` wins 1.45–3.0× on delivered throughput at every
+producer count from 2 to 16, with the margin *widening* to 3.0× at 1024B slots
+(the mutex wrapper holds its lock across the memcpy; the ticket design copies
+concurrently). Oversubscription at 16 producers on 7 CPUs does not flip it.
+
+Two reversals are the interesting part, and both are worth not rediscovering:
+
+- **At exactly one producer in overwrite mode `ringbuf_mutex+mu` wins 1.40×**,
+  because there is no fan-in to parallelize and what remains is
+  `pop_overwrite`'s three atomic RMWs per pop plus the ticket CAS — isolated at
+  ~14.5 ns/op uncontended. Same shape as `ringbuf`'s finding above.
+- **With a slow consumer and ~70% drops, `ringbuf_mpsc` delivers 16–42% less**
+  while posting a higher *push* rate, burning ~2200 failed pushes per 1000
+  messages. This **inverts** the SPSC benchmark's equivalent scenario, where
+  lock-free fail-fast won. The generalizable reason: with several producers,
+  retries contend with each other, so "fail fast and spin" stops being cheap.
 
 ### Running a single test case
 
@@ -195,10 +240,10 @@ Lock-free ring buffer, SPSC in three of its four variants. `ringbuf.{c,h}` and
 messages (see "The variable-length variant"); `ringbuf_mpsc.{c,h}` takes many
 producers (see "The multi-producer variant"). `test_ringbuf.c` and
 `test_ringbuf_mutex.c` mirror each other case for case, `test_ringbuf_vslot.c`
-adds three cases of its own and `test_ringbuf_mpsc.c` adds three, and two
+adds three cases of its own and `test_ringbuf_mpsc.c` adds three, and three
 benchmarks sit alongside (`bench_ringbuf.c`,
-`bench_ringbuf_vs_ringbuf_mutex.c`). CMake builds a static library per variant
-plus the test binaries.
+`bench_ringbuf_vs_ringbuf_mutex.c`, `bench_ringbuf_mpsc_vs_ringbuf_mutex.c`).
+CMake builds a static library per variant plus the test binaries.
 
 Exactly one thread may call `ringbuf_push`, exactly one may call `ringbuf_pop`.
 More than one on either side is UB — this is the premise the whole design rests
@@ -390,9 +435,11 @@ arrive complete.
 `mpsc_overwrite_stress`, and `mpsc_wrap_overwrite_stress`, all with
 `NUM_PRODUCERS = 4`.
 
-There is deliberately **no benchmark target**, for the same reason as
-`ringbuf_vslot`: a fair comparison needs a producer-count scaling axis, which
-is its own piece of work rather than an extra row in the existing table.
+There **is** a benchmark target, unlike `ringbuf_vslot`:
+`bench_ringbuf_mpsc_vs_ringbuf_mutex`, measuring this variant against
+`ringbuf_mutex` under a caller-held producer mutex, with a producer-count
+scaling axis. See "Benchmark" above for what is deliberate about it and
+`BENCHMARK_ringbuf_mpsc_vs_ringbuf_mutex.md` for the results.
 
 ## The variable-length variant
 

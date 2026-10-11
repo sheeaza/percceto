@@ -38,7 +38,7 @@ nix shell ~/project/nixos_config/.#cshell --command \
     ctest --test-dir build -R '^ringbuf$|^ringbuf_mutex$' --output-on-failure
 ```
 
-Note `-R ringbuf` would match all four entries including the two opt-in
+Note `-R ringbuf` would match all eight entries including the four opt-in
 `*_tsan` ones; the anchored alternation above selects just the two
 functional suites.
 
