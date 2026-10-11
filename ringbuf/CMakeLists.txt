@@ -61,6 +61,28 @@ target_include_directories(ringbuf_mutex PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_options(ringbuf_mutex PRIVATE ${RINGBUF_WARNINGS})
 target_link_libraries(ringbuf_mutex PUBLIC Threads::Threads)
 
+# Variable-length variant: byte-packed, length-prefixed records instead of
+# fixed-size slots, with the ring mapped twice back to back so a record
+# spanning the physical end stays contiguous.
+#
+# Linux-only, and the one target here that is: the mirror needs
+# memfd_create(2). Skipped quietly rather than FATAL_ERROR, unlike
+# RINGBUF_BUILD_BENCH below -- that one is opt-in, so failing loudly is
+# fine, whereas this would break a default configure on a non-Linux host.
+set(RINGBUF_HAVE_VAR OFF)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    set(RINGBUF_HAVE_VAR ON)
+
+    add_library(ringbuf_vslot ringbuf_vslot.c ringbuf_vslot.h)
+    target_include_directories(ringbuf_vslot PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+    target_compile_options(ringbuf_vslot PRIVATE ${RINGBUF_WARNINGS})
+    target_link_libraries(ringbuf_vslot PUBLIC Threads::Threads)
+else()
+    message(STATUS
+        "ringbuf_vslot skipped: needs memfd_create (Linux); "
+        "got ${CMAKE_SYSTEM_NAME}.")
+endif()
+
 if(RINGBUF_BUILD_TESTS)
     enable_testing()
 
@@ -82,6 +104,15 @@ if(RINGBUF_BUILD_TESTS)
     target_compile_options(test_ringbuf_mutex PRIVATE ${RINGBUF_WARNINGS})
     target_link_libraries(test_ringbuf_mutex PRIVATE Threads::Threads)
     add_test(NAME ringbuf_mutex COMMAND test_ringbuf_mutex)
+
+    # And again for the variable-length variant, when it is available.
+    if(RINGBUF_HAVE_VAR)
+        add_executable(test_ringbuf_vslot ringbuf_vslot.c test_ringbuf_vslot.c)
+        target_compile_definitions(test_ringbuf_vslot PRIVATE RINGBUF_TEST_HOOKS)
+        target_compile_options(test_ringbuf_vslot PRIVATE ${RINGBUF_WARNINGS})
+        target_link_libraries(test_ringbuf_vslot PRIVATE Threads::Threads)
+        add_test(NAME ringbuf_vslot COMMAND test_ringbuf_vslot)
+    endif()
 
     if(RINGBUF_BUILD_TSAN)
         if(NOT CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
@@ -112,6 +143,27 @@ if(RINGBUF_BUILD_TESTS)
         target_link_libraries(test_ringbuf_mutex_tsan PRIVATE
             Threads::Threads)
         add_test(NAME ringbuf_mutex_tsan COMMAND test_ringbuf_mutex_tsan)
+
+        # Weaker evidence than the other two tsan targets, deliberately
+        # kept anyway. tsan keys shadow memory by virtual address, so the
+        # two views of the mirrored mapping look like unrelated locations
+        # and a race on a record spanning the ring end can be hidden. It
+        # still covers every access that does not straddle, which is most
+        # of them; the straddle and wrap_* cases are the real gate. See
+        # the note on map_mirrored in ringbuf_vslot.c.
+        if(RINGBUF_HAVE_VAR)
+            add_executable(test_ringbuf_vslot_tsan
+                ringbuf_vslot.c test_ringbuf_vslot.c)
+            target_compile_definitions(test_ringbuf_vslot_tsan PRIVATE
+                RINGBUF_TEST_HOOKS)
+            target_compile_options(test_ringbuf_vslot_tsan PRIVATE
+                ${RINGBUF_WARNINGS} -O1 -g -fsanitize=thread)
+            target_link_options(test_ringbuf_vslot_tsan PRIVATE
+                -fsanitize=thread)
+            target_link_libraries(test_ringbuf_vslot_tsan PRIVATE
+                Threads::Threads)
+            add_test(NAME ringbuf_vslot_tsan COMMAND test_ringbuf_vslot_tsan)
+        endif()
     endif()
 endif()
 

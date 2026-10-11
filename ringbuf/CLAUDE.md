@@ -27,12 +27,17 @@ anchored regex — `-R ringbuf` matches both:
 ctest --test-dir build -R '^ringbuf$'
 ```
 
-With the mutex variant there are now **four** entries — `ringbuf`,
-`ringbuf_mutex`, and the two opt-in `*_tsan` ones — so `-R ringbuf` matches all
-four and the anchored form matters more than before.
+With the mutex and variable-length variants there are now **six** entries —
+`ringbuf`, `ringbuf_mutex`, `ringbuf_vslot`, and the three opt-in `*_tsan` ones —
+so `-R ringbuf` matches all six and the anchored form matters more than before.
 
 `build/` already holds a **Unix Makefiles** cache. `-G Ninja` will refuse to
 reconfigure over it; `rm -rf build` first if you want to switch generators.
+
+`ringbuf_vslot` and its test targets are **gated on Linux** (`memfd_create`), with
+a `message(STATUS)` skip rather than a `FATAL_ERROR` — unlike the benchmarks,
+which are opt-in and so can fail loudly. On a non-Linux host the build succeeds
+with four CTest entries instead of six.
 
 ### Benchmark
 
@@ -88,8 +93,9 @@ lock involved on either side.
 ### Running a single test case
 
 Not supported. `main(void)` in `test_ringbuf.c` and `test_ringbuf_mutex.c` takes
-no arguments and runs all 7 cases unconditionally; there is no filter flag. To
-isolate one, comment out the others in `main` or add arg parsing.
+no arguments and runs all 7 cases unconditionally (`test_ringbuf_vslot.c` runs
+all 10); there is no filter flag. To isolate one, comment out the others in
+`main` or add arg parsing.
 
 The two stress tests push 2,000,000 messages each and dominate the ~0.2 s
 runtime; the tsan build takes ~2 s.
@@ -101,6 +107,9 @@ with the **same data structure and the same external SPSC contract**, differing
 only in how overwrite mode reconciles its two writers to `read_idx`. Symbols are
 prefixed (`ringbuf_mutex_push`, `struct ringbuf_mutex`, …) so both can link into
 one binary.
+
+(There is also a third, `ringbuf_vslot.{c,h}`, which changes the *storage model*
+rather than the synchronization — see "The variable-length variant" below.)
 
 | | `ringbuf` | `ringbuf_mutex` |
 | --- | --- | --- |
@@ -114,14 +123,18 @@ one binary.
 Pick `ringbuf` when push must never block (signal handlers, hard real-time);
 pick `ringbuf_mutex` when it may and you want readable code. The sections below
 describe `ringbuf.c`; everything about counters, wrapping, capacity rounding, and
-the single allocation applies to both.
+the single allocation applies to both. **`ringbuf_vslot` is the exception on every
+one of those** — byte counters, a mirrored mapping, byte capacity, and two
+allocations — so read its own section rather than assuming these carry over.
 
 ## Architecture
 
-Single-producer / single-consumer lock-free ring buffer. Two interchangeable
-implementations (see "Two implementations" above): `ringbuf.{c,h}` plus
-`ringbuf_mutex.{c,h}`, with `test_ringbuf.c` and `test_ringbuf_mutex.c`
-mirroring each other case for case, and two benchmarks alongside
+Single-producer / single-consumer lock-free ring buffer. Three implementations:
+`ringbuf.{c,h}` and `ringbuf_mutex.{c,h}` (interchangeable, fixed-size slots —
+see "Two implementations" above), plus `ringbuf_vslot.{c,h}` (variable-length
+messages — see "The variable-length variant"). `test_ringbuf.c` and
+`test_ringbuf_mutex.c` mirror each other case for case, `test_ringbuf_vslot.c`
+adds three cases of its own, and two benchmarks sit alongside
 (`bench_ringbuf.c`, `bench_ringbuf_vs_ringbuf_mutex.c`). CMake builds a static
 library per variant plus the test binaries.
 
@@ -211,6 +224,121 @@ Because `pop` can no longer fail transiently, the overwrite-mode producers in
 `test_ringbuf_mutex.c` have **no retry loop**: a `false` from push is a hard
 test failure, which is the variant's main observable guarantee.
 
+## The variable-length variant
+
+`ringbuf_vslot.{c,h}` is the third implementation, and the only one that changes
+the **storage model** instead of the synchronization. The other two hand out
+fixed-size slots; this one packs **length-prefixed records densely into a byte
+ring**, so memory tracks the sizes actually pushed rather than the worst case,
+and `pop` reports each message's length.
+
+| | `ringbuf` / `ringbuf_mutex` | `ringbuf_vslot` |
+| --- | --- | --- |
+| Storage | `capacity` slots of `slot_size` | dense `u32`-prefixed records, 4-byte aligned |
+| Sizing | `create(slot_size, min_capacity, …)` | `create(max_msg_size, min_ring_bytes, …)` — **bytes** |
+| Counters count | messages, `+1` per op | **bytes**, `+reclen` per op |
+| Oversize message | n/a | **truncated** to `max_msg_size`, counted, push still succeeds |
+| Physical wrap | cannot straddle a slot | mirrored mapping makes it contiguous |
+| Allocation | one `posix_memalign`, one `free` | **two**: control block + `mmap`; `munmap` + `free` |
+| Portability | C11 + POSIX | **Linux only** (`memfd_create`) |
+| Overwrite-mode sync | per-slot locks + `read_idx` CAS / one mutex | one spinlock, **no CAS** |
+| `is_full_approx` | yes | **absent** — replaced by `free_bytes_approx` |
+
+`create`'s two sizes are **independent axes**, and the names are chosen to say
+so: `max_msg_size` bounds **one message** (the truncation threshold, and the
+receive buffer a consumer needs to never truncate), while `min_ring_bytes`
+bounds **all queued messages together** (how far the consumer may fall behind).
+Their ratio is only roughly a message count, because each record costs
+`4 + len` rounded up to 4 — a 64 KiB ring with `max_msg_size` 1 KiB holds 64
+worst-case messages or several thousand 16-byte ones. `min_ring_bytes` is
+rounded up to a power of two, a page, *and* one `max_msg_size` record, so a
+small request can yield a much larger ring; `capacity_bytes()` reports the
+actual figure.
+
+### The mirrored mapping is the core trick
+
+The ring is mapped **twice, back to back**: `PROT_NONE` reserve of `2*B`, then
+the same `memfd` `MAP_FIXED` over both halves. A record running off the physical
+end reappears at the start, so it stays contiguous *in virtual memory*:
+
+```c
+memcpy(base + (idx & mask),     &len, 4);   /* one memcpy, no wrap branch */
+memcpy(base + (idx & mask) + 4, data, len);
+```
+
+The reserve-then-overmap order is load-bearing: two independent `mmap` calls can
+land anywhere, and the halves must be adjacent.
+
+**`reclen <= capacity` is the premise the whole scheme rests on.** It is why
+`create` raises the capacity to fit one `max_msg_size` record, on top of the page
+floor and the caller's request. The furthest byte any record touches is
+`(B-1) + reclen - 1 < 2B`, so the span always lands inside the mapping. Drop
+that raise and the buffer silently becomes unusable — a `max_msg_size` push is
+refused forever, because the fullness check can never be satisfied.
+
+**Records are 4-byte aligned (`REC_ALIGN`) so the `u32` header is never torn.**
+A pleasant consequence: since the capacity is also a multiple of 4, a header
+*never splits* across the end — only bodies do. The `straddle` test's `gap == 4`
+case pins this down.
+
+### What is different from `ringbuf.c`, and why
+
+- **No `read_idx` CAS.** Both writers hold the single boundary spinlock across
+  their whole operation, so a plain store is already single-valued.
+  `received + dropped == pushed` still holds, by a different argument: every
+  advance happens under the lock and moves `read_idx` by exactly one record's
+  `reclen`, so each record is retired exactly once.
+- **One boundary lock replaces the per-slot array.** Both sides only ever touch
+  the record *at* `read_idx` — the consumer to take it, the producer to evict it
+  — so there is exactly one contested record at any moment. A spinlock, not a
+  mutex, so `push` stays non-blocking and signal-safe like `ringbuf.c`; both
+  sides can still fail transiently, so **every caller must retry**.
+- **Eviction is a loop.** Variable sizes mean one push may have to retire
+  several records to free enough bytes. The fixed-size variants evict at most
+  one slot per push.
+- **`pop` re-reads `read_idx` after acquiring the lock.** Same trap as the mutex
+  variant, but worse here: a stale index would make `pop` read the **length
+  header** of a record the producer already evicted and refilled, so a bogus
+  `reclen` would drive the `memcpy`. Verified by breaking it — `overwrite_stress`
+  wedges, while the single-threaded eviction tests still pass and cannot catch
+  it.
+- **The ordering rule is unchanged** from `ringbuf_mutex.c`: every non-relaxed
+  ordering has an unlocked access on at least one end; if both ends lock,
+  relaxed is correct. The acquire/release pair on the unlocked fast path — not
+  the lock — is what prevents the record-data race. Relaxing `pop`'s `read_idx`
+  store makes tsan report a `__tsan_memcpy` race between `store_record` and the
+  consumer's `read_record_len`/body copy, *not* a race on `read_idx`.
+
+### tsan is a weaker gate here
+
+ThreadSanitizer keys shadow memory by **virtual address**, so the same physical
+byte seen at `base + o` and `base + o + B` looks like two unrelated locations.
+That can only ever *hide* a race on a record which straddles the end, never
+invent one — so a clean `ringbuf_vslot_tsan` run is weaker evidence than for the
+other two variants. The `straddle` and `wrap_*` cases, which check sequence
+numbers and lengths rather than relying on instrumentation, are the real gate.
+Do not take a green tsan as proof on its own.
+
+### Counter overflow
+
+Survives, and `SEED_BASE` is **`SIZE_MAX - 3`** rather than `ringbuf.c`'s
+`SIZE_MAX - 2`, because the seed must be 4-aligned like every record start.
+`2^64` is a multiple of both `REC_ALIGN` and the capacity (a power of two
+`>= 4096`), so alignment and `& mask` congruence both survive the wrap. Seeding
+there puts the first record's header in the final 4 bytes of the ring and its
+body at offset 0 *through the mirror*, so the `wrap_*` cases exercise the mirror
+and the overflow at once.
+
+`test_ringbuf_vslot.c` runs **ten** cases: the seven that mirror `test_ringbuf.c`
+plus `straddle`, `truncate`, and `pop_cap`. Message lengths are derived from the
+sequence number (`size_for_seq`), so the consumer recomputes the length it
+*should* have received and a **mis-sized record fails the test even when its
+bytes are intact** — the failure mode specific to this variant.
+
+There is deliberately **no benchmark target** for it: a fair comparison against
+the fixed-size variants needs a size distribution and a bytes/s axis, which is
+its own piece of work rather than an extra row in the existing table.
+
 **Counters are monotonic and mapped to slots with `& mask`, so they wrap at
 `SIZE_MAX`.** Emptiness is therefore a *signed* comparison,
 `(ptrdiff_t)(cached_write - read_idx) <= 0`, never `read_idx >= cached_write` —
@@ -223,7 +351,9 @@ Capacity is rounded up to a power of two (minimum 2) so the mask works.
 a private cache of the other's counter (`cached_read` / `cached_write`) to avoid
 touching the peer's line on every operation.
 
-**One allocation per buffer.** The slot data and the optional lock array live in
+**One allocation per buffer** (`ringbuf` and `ringbuf_mutex`; `ringbuf_vslot`
+needs two, since a mirrored mapping cannot live inside the control block's
+allocation). The slot data and the optional lock array live in
 a `_Alignas(64) char tail[]` flexible array member, so `ringbuf_create` is a
 single `posix_memalign` and `ringbuf_destroy` a single `free` — there is no
 separate `buffer` pointer to chase. The lock array starts at `tail +
@@ -247,7 +377,9 @@ The define must reach `ringbuf.c`, not just the test file, so **the test targets
 compile `ringbuf.c` directly rather than linking the `ringbuf` library.** Linking
 the library instead would silently skip the four wrap tests (`main` `#ifdef`s
 them out). Keep this in mind when touching `CMakeLists.txt`. The mutex variant
-has the identical arrangement with `ringbuf_mutex_test_seed_counters()`.
+has the identical arrangement with `ringbuf_mutex_test_seed_counters()`, and so
+does `ringbuf_vslot` with `ringbuf_vslot_test_seed_counters()` — note that one
+rounds its argument down to `REC_ALIGN`.
 
 ## Style
 
