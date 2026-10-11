@@ -36,26 +36,54 @@ reconfigure over it; `rm -rf build` first if you want to switch generators.
 
 ### Benchmark
 
-Opt-in, and deliberately **not** a CTest entry — it is a measurement, not a
-pass/fail check, and it runs for tens of seconds:
+Opt-in, and deliberately **not** CTest entries — they are measurements, not
+pass/fail checks, and they run for tens of seconds to minutes:
 
 ```bash
 cmake -B build -DRINGBUF_BUILD_BENCH=ON && cmake --build build -j
-./build/bench_ringbuf
+./build/bench_ringbuf                      # ringbuf vs an internal toy mutex ring
+./build/bench_ringbuf_vs_ringbuf_mutex     # the two real variants (~4 min)
 ```
 
-Always compiled `-O2` regardless of `CMAKE_BUILD_TYPE`, so a stray Debug
-configure cannot silently produce meaningless numbers. Linux-only: it pins the
-producer and consumer to fixed CPUs with `pthread_setaffinity_np`, without which
-a mid-run migration shows up as a throughput cliff unrelated to the code. CMake
-fails at configure time on other platforms.
+Both are always compiled `-O2` regardless of `CMAKE_BUILD_TYPE`, so a stray
+Debug configure cannot silently produce meaningless numbers. Linux-only: they
+pin the producer and consumer to fixed CPUs with `pthread_setaffinity_np`,
+without which a mid-run migration shows up as a throughput cliff unrelated to
+the code. CMake fails at configure time on other platforms.
 
 `bench_ringbuf.c` measures `ringbuf` against an internal `struct mq` baseline —
 a mutex-protected ring with the *same* non-blocking contract (lock, check, copy,
 unlock; `false` when full/empty). That baseline is intentionally not a condvar
 blocking queue: the point is to isolate the cost of the lock, not futex wakeup
-latency. Note it is a separate toy struct, unrelated to `ringbuf_mutex.{c,h}`,
-which the benchmark does not yet cover.
+latency. It is a separate toy struct, unrelated to `ringbuf_mutex.{c,h}`.
+
+`bench_ringbuf_vs_ringbuf_mutex.c` is the one that measures the two **real**
+implementations against each other, linking both (which is what the prefixed
+symbols are for) and reporting CPU consumption alongside throughput. Results
+and analysis are written up in `BENCHMARK_ringbuf_vs_ringbuf_mutex.md`. Two
+measurement traps it is built around, both of which flatter `ringbuf` if
+ignored:
+
+- **Overwrite-mode throughput is not a win condition.** Evicting is cheaper
+  than delivering, so a variant can post a higher *push* rate purely by
+  dropping more. Hence the separate `recv-Mm/s` (delivered) column and the
+  per-delivered-message CPU normalization. Scenario [5] has `ringbuf` pushing
+  2.3× faster while delivering only 1.3× as much.
+- **Saturated CPU numbers are not independent of throughput.** When both
+  threads spin flat out `cpu/wall` pins at ~1.95 and CPU-per-message is just
+  2× the wall cost. Scenario [6] paces the offered rate below saturation,
+  which is the only configuration where the CPU columns add information.
+
+Each row reports the single repetition whose throughput was the *median*, not a
+per-column median, so every column of a row describes one coherent run.
+
+Headline result: the variants are equivalent in lossless mode (identical code
+path, no lock either side), `ringbuf_mutex` is up to 2.9× faster in contended
+overwrite mode, and `ringbuf` wins only when saturated and dropping ~94% of
+traffic. Notably `ringbuf`'s overwrite-mode cost is on the consumer's hot path
+rather than in locking: `ringbuf_pop` does two atomic RMWs (slot-lock CAS plus
+`read_idx` CAS) on *every* pop, measured at 2.45× slower uncontended with no
+lock involved on either side.
 
 ### Running a single test case
 
@@ -93,8 +121,9 @@ the single allocation applies to both.
 Single-producer / single-consumer lock-free ring buffer. Two interchangeable
 implementations (see "Two implementations" above): `ringbuf.{c,h}` plus
 `ringbuf_mutex.{c,h}`, with `test_ringbuf.c` and `test_ringbuf_mutex.c`
-mirroring each other case for case, and `bench_ringbuf.c` alongside. CMake
-builds a static library per variant plus the test binaries.
+mirroring each other case for case, and two benchmarks alongside
+(`bench_ringbuf.c`, `bench_ringbuf_vs_ringbuf_mutex.c`). CMake builds a static
+library per variant plus the test binaries.
 
 Exactly one thread may call `ringbuf_push`, exactly one may call `ringbuf_pop`.
 More than one on either side is UB — this is the premise the whole design rests

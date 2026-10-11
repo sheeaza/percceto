@@ -138,4 +138,15 @@ if(RINGBUF_BUILD_BENCH)
     add_executable(bench_ringbuf bench_ringbuf.c ringbuf.c)
     target_compile_options(bench_ringbuf PRIVATE ${RINGBUF_WARNINGS} -O2 -g)
     target_link_libraries(bench_ringbuf PRIVATE Threads::Threads)
+
+    # Head-to-head: the two real implementations against each other, with CPU
+    # consumption alongside throughput. bench_ringbuf compares ringbuf to an
+    # internal toy mutex ring; this one links BOTH variants, which is why the
+    # prefixed symbols exist.
+    add_executable(bench_ringbuf_vs_ringbuf_mutex
+        bench_ringbuf_vs_ringbuf_mutex.c ringbuf.c ringbuf_mutex.c)
+    target_compile_options(bench_ringbuf_vs_ringbuf_mutex PRIVATE
+        ${RINGBUF_WARNINGS} -O2 -g)
+    target_link_libraries(bench_ringbuf_vs_ringbuf_mutex PRIVATE
+        Threads::Threads)
 endif()
