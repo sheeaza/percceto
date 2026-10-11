@@ -586,9 +586,24 @@ submitted now.
 
 Otherwise the tree's usual rule holds — *every non-relaxed ordering has an
 unlocked access on at least one end; if both ends lock, relaxed is correct.*
-Hence `read_idx`'s store is relaxed in overwrite mode and release in lossless
-mode, and `write_idx` is relaxed **both ways** — the one ordering weaker than
-`ringbuf_mutex.c`'s, because nothing reads `write_idx` for readiness any more.
+What is left carrying a non-relaxed ordering is therefore just the stamp, at
+both ends, plus the `*_approx` helpers. **Both counters are relaxed in both
+modes**, which is weaker than `ringbuf_mutex.c` on each:
+
+- `write_idx`, because nothing reads it for readiness any more — only the
+  producer itself, the locked eviction path, and the advisory helpers.
+- `read_idx`, because the producer never reads it in lossless mode at all
+  (the stamp subsumes the fullness check), and in overwrite mode both ends
+  hold the lock. Note the asymmetry with `ringbuf_mutex.c`, where the
+  lossless store **must** be release: there the producer does read `read_idx`
+  unlocked to test fullness, so that store is what frees the slot. Here the
+  release on `stamp[idx]` does that job instead.
+
+Resisting a defensive release on those stores is deliberate. Either would
+satisfy the letter of the rule above — the `*_approx` helpers read both
+counters without locking — while draining it of meaning, since any store can
+find some diagnostic reader. The rule is useful only if "unlocked access"
+means one that something load-bearing depends on.
 
 ### What is load-bearing, and how it was established
 

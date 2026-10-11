@@ -480,13 +480,22 @@ bool ringbuf_zcopy_pop(struct ringbuf_zcopy *rb, void *data)
         if (!take_submitted(rb, data, r))
             return false;
 
-        /* Release is conservative here: the only unlocked reader of read_idx
-         * in this mode is the advisory *_approx pair, since the stamp handles
-         * everything load-bearing. Kept for symmetry with the slot-freeing
-         * store in take_submitted, and because ringbuf_mutex.c's lossless pop
-         * carries a release on this same store -- there it is load-bearing,
-         * since its producer reads read_idx to test fullness. */
-        atomic_store_explicit(&rb->read_idx, r + 1, memory_order_release);
+        /* Relaxed, and this is the one store where that differs from
+         * ringbuf_mutex.c's lossless pop. There the release is load-bearing:
+         * its producer reads read_idx on the unlocked fast path to test
+         * fullness, so this store is what tells it the slot is safe to
+         * overwrite. Here the stamp took that job over -- the producer never
+         * reads read_idx in this mode at all -- so the store that frees the
+         * slot is the release on stamp[idx] in take_submitted, and this one
+         * publishes nothing. Its only unlocked readers are the *_approx
+         * helpers, which are advisory and documented as possibly stale.
+         *
+         * Keeping it as release would satisfy the letter of this file's
+         * ordering rule -- every non-relaxed ordering has an unlocked access
+         * on at least one end -- while making the rule vacuous, since any
+         * store can find a diagnostic reader. Verified relaxed: the suite
+         * passes and ringbuf_zcopy_tsan reports nothing. */
+        atomic_store_explicit(&rb->read_idx, r + 1, memory_order_relaxed);
         return true;
     }
 
