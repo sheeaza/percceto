@@ -61,6 +61,16 @@ target_include_directories(ringbuf_mutex PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_options(ringbuf_mutex PRIVATE ${RINGBUF_WARNINGS})
 target_link_libraries(ringbuf_mutex PUBLIC Threads::Threads)
 
+# Multi-producer variant: lifts the single-producer restriction, which is a
+# different axis than ringbuf_mutex (synchronization of the same contract).
+# Producers claim a slot with a ticket CAS on write_idx and publish via a
+# per-slot stamp. Plain C11 + POSIX, so unlike ringbuf_vslot it is not
+# gated on Linux.
+add_library(ringbuf_mpsc ringbuf_mpsc.c ringbuf_mpsc.h)
+target_include_directories(ringbuf_mpsc PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_options(ringbuf_mpsc PRIVATE ${RINGBUF_WARNINGS})
+target_link_libraries(ringbuf_mpsc PUBLIC Threads::Threads)
+
 # Variable-length variant: byte-packed, length-prefixed records instead of
 # fixed-size slots, with the ring mapped twice back to back so a record
 # spanning the physical end stays contiguous.
@@ -105,6 +115,14 @@ if(RINGBUF_BUILD_TESTS)
     target_link_libraries(test_ringbuf_mutex PRIVATE Threads::Threads)
     add_test(NAME ringbuf_mutex COMMAND test_ringbuf_mutex)
 
+    # Same deal for the MPSC variant: compile ringbuf_mpsc.c directly, or
+    # the five counter-overflow tests vanish.
+    add_executable(test_ringbuf_mpsc ringbuf_mpsc.c test_ringbuf_mpsc.c)
+    target_compile_definitions(test_ringbuf_mpsc PRIVATE RINGBUF_TEST_HOOKS)
+    target_compile_options(test_ringbuf_mpsc PRIVATE ${RINGBUF_WARNINGS})
+    target_link_libraries(test_ringbuf_mpsc PRIVATE Threads::Threads)
+    add_test(NAME ringbuf_mpsc COMMAND test_ringbuf_mpsc)
+
     # And again for the variable-length variant, when it is available.
     if(RINGBUF_HAVE_VAR)
         add_executable(test_ringbuf_vslot ringbuf_vslot.c test_ringbuf_vslot.c)
@@ -144,7 +162,23 @@ if(RINGBUF_BUILD_TESTS)
             Threads::Threads)
         add_test(NAME ringbuf_mutex_tsan COMMAND test_ringbuf_mutex_tsan)
 
-        # Weaker evidence than the other two tsan targets, deliberately
+        # The real gate on the MPSC variant. It has more concurrent writers
+        # than anything else here -- N producers on write_idx and the
+        # per-slot stamps -- and the stamp acquire/release pair is the only
+        # thing keeping a producer's memcpy off a slot the consumer is still
+        # reading. Nothing in the logic tests can observe that directly.
+        add_executable(test_ringbuf_mpsc_tsan
+            ringbuf_mpsc.c test_ringbuf_mpsc.c)
+        target_compile_definitions(test_ringbuf_mpsc_tsan PRIVATE
+            RINGBUF_TEST_HOOKS)
+        target_compile_options(test_ringbuf_mpsc_tsan PRIVATE
+            ${RINGBUF_WARNINGS} -O1 -g -fsanitize=thread)
+        target_link_options(test_ringbuf_mpsc_tsan PRIVATE -fsanitize=thread)
+        target_link_libraries(test_ringbuf_mpsc_tsan PRIVATE
+            Threads::Threads)
+        add_test(NAME ringbuf_mpsc_tsan COMMAND test_ringbuf_mpsc_tsan)
+
+        # Weaker evidence than the other three tsan targets, deliberately
         # kept anyway. tsan keys shadow memory by virtual address, so the
         # two views of the mirrored mapping look like unrelated locations
         # and a race on a record spanning the ring end can be hidden. It

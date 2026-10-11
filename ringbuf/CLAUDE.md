@@ -27,9 +27,10 @@ anchored regex — `-R ringbuf` matches both:
 ctest --test-dir build -R '^ringbuf$'
 ```
 
-With the mutex and variable-length variants there are now **six** entries —
-`ringbuf`, `ringbuf_mutex`, `ringbuf_vslot`, and the three opt-in `*_tsan` ones —
-so `-R ringbuf` matches all six and the anchored form matters more than before.
+With the mutex, MPSC and variable-length variants there are now **eight**
+entries — `ringbuf`, `ringbuf_mutex`, `ringbuf_mpsc`, `ringbuf_vslot`, and the
+four opt-in `*_tsan` ones — so `-R ringbuf` matches all eight and the anchored
+form matters more than before.
 
 `build/` already holds a **Unix Makefiles** cache. `-G Ninja` will refuse to
 reconfigure over it; `rm -rf build` first if you want to switch generators.
@@ -37,7 +38,8 @@ reconfigure over it; `rm -rf build` first if you want to switch generators.
 `ringbuf_vslot` and its test targets are **gated on Linux** (`memfd_create`), with
 a `message(STATUS)` skip rather than a `FATAL_ERROR` — unlike the benchmarks,
 which are opt-in and so can fail loudly. On a non-Linux host the build succeeds
-with four CTest entries instead of six.
+with six CTest entries instead of eight. `ringbuf_mpsc` is plain C11 + POSIX and
+is **not** gated.
 
 ### CI
 
@@ -90,7 +92,7 @@ hours. A deliberate-break check during development did exactly that.
 If the arm64 tsan entries ever abort with `unsupported VMA range`, that is a
 known ThreadSanitizer/aarch64 limitation on 39-bit-VA kernels rather than a
 bug here; the current runners are 48-bit-VA Azure hosts, so it should not
-arise, and the three non-tsan entries still gate the logic regardless.
+arise, and the four non-tsan entries still gate the logic regardless.
 
 ### Benchmark
 
@@ -146,12 +148,14 @@ lock involved on either side.
 ### Running a single test case
 
 Not supported. `main(void)` in `test_ringbuf.c` and `test_ringbuf_mutex.c` takes
-no arguments and runs all 7 cases unconditionally (`test_ringbuf_vslot.c` runs
-all 10); there is no filter flag. To isolate one, comment out the others in
-`main` or add arg parsing.
+no arguments and runs all 7 cases unconditionally (`test_ringbuf_vslot.c` and
+`test_ringbuf_mpsc.c` each run all 10); there is no filter flag. To isolate one,
+comment out the others in `main` or add arg parsing.
 
 The two stress tests push 2,000,000 messages each and dominate the ~0.2 s
-runtime; the tsan build takes ~2 s.
+runtime; the tsan build takes ~2 s. `ringbuf_mpsc` is the slowest entry —
+~0.8 s, and ~8 s under tsan — since its two multi-producer stress cases run
+four pushing threads on a capacity-4 ring.
 
 ## Two implementations
 
@@ -161,8 +165,10 @@ only in how overwrite mode reconciles its two writers to `read_idx`. Symbols are
 prefixed (`ringbuf_mutex_push`, `struct ringbuf_mutex`, …) so both can link into
 one binary.
 
-(There is also a third, `ringbuf_vslot.{c,h}`, which changes the *storage model*
-rather than the synchronization — see "The variable-length variant" below.)
+(There are also two further variants, each changing a different axis:
+`ringbuf_vslot.{c,h}` changes the *storage model* — see "The variable-length
+variant" — and `ringbuf_mpsc.{c,h}` changes the *contract*, allowing many
+producers. See "The multi-producer variant".)
 
 | | `ringbuf` | `ringbuf_mutex` |
 | --- | --- | --- |
@@ -179,21 +185,25 @@ describe `ringbuf.c`; everything about counters, wrapping, capacity rounding, an
 the single allocation applies to both. **`ringbuf_vslot` is the exception on every
 one of those** — byte counters, a mirrored mapping, byte capacity, and two
 allocations — so read its own section rather than assuming these carry over.
+`ringbuf_mpsc` keeps all of them, and breaks the single-producer premise instead.
 
 ## Architecture
 
-Single-producer / single-consumer lock-free ring buffer. Three implementations:
-`ringbuf.{c,h}` and `ringbuf_mutex.{c,h}` (interchangeable, fixed-size slots —
-see "Two implementations" above), plus `ringbuf_vslot.{c,h}` (variable-length
-messages — see "The variable-length variant"). `test_ringbuf.c` and
+Lock-free ring buffer, SPSC in three of its four variants. `ringbuf.{c,h}` and
+`ringbuf_mutex.{c,h}` are interchangeable fixed-size-slot implementations (see
+"Two implementations" above); `ringbuf_vslot.{c,h}` does variable-length
+messages (see "The variable-length variant"); `ringbuf_mpsc.{c,h}` takes many
+producers (see "The multi-producer variant"). `test_ringbuf.c` and
 `test_ringbuf_mutex.c` mirror each other case for case, `test_ringbuf_vslot.c`
-adds three cases of its own, and two benchmarks sit alongside
-(`bench_ringbuf.c`, `bench_ringbuf_vs_ringbuf_mutex.c`). CMake builds a static
-library per variant plus the test binaries.
+adds three cases of its own and `test_ringbuf_mpsc.c` adds three, and two
+benchmarks sit alongside (`bench_ringbuf.c`,
+`bench_ringbuf_vs_ringbuf_mutex.c`). CMake builds a static library per variant
+plus the test binaries.
 
 Exactly one thread may call `ringbuf_push`, exactly one may call `ringbuf_pop`.
 More than one on either side is UB — this is the premise the whole design rests
-on, not a caveat.
+on, not a caveat. **`ringbuf_mpsc` is the one variant that lifts this**, and
+only on the push side; its consumer is still single-caller.
 
 **Two modes, set at create time.** With `overwrite_on_full = false`, a push onto
 a full buffer fails. With `true`, it evicts the oldest unread slot instead and
@@ -241,6 +251,11 @@ Real SPMC would mean dropping or atomicizing `cached_write` and auditing the
 slot locks for consumer-vs-consumer overlap, which they were never designed for.
 The eviction machinery is not the obstacle.
 
+All of the above is about **`ringbuf.c`**, where `write_idx` is single-writer.
+It is not the general shape of this tree: `ringbuf_mpsc.c` makes `write_idx`
+multi-writer on purpose and pays the CAS for it. Do not carry the
+"`write_idx` stays single-writer" claim across to that file.
+
 ### The mutex variant's two invariants
 
 `ringbuf_mutex.c` replaces both mechanisms above with one lock held by every
@@ -276,6 +291,108 @@ details are load-bearing and both are verified by deliberately breaking them:
 Because `pop` can no longer fail transiently, the overwrite-mode producers in
 `test_ringbuf_mutex.c` have **no retry loop**: a `false` from push is a hard
 test failure, which is the variant's main observable guarantee.
+
+## The multi-producer variant
+
+`ringbuf_mpsc.{c,h}` is the only variant that changes the **contract** rather
+than the implementation behind it: any number of threads may call
+`ringbuf_mpsc_push` concurrently. The consumer is still single-caller. Plain
+C11 + POSIX, so unlike `ringbuf_vslot` it is not Linux-gated, and everything
+in "Architecture" about counters, wrapping, capacity rounding and the single
+allocation carries over unchanged.
+
+| | `ringbuf` | `ringbuf_mpsc` |
+| --- | --- | --- |
+| Producers | exactly one | **any number** |
+| `write_idx` | single-writer, relaxed load + release store | **multi-writer**, ticket CAS |
+| Publication | `write_idx` itself marks a slot ready | **per-slot stamp** |
+| Fullness check | compare `write_idx` against `cached_read` | the stamp subsumes it; producers never read `read_idx` |
+| `pop` returning `false` | empty, or transient contention (overwrite only) | also **head-of-line**: oldest ticket claimed but not yet published |
+| Lock-free / signal-safe | yes | yes, both modes |
+
+### Tickets and stamps
+
+A producer claims slot `w` by winning `CAS(write_idx: w -> w+1)` — the ticket.
+It then copies its message and release-stores `stamp[w & mask] = w + 1` to
+publish. One `atomic_size_t` stamp per slot, initialized `stamp[i] = i`:
+
+```
+stamp == w      free, reserved for the producer holding ticket w
+stamp == w + 1  published, holds ticket w's message
+```
+
+so a slot's life cycle is `i` → `i+1` → `i+capacity` → `i+capacity+1` …,
+gaining `capacity` each lap. **Compared as a signed difference against a
+ticket, never absolutely**, so it wraps past `SIZE_MAX` like every other
+counter here.
+
+**The stamp subsumes the fullness check**, which is why there is no
+`cached_read` in this struct: a producer compares `stamp[w & mask]` with its
+own `w`, and a negative difference means a previous lap's message is still
+unread. Producers never read `read_idx` at all.
+
+### What is load-bearing, and how it was established
+
+Each of these was confirmed by **deliberately breaking it** and checking that
+the predicted failure appears — the same method the other variants' notes rest
+on.
+
+- **The slot lock is taken BEFORE the ticket CAS** in the eviction path, and
+  that order is the subtle point in the file. A won ticket is irrevocable, so
+  claiming it first and then failing to take the lock would leave a permanent
+  hole in the sequence at `w` that the consumer waits on forever. Locking on a
+  merely tentative `w` is safe because the ticket CAS still validates it and
+  retries on a stale value. Breaking this wedges `overwrite_stress` and
+  `mpsc_overwrite_stress` — both sides stall at `MAX_SPIN`.
+- **An evicting producer must advance `read_idx`, not just the stamp.** The
+  stamp CAS decides *who* retires a message; `read_idx` is what tells the
+  consumer where the live window starts. Bumping only the stamp leaves the
+  consumer waiting on a ticket that no longer exists in the ring: the failure
+  is `received=0` with a drop count climbing to the full push total. So
+  `read_idx` has N+1 writers in overwrite mode and both sides go through
+  `advance_read_idx()`, a store-max CAS loop rather than a fetch-add — the two
+  sides can both try to retire the same message and the loser must not
+  double-count.
+- **The stamp's release store / acquire load pair is the only ordering doing
+  real work**, as in every other variant. Relaxing the publish store makes
+  `ringbuf_mpsc_tsan` report a data race on the slot bytes. Trust this one
+  least on x86-64, where TSO compiles both to plain `mov`s — the arm64 CI legs
+  are the real gate.
+- **`ringbuf_mpsc_test_seed_counters` must re-stamp every slot**, to the
+  ticket each slot awaits (`stamp[t & mask] == t`, derived from the masked
+  offset since `start` is not a multiple of the capacity). The stamps hold
+  absolute ticket numbers, so leaving them at create-time values desynchronizes
+  them from the seeded counters, every slot reads as another lap's, and `push`
+  spins forever — even single-threaded `wrap_boundary` **hangs** rather than
+  failing a check.
+
+By contrast, the **receive-commit CAS in `pop_overwrite` is not load-bearing**:
+replacing it with a plain store leaves the whole suite passing. Both the
+evicting producer and the consumer take the same `slot_lock[idx]` before
+touching the stamp, so the lock — not the CAS — is what makes a message
+counted as dropped or received and never both. It is kept for symmetry with
+the eviction path and as a cheap assertion. This is the opposite of
+`ringbuf.c`, where the `read_idx` CAS genuinely is the mechanism, so do not
+reason by analogy between the two files.
+
+### Delivery order
+
+Messages are ordered by **ticket**, not by call time: two producers racing in
+`push` may be delivered in either order. Each producer's own messages do stay
+in the order it pushed them. `test_ringbuf_mpsc.c` therefore cannot check a
+single global sequence — `struct message` carries a `producer_id`, and the
+consumer checks **per-producer** strict monotonicity, which is what a broken
+ticket CAS destroys. In lossless mode it additionally requires each stream to
+arrive complete.
+
+`test_ringbuf_mpsc.c` runs **ten** cases: the seven mirroring `test_ringbuf.c`
+(single-producer, so they stay directly comparable) plus `mpsc_lossless`,
+`mpsc_overwrite_stress`, and `mpsc_wrap_overwrite_stress`, all with
+`NUM_PRODUCERS = 4`.
+
+There is deliberately **no benchmark target**, for the same reason as
+`ringbuf_vslot`: a fair comparison needs a producer-count scaling axis, which
+is its own piece of work rather than an extra row in the existing table.
 
 ## The variable-length variant
 
@@ -432,7 +549,10 @@ the library instead would silently skip the four wrap tests (`main` `#ifdef`s
 them out). Keep this in mind when touching `CMakeLists.txt`. The mutex variant
 has the identical arrangement with `ringbuf_mutex_test_seed_counters()`, and so
 does `ringbuf_vslot` with `ringbuf_vslot_test_seed_counters()` — note that one
-rounds its argument down to `REC_ALIGN`.
+rounds its argument down to `REC_ALIGN`. `ringbuf_mpsc` likewise, with
+`ringbuf_mpsc_test_seed_counters()`, which has **five** cases behind the define
+and is the one hook that does more than store counters: it must also re-stamp
+every slot (see "The multi-producer variant").
 
 ## Style
 

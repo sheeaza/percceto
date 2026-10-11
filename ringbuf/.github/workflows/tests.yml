@@ -2,8 +2,9 @@ name: tests
 
 # Runs the full CTest suite on every push and PR. The sanitizer build is
 # opt-in locally (-DRINGBUF_BUILD_TSAN=ON) but always ON here: tsan is the
-# gate on the lock-free ordering in ringbuf.c and on the mutex variant's
-# unlocked push path, so CI is exactly where it should not be skippable.
+# gate on the lock-free ordering in ringbuf.c, on the mutex variant's
+# unlocked push path, and on the MPSC variant's multi-writer write_idx and
+# per-slot stamps, so CI is exactly where it should not be skippable.
 on:
   push:
     branches: ['**']
@@ -37,7 +38,7 @@ jobs:
     #
     # Linux only on both, and not just a default: ringbuf_vslot needs
     # memfd_create, and both benchmarks need pthread_setaffinity_np. On
-    # another OS the CMake gate would quietly drop two of the six CTest
+    # another OS the CMake gate would quietly drop two of the eight CTest
     # entries and the job would still go green.
     #
     # ubuntu-24.04-arm is a native arm64 runner (free for public repos), so
@@ -99,7 +100,7 @@ jobs:
         # 48-bit-VA Azure hosts. Should a future image move to a 39-bit VA
         # kernel, tsan aborts with "unsupported VMA range" -- that is a
         # known ThreadSanitizer/aarch64 limitation, not a bug in this tree,
-        # and the three non-tsan entries still gate the logic there.
+        # and the four non-tsan entries still gate the logic there.
         run: ctest --test-dir build --output-on-failure --timeout 300
 
   format:
