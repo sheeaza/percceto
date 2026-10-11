@@ -9,7 +9,7 @@
  * it. Single-producer / single-consumer by default, and multi-producer when
  * the caller serializes the claims -- see "SEVERAL PRODUCERS" below.
  *
- * Every other variant in this tree copies the payload inside push(), from a
+ * Every SPSC variant in this tree copies the payload inside push(), from a
  * buffer the caller already filled. This one hands the caller a pointer to
  * the slot itself and lets it write there directly:
  *
@@ -102,12 +102,20 @@
  * reconciled with one internal mutex, so reserve()/push() may BLOCK and
  * neither is async-signal-safe. Use ringbuf.h if that matters.
  *
- * ringbuf_mpsc.h is the other way to take several producers: it synchronizes
- * them itself with a ticket CAS, needing no caller-held mutex and staying
- * lock-free and signal-safe, but its push copies the payload internally. Pick
- * that one when producers must not block or you cannot hold a lock; pick this
- * one when you can hold a short lock and want the payload written in place,
- * with several fills in flight.
+ * ringbuf_mpsc.h is the other way to take several producers, and the closest
+ * variant to this one: it offers the SAME reserve/submit split, so the payload
+ * is written in place there too. The difference is purely who synchronizes the
+ * producers. It does so itself with a ticket CAS, needing no caller-held mutex
+ * and staying lock-free and async-signal-safe; this file needs the caller's
+ * mutex but keeps its write index single-writer and its internals simpler.
+ *
+ * Pick ringbuf_mpsc.h when producers must not block, you cannot hold a lock,
+ * or you have several producers and a small or heavily-contended ring. Pick
+ * this one for a genuine SPSC producer that wants in-place fills -- where no
+ * mutex is needed at all -- or for several producers on a roomy ring with
+ * cores to spare. BENCHMARK_ringbuf_mpsc_vs_ringbuf_zcopy.md measures the
+ * two; the result is a split decision that turns on contention rather than on
+ * payload size or fill cost.
  *
  * The one structural difference follows from out-of-order submit. In
  * ringbuf_mutex.h the write index doubles as the readiness marker: everything

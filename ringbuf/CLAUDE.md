@@ -110,9 +110,10 @@ cmake -B build -DRINGBUF_BUILD_BENCH=ON && cmake --build build -j
 ./build/bench_ringbuf                        # ringbuf vs an internal toy mutex ring
 ./build/bench_ringbuf_vs_ringbuf_mutex       # the two real SPSC variants (~4 min)
 ./build/bench_ringbuf_mpsc_vs_ringbuf_mutex  # multi-producer fan-in (~4.5 min)
+./build/bench_ringbuf_mpsc_vs_ringbuf_zcopy  # the two MP variants (~7 min)
 ```
 
-All three are always compiled `-O2` regardless of `CMAKE_BUILD_TYPE`, so a
+All four are always compiled `-O2` regardless of `CMAKE_BUILD_TYPE`, so a
 stray Debug configure cannot silently produce meaningless numbers. Linux-only:
 they pin threads to fixed CPUs with `pthread_setaffinity_np`, without which a
 mid-run migration shows up as a throughput cliff unrelated to the code. CMake
@@ -196,22 +197,73 @@ Two reversals are the interesting part, and both are worth not rediscovering:
   lock-free fail-fast won. The generalizable reason: with several producers,
   retries contend with each other, so "fail fast and spin" stops being cheap.
 
+`bench_ringbuf_mpsc_vs_ringbuf_zcopy.c` is the fourth, written up in
+`BENCHMARK_ringbuf_mpsc_vs_ringbuf_zcopy.md`. It is the only one where
+**neither side is a baseline** — both variants are first-class answers to
+"several producers", differing in who synchronizes them — and the result is a
+split decision rather than a winner. Four rows per table: each variant's
+split push (`reserve` / fill in place / `submit`, one copy) and each one's
+`push` (fill staging, copy again) as a control, so a gap can be attributed to
+the in-place fill or to the synchronization rather than to both.
+
+It exists only because `ringbuf_mpsc` gained `reserve`/`submit`. Before that
+the two did not share an operation — `push` copies from a caller buffer, so a
+producer that *generates* its message writes the bytes twice while
+`ringbuf_zcopy` writes them once — and any comparison would have conflated
+"one copy vs two" with "ticket CAS vs caller mutex". **That was an API
+difference, not something a fill model could correct.**
+
+Three things about it are deliberate:
+
+- **A fill-cost axis**, which is what the earlier notes said such a benchmark
+  would need: `fill()` does N word-wise read-modify-write passes through a
+  `volatile` pointer, so its cost scales and cannot be optimized away.
+- **The caller's mutex covers the claim only, and retries release it.** Both
+  are required by `ringbuf_zcopy.h` rules 1–2, not stylistic: a refused
+  reserve is usually blocked by a peer's unsubmitted slot, so retrying under
+  the lock deadlocks.
+- **A false pop never means "drained"** — in *both* variants an unsubmitted
+  reservation blocks delivery head-of-line, so the consumer waits for every
+  producer to finish *and* submit. No other benchmark here needs this.
+
+Headline result: **the deciding axis is contention, not fill cost.**
+`ringbuf_mpsc` wins uncontended, at 1–2 producers, below saturation, and on
+small or heavily-occupied rings (up to **2.81× at `cap=16`** with 4
+producers); `ringbuf_zcopy+mu` wins at 4+ saturated producers on a roomy ring
+(1.45–1.51×), and it wins by *parking* its losers rather than spinning them —
+every such row shows a markedly lower `cpu/wall`.
+
+Two findings worth not rediscovering:
+
+- **The fill-cost hypothesis was wrong.** An expensive fill does not favour
+  the caller-held mutex; `ringbuf_zcopy+mu` loses 1.72–1.83× at 8–32 passes.
+  Both variants already fill outside any lock, so a longer fill buys it no
+  parallelism `ringbuf_mpsc` lacks — it only raises slot occupancy, and a
+  refused reserve under a caller mutex must re-acquire that mutex to retry
+  where a lock-free claim just re-CASes. The axis turned out to be a proxy for
+  occupancy.
+- **Oversubscription favours `ringbuf_zcopy+mu` (1.21–1.27×)**, contrary to
+  the scenario's design intent — parking 16 threads on a futex beats spinning
+  them on 7 CPUs, even though a descheduled producer blocks delivery *and* its
+  peers' claims.
+
 ### Running a single test case
 
 Not supported. `main(void)` in `test_ringbuf.c` and `test_ringbuf_mutex.c` takes
-no arguments and runs all 7 cases unconditionally (`test_ringbuf_vslot.c` and
-`test_ringbuf_mpsc.c` each run all 10, `test_ringbuf_zcopy.c` all 14, and
+no arguments and runs all 7 cases unconditionally (`test_ringbuf_vslot.c` runs
+all 10, `test_ringbuf_mpsc.c` all 17, `test_ringbuf_zcopy.c` all 14, and
 `test_ringbuf_zcopy_mpsc.c` all 5); there is no filter flag. To isolate one,
 comment out the others in `main` or add arg parsing.
 
 The two stress tests push 2,000,000 messages each and dominate the ~0.2 s
-runtime; the tsan build takes ~2 s. `ringbuf_mpsc` is the slowest entry —
-~0.8 s, and ~8 s under tsan — since its two multi-producer stress cases run four
-pushing threads on a capacity-4 ring. `ringbuf_zcopy_mpsc` is close behind at
-~2 s and ~10 s under tsan: all five of its cases are concurrent, four of them
-running four producers against a capacity-4 ring. `ringbuf_zcopy` follows at
-~0.4 s and ~4 s under tsan, for the same reason: its three `parallel_fill*`
-cases each run a reserver, four filler threads and a consumer.
+runtime; the tsan build takes ~2 s. `ringbuf_zcopy_mpsc` is the slowest entry —
+~2.3 s, and ~10–15 s under tsan: all five of its cases are concurrent, four of
+them running four producers against a capacity-4 ring. `ringbuf_mpsc` is next
+at ~1.5 s and ~9 s under tsan, since its two multi-producer stress cases and
+its three `parallel_fill*` cases all run four producer threads on a capacity-4
+ring. `ringbuf_zcopy` follows at ~0.5 s and ~5 s under tsan, for the same
+reason: its three `parallel_fill*` cases each run a reserver, four filler
+threads and a consumer.
 
 ## Two implementations
 
@@ -227,7 +279,10 @@ variant" — `ringbuf_mpsc.{c,h}` changes the *contract*, allowing many
 producers (see "The multi-producer variant"), and `ringbuf_zcopy.{c,h}` changes
 the *operation*, splitting `push` into reserve and submit so the payload is
 written in place and several writes can overlap. See "The reserve/submit
-variant".)
+variant". The last two axes are **not** exclusive: `ringbuf_mpsc` also offers
+the split push, so the two differ only in who synchronizes the producers —
+itself, or the caller. That pairing is measured in
+`BENCHMARK_ringbuf_mpsc_vs_ringbuf_zcopy.md`.)
 
 | | `ringbuf` | `ringbuf_mutex` |
 | --- | --- | --- |
@@ -244,10 +299,11 @@ describe `ringbuf.c`; everything about counters, wrapping, capacity rounding, an
 the single allocation applies to both. **`ringbuf_vslot` is the exception on every
 one of those** — byte counters, a mirrored mapping, byte capacity, and two
 allocations — so read its own section rather than assuming these carry over.
-`ringbuf_mpsc` keeps all of them, and breaks the single-producer premise instead.
-`ringbuf_zcopy` keeps all of them too, and breaks the premise that a message is
-*stored* by the same call that claims its slot — and, given a caller-held mutex,
-the single-producer premise as well.
+`ringbuf_mpsc` keeps all of them, and breaks the single-producer premise
+instead — **and the premise that a message is *stored* by the same call that
+claims its slot, since it offers the split push too.** `ringbuf_zcopy` keeps
+all of them as well, and breaks that same storing premise and — given a
+caller-held mutex — the single-producer one.
 
 ## Architecture
 
@@ -255,25 +311,29 @@ Lock-free ring buffer, SPSC in three of its five variants. `ringbuf.{c,h}` and
 `ringbuf_mutex.{c,h}` are interchangeable fixed-size-slot implementations (see
 "Two implementations" above); `ringbuf_vslot.{c,h}` does variable-length
 messages (see "The variable-length variant"); `ringbuf_mpsc.{c,h}` takes many
-producers (see "The multi-producer variant"); `ringbuf_zcopy.{c,h}` splits
-`push` into reserve and submit, and takes many producers when the caller
-serializes them (see "The reserve/submit variant" and "Several producers under
-a caller-held mutex"). `test_ringbuf.c` and `test_ringbuf_mutex.c` mirror each
-other case for case, `test_ringbuf_vslot.c` adds three cases of its own,
-`test_ringbuf_mpsc.c` adds three, and `test_ringbuf_zcopy.c` adds seven;
-`test_ringbuf_zcopy_mpsc.c` is a second binary over the same `ringbuf_zcopy`
-library with five multi-producer cases. Three benchmarks sit alongside
-(`bench_ringbuf.c`, `bench_ringbuf_vs_ringbuf_mutex.c`,
-`bench_ringbuf_mpsc_vs_ringbuf_mutex.c`). CMake builds a static library per
+producers and also splits `push` into reserve and submit (see "The
+multi-producer variant"); `ringbuf_zcopy.{c,h}` splits `push` the same way, and
+takes many producers when the caller serializes them (see "The reserve/submit
+variant" and "Several producers under a caller-held mutex"). `test_ringbuf.c`
+and `test_ringbuf_mutex.c` mirror each other case for case,
+`test_ringbuf_vslot.c` adds three cases of its own, `test_ringbuf_mpsc.c` adds
+ten, and `test_ringbuf_zcopy.c` adds seven; `test_ringbuf_zcopy_mpsc.c` is a
+second binary over the same `ringbuf_zcopy` library with five multi-producer
+cases. Four benchmarks sit alongside (`bench_ringbuf.c`,
+`bench_ringbuf_vs_ringbuf_mutex.c`, `bench_ringbuf_mpsc_vs_ringbuf_mutex.c`,
+`bench_ringbuf_mpsc_vs_ringbuf_zcopy.c`). CMake builds a static library per
 variant plus the test binaries.
 
 Exactly one thread may call `ringbuf_push`, exactly one may call `ringbuf_pop`.
 More than one on either side is UB — this is the premise the whole design rests
 on, not a caveat. **`ringbuf_mpsc` and `ringbuf_zcopy` are the two variants that
 lift this**, and only on the push side; both consumers are still single-caller.
-They lift it differently, which is the whole distinction between them:
-`ringbuf_mpsc` synchronizes the producers itself, `ringbuf_zcopy` requires the
-caller to do it with a mutex of its own.
+They lift it differently, and **that is now the *only* distinction between
+them**, since both offer the split push: `ringbuf_mpsc` synchronizes the
+producers itself with a ticket CAS, `ringbuf_zcopy` requires the caller to do it
+with a mutex of its own. `BENCHMARK_ringbuf_mpsc_vs_ringbuf_zcopy.md` measures
+which is faster, and the answer depends on contention rather than on payload or
+fill cost.
 
 **Two modes, set at create time.** With `overwrite_on_full = false`, a push onto
 a full buffer fails. With `true`, it evicts the oldest unread slot instead and
@@ -391,8 +451,59 @@ allocation carries over unchanged.
 | `write_idx` | single-writer, relaxed load + release store | **multi-writer**, ticket CAS |
 | Publication | `write_idx` itself marks a slot ready | **per-slot stamp** |
 | Fullness check | compare `write_idx` against `cached_read` | the stamp subsumes it; producers never read `read_idx` |
-| `pop` returning `false` | empty, or transient contention (overwrite only) | also **head-of-line**: oldest ticket claimed but not yet published |
+| Storing a message | one `push` call | `push`, **or** `reserve` → caller fills → `submit` |
+| `pop` returning `false` | empty, or transient contention (overwrite only) | also **head-of-line**: oldest ticket claimed but not yet published or submitted |
 | Lock-free / signal-safe | yes | yes, both modes |
+
+### The split push
+
+`push` is also available in two halves, so the payload can be written straight
+into the slot instead of being assembled elsewhere and copied in:
+
+```c
+struct ringbuf_mpsc_rsv a, b;
+ringbuf_mpsc_reserve(rb, &a);   /* ticket CAS, no lock, any thread */
+ringbuf_mpsc_reserve(rb, &b);
+spawn(fill, a.data);            /* fills run CONCURRENTLY, off-thread */
+spawn(fill, b.data);
+ringbuf_mpsc_submit(rb, &b);    /* ANY order */
+ringbuf_mpsc_submit(rb, &a);
+```
+
+`push` **is** `reserve` + `memcpy` + `submit` — one code path, not a
+reimplementation. That is deliberate: the ticket and eviction logic is the
+subtle part of the file, and a duplicated copy is where a future ordering fix
+would get applied only once.
+
+Delivery is by **reservation order** regardless of submit order, and every
+successful reservation **must** be submitted exactly once — there is no cancel,
+and abandoning one wedges delivery head-of-line.
+
+**`ringbuf_zcopy` offers the same operation, and the pair is the sharpest fork
+in this tree**: same split push, opposite producer synchronization.
+`ringbuf_mpsc_reserve` needs **no caller lock** — `write_idx` is multi-writer,
+claims go through a validating ticket CAS, and a stale read is detected and
+retried. `ringbuf_zcopy_reserve` keeps `write_idx` single-writer and **requires**
+a caller-held mutex. Measured against each other in
+`BENCHMARK_ringbuf_mpsc_vs_ringbuf_zcopy.md`.
+
+Three consequences worth not rediscovering:
+
+- **`submit` takes no lock in either mode**, like `ringbuf_zcopy_submit`, and
+  is provably safe without one: an evicting `reserve` only retires a slot whose
+  stamp it has observed as *published*, and explicitly refuses one that is
+  reserved-but-unsubmitted, so no eviction can race a submit.
+- **The slot lock is released before `reserve` returns**, never held across the
+  caller's fill. Holding a spinlock across a caller-supplied fill would block
+  the consumer for as long as the filler takes — unbounded, and indefinite if
+  the filler blocks on a `read(2)`. The lock's job is to exclude a concurrent
+  pop from the *victim*'s bytes while eviction is settled; protecting the new
+  occupant is the stamp's job.
+- **The ordering chain has three edges, not one pair** — `reserve`'s acquire,
+  the caller's own handoff to the filler, and `submit`'s release — exactly as in
+  `ringbuf_zcopy.c`. But `ringbuf_zcopy`'s **fourth** edge, the caller's mutex
+  carrying one producer's `write_idx` store to the next, **has no counterpart
+  here and needs none.** Do not carry that requirement across.
 
 ### Tickets and stamps
 
@@ -449,6 +560,19 @@ on.
   them from the seeded counters, every slot reads as another lap's, and `push`
   spins forever — even single-threaded `wrap_boundary` **hangs** rather than
   failing a check.
+- **A stamp of `w - capacity` must not be treated as evictable** — the
+  reserved-but-unsubmitted state, which is `reserve_overwrite`'s
+  `expected_stamp - w < 0` branch. Caught immediately and single-threaded by
+  `unsubmitted_blocks_evict`; also breaks `received + dropped == pushed` in
+  `parallel_fill_overwrite` and `wrap_parallel_fill`. The push-only cases
+  **all still pass**, so they cannot be relied on to catch it.
+- **`submit`'s release store.** Relaxing it makes `ringbuf_mpsc_tsan` report a
+  `__tsan_memcpy` race on the slot bytes while every logic case still passes.
+  Same caveat as above: trust it least on x86-64.
+- **The slot lock must be released before `reserve` returns.** Keeping it held
+  across the caller's fill stalls the consumer on that slot — `received=0`,
+  with `parallel_fill_overwrite` and `wrap_parallel_fill` reporting a consumer
+  stall while every push-only case passes.
 
 By contrast, the **receive-commit CAS in `pop_overwrite` is not load-bearing**:
 replacing it with a plain store leaves the whole suite passing. Both the
@@ -462,17 +586,26 @@ reason by analogy between the two files.
 ### Delivery order
 
 Messages are ordered by **ticket**, not by call time: two producers racing in
-`push` may be delivered in either order. Each producer's own messages do stay
-in the order it pushed them. `test_ringbuf_mpsc.c` therefore cannot check a
-single global sequence — `struct message` carries a `producer_id`, and the
-consumer checks **per-producer** strict monotonicity, which is what a broken
-ticket CAS destroys. In lossless mode it additionally requires each stream to
-arrive complete.
+`push` or `reserve` may be delivered in either order. Each producer's own
+messages do stay in the order it pushed them. `test_ringbuf_mpsc.c` therefore
+cannot check a single global sequence — `struct message` carries a
+`producer_id`, and the consumer checks **per-producer** strict monotonicity,
+which is what a broken ticket CAS destroys. In lossless mode it additionally
+requires each stream to arrive complete.
 
-`test_ringbuf_mpsc.c` runs **ten** cases: the seven mirroring `test_ringbuf.c`
-(single-producer, so they stay directly comparable) plus `mpsc_lossless`,
-`mpsc_overwrite_stress`, and `mpsc_wrap_overwrite_stress`, all with
-`NUM_PRODUCERS = 4`.
+`test_ringbuf_mpsc.c` runs **seventeen** cases: the seven mirroring
+`test_ringbuf.c` (single-producer, so they stay directly comparable), plus
+`mpsc_lossless`, `mpsc_overwrite_stress` and `mpsc_wrap_overwrite_stress` with
+`NUM_PRODUCERS = 4`, plus seven for the split push — `reserve_basic`,
+`ooo_submit`, `reserve_exhaust`, `unsubmitted_blocks_evict`, `parallel_fill`,
+`parallel_fill_overwrite` and `wrap_parallel_fill`.
+
+The three `parallel_fill*`/`wrap_parallel_fill` cases run four producers that
+each reserve, fill, and submit **from their own thread with no caller mutex** —
+they are the real gate on the three-edge ordering chain and on the
+no-caller-lock claim. They share `mp_consumer_main` with the push-based cases,
+since the consumer cannot tell how a message was stored and should not be able
+to.
 
 There **is** a benchmark target, unlike `ringbuf_vslot`:
 `bench_ringbuf_mpsc_vs_ringbuf_mutex`, measuring this variant against
@@ -683,10 +816,13 @@ head-of-line blocking:
   only a pop is. A regression conflating "unsubmitted" with "free" would let the
   reserve after a bare submit succeed.
 
-There is deliberately **no benchmark target**, following `ringbuf_vslot`'s
-precedent: a fair comparison needs a fill-cost axis and a parallel-fill
-workload, which is its own piece of work rather than an extra row in the
-existing table.
+There **is** a benchmark target, and it is a comparison against
+`ringbuf_mpsc` rather than against the SPSC variants:
+`bench_ringbuf_mpsc_vs_ringbuf_zcopy`, written up in
+`BENCHMARK_ringbuf_mpsc_vs_ringbuf_zcopy.md`. It became possible only once
+`ringbuf_mpsc` gained its own `reserve`/`submit`, which is what put the two on
+equal footing — one copy on each side, differing only in who synchronizes the
+producers. See "Benchmark" above for what is deliberate about it.
 ### Several producers under a caller-held mutex
 
 `ringbuf_zcopy` lifts its own single-producer restriction, and it is the only
@@ -743,8 +879,18 @@ reserves serialized, not same-threaded**:
 A caller-held mutex supplies all three. Compare `ringbuf_mpsc.c`, which takes
 the other branch of the same fork: it makes `write_idx` genuinely multi-writer
 with a ticket CAS and pays a store-max CAS on `read_idx`, buying lock-freedom
-and signal safety at the cost of copying the payload inside `push`. **Neither
-file's reasoning transfers to the other.**
+and signal safety. **Neither file's reasoning transfers to the other.**
+
+That fork used to come with an operational difference too — `ringbuf_mpsc`
+copied the payload inside `push` — but it no longer does: `ringbuf_mpsc` now
+offers the same `reserve`/`submit` split, so **the two differ only in who
+synchronizes the producers.** `BENCHMARK_ringbuf_mpsc_vs_ringbuf_zcopy.md`
+measures exactly that, and the answer is a split decision on contention:
+this arrangement wins at 4+ saturated producers on a roomy ring, the
+lock-free one wins uncontended, at 1–2 producers, below saturation, and on
+small rings. **The caller-held mutex's weak spot is its retry** — a refused
+reserve has to re-acquire the lock, which on a contended `cap=16` ring costs
+2.81× the delivered throughput.
 
 A consequence worth not rediscovering: with producers serialized, `read_idx`
 still has only **two** kinds of writer, not N+1 as in `ringbuf_mpsc.c`, because
@@ -823,12 +969,17 @@ Four things about the harness are deliberate:
   mode's never-fails promise must hold for *several* producers — it has no
   retry loop, and a `false` return is a hard failure.
 
-There is deliberately **no benchmark target**, following `ringbuf_zcopy`'s and
-`ringbuf_vslot`'s precedent. This is where one would be most interesting — the
-natural baseline is `ringbuf_mutex+mu` from
-`bench_ringbuf_mpsc_vs_ringbuf_mutex.c`, and the hypothesis is that holding the
-lock across the claim rather than the copy is what wins — but it needs a
-fill-cost axis to mean anything, which is its own piece of work.
+There **is** a benchmark target now, and this is the arrangement it measures:
+`bench_ringbuf_mpsc_vs_ringbuf_zcopy`, against `ringbuf_mpsc`'s split push
+rather than against `ringbuf_mutex+mu`. The hypothesis recorded here before it
+existed — that holding the lock across the claim rather than the copy is what
+wins — **turned out to be wrong in the direction that matters**, and the fill-cost
+axis it was waiting for is what showed why. See
+`BENCHMARK_ringbuf_mpsc_vs_ringbuf_zcopy.md`; the short version is that both
+variants already fill outside any lock, so an expensive fill buys this one no
+parallelism `ringbuf_mpsc` lacks, and what the axis actually varies is slot
+occupancy — where the caller-held mutex loses, because its retry must
+re-acquire the lock.
 
 ## The variable-length variant
 

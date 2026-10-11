@@ -252,26 +252,27 @@ static void advance_read_idx(struct ringbuf_mpsc *rb, size_t target)
 }
 
 /**
- * push_lossless - claim a ticket and publish, no eviction
+ * reserve_lossless - claim a ticket without publishing, no eviction
  * @rb: the buffer
- * @data: slot_size bytes to copy in
+ * @rsv: handle to fill in, valid only on a true return
  *
  * The fully lock-free path, used when overwrite_on_full is false. Takes no
  * lock on either side: the slot a won ticket names is owned exclusively by
  * the winner until it publishes, so there is nothing to exclude.
  *
- * Return: true if the message was stored; false if the buffer is full.
+ * Return: true if a slot was claimed; false if the buffer is full.
  */
-static bool push_lossless(struct ringbuf_mpsc *rb, const void *data)
+static bool reserve_lossless(struct ringbuf_mpsc *rb,
+                             struct ringbuf_mpsc_rsv *rsv)
 {
     size_t w = atomic_load_explicit(&rb->write_idx, memory_order_relaxed);
 
     for (;;) {
         /* Acquire: pairs with the consumer's release store when it frees
-         * this slot, so its finished read is visible before we overwrite
-         * the bytes. This is the ordering that does the real work -- on a
-         * weak memory model, relaxing it lets the memcpy below float above
-         * the check. */
+         * this slot, so its finished read is visible before the caller
+         * overwrites the bytes. This is the ordering that does the real work
+         * -- on a weak memory model, relaxing it lets the caller's fill
+         * float above the check. */
         size_t st = atomic_load_explicit(&rb->stamp[w & rb->mask],
                                          memory_order_acquire);
         ptrdiff_t diff = (ptrdiff_t)(st - w);
@@ -287,35 +288,41 @@ static bool push_lossless(struct ringbuf_mpsc *rb, const void *data)
             continue;
         }
 
-        if (diff < 0)
-            return false; /* a previous lap's message is still unread */
+        if (diff < 0) {
+            /* A previous lap's ticket still holds this slot: either an
+             * unread message, or a reservation whose filler has not
+             * submitted yet. Neither is ours to take, and the two are
+             * indistinguishable from here -- which is fine, because the
+             * answer is the same. */
+            return false;
+        }
 
         /* diff > 0: w is stale, another producer has already published
          * here. Re-read and try again. */
         w = atomic_load_explicit(&rb->write_idx, memory_order_relaxed);
     }
 
-    memcpy(rb->tail + (w & rb->mask) * rb->slot_size, data, rb->slot_size);
-
-    /* Release: publishes the bytes above to the consumer's acquire load.
-     * w+1 is what marks the slot full and names the ticket it holds. */
-    atomic_store_explicit(&rb->stamp[w & rb->mask], w + 1,
-                          memory_order_release);
+    rsv->data = rb->tail + (w & rb->mask) * rb->slot_size;
+    rsv->ticket = w;
     return true;
 }
 
 /**
- * push_overwrite - claim a ticket, evicting the oldest message if needed
+ * reserve_overwrite - claim a ticket, evicting the oldest message if needed
  * @rb: the buffer
- * @data: slot_size bytes to copy in
+ * @rsv: handle to fill in, valid only on a true return
  *
  * Used when overwrite_on_full is true. Takes the target slot's lock before
- * claiming the ticket -- see the comment inline, the order is load-bearing.
+ * claiming the ticket -- see the comment inline, the order is load-bearing --
+ * and releases it before returning, so no lock is ever held across the
+ * caller's fill.
  *
- * Return: true if the message was stored; false on transient lock
- * contention with an in-flight pop of the slot being evicted.
+ * Return: true if a slot was claimed; false on transient lock contention
+ * with an in-flight pop of the slot being evicted, or when the slot's
+ * previous-lap reservation has not been submitted yet.
  */
-static bool push_overwrite(struct ringbuf_mpsc *rb, const void *data)
+static bool reserve_overwrite(struct ringbuf_mpsc *rb,
+                              struct ringbuf_mpsc_rsv *rsv)
 {
     size_t w = atomic_load_explicit(&rb->write_idx, memory_order_relaxed);
 
@@ -379,10 +386,13 @@ static bool push_overwrite(struct ringbuf_mpsc *rb, const void *data)
             advance_read_idx(rb, w - rb->capacity + 1);
         } else if ((ptrdiff_t)(expected_stamp - w) < 0) {
             /* Only one state gets here: stamp == w - capacity, meaning the
-             * producer holding the PREVIOUS lap's ticket for this slot has
-             * not published yet. There is no message to evict and nothing
-             * to copy over. Back off rather than spin, so push stays
-             * non-blocking. */
+             * PREVIOUS lap's ticket for this slot has not been published
+             * yet -- a producer mid-push, or a reservation whose filler has
+             * not submitted. There is no message to evict, and the slot
+             * cannot be taken: a filler may be writing those bytes right
+             * now. LOAD-BEARING, and the same rule as
+             * ringbuf_zcopy_reserve's refusal on an unsubmitted slot. Back
+             * off rather than spin, so reserve stays non-blocking. */
             atomic_store_explicit(&rb->slot_lock[idx], 0, memory_order_release);
             return false;
         }
@@ -402,16 +412,96 @@ static bool push_overwrite(struct ringbuf_mpsc *rb, const void *data)
             continue;
         }
 
-        memcpy(rb->tail + idx * rb->slot_size, data, rb->slot_size);
-        atomic_store_explicit(&rb->stamp[idx], w + 1, memory_order_release);
+        rsv->data = rb->tail + idx * rb->slot_size;
+        rsv->ticket = w;
+
+        /* Release the lock HERE, before the caller's fill, not after it.
+         * The lock's job was to exclude a concurrent pop from the memcpy of
+         * the VICTIM while we settled who retires it; that is finished.
+         * Protecting the new occupant's bytes is the stamp's job: the slot
+         * now reads as reserved-for-w, and the branch above refuses to evict
+         * a slot in that state, so no other producer can touch it until we
+         * submit. Holding a spinlock across a caller-supplied fill would
+         * block the consumer for as long as the filler takes -- unbounded,
+         * and indefinite if the filler blocks on a read(2). */
         atomic_store_explicit(&rb->slot_lock[idx], 0, memory_order_release);
         return true;
     }
 
-    memcpy(rb->tail + (w & rb->mask) * rb->slot_size, data, rb->slot_size);
-    atomic_store_explicit(&rb->stamp[w & rb->mask], w + 1,
-                          memory_order_release);
+    rsv->data = rb->tail + (w & rb->mask) * rb->slot_size;
+    rsv->ticket = w;
     return true;
+}
+
+/**
+ * ringbuf_mpsc_reserve - claim a slot to fill in place
+ * @rb: the buffer
+ * @rsv: handle to fill in, valid only on a true return
+ *
+ * Callable from any number of threads, with no caller-held lock. See
+ * ringbuf_mpsc.h for the caller-visible contract.
+ *
+ * ORDERING. The window between reserve and submit spans threads, so
+ * correctness rests on a chain of three edges rather than one pair:
+ *
+ *   1. the acquire load on the stamp in the paths above, pairing with pop's
+ *      release store that frees the slot -- so the consumer's copy-out is
+ *      complete before the bytes are handed to a filler;
+ *   2. the caller's own handoff of @rsv to whatever fills it (pthread_create,
+ *      a work queue, ...), which is the caller's to supply, not ours;
+ *   3. submit's release store on the stamp, pairing with pop's acquire load
+ *      -- so the fill is visible before the consumer copies it out.
+ *
+ * Transitivity across all three is what makes it safe, and it holds whether
+ * submit runs on the filler thread or back on this one after a join.
+ *
+ * Where this differs from ringbuf_zcopy_reserve, and the comparison is worth
+ * keeping: that variant needs a FOURTH edge, supplied by the caller's push
+ * mutex, to carry one producer's relaxed write_idx store to the next
+ * producer's load. There is no such edge here and none is needed --
+ * write_idx is multi-writer, every claim goes through a validating ticket
+ * CAS, and a stale read is detected and retried (the diff > 0 branches
+ * above) rather than assumed away. That is precisely the trade between the
+ * two files: this one pays a CAS per claim and needs no caller lock; that one
+ * keeps write_idx single-writer and requires one.
+ *
+ * Return: true if a slot was claimed; false if the buffer is full (lossless
+ * mode), if the slot it needs is reserved but unsubmitted (either mode), or
+ * on transient contention with an in-flight pop (overwrite mode).
+ */
+bool ringbuf_mpsc_reserve(struct ringbuf_mpsc *rb, struct ringbuf_mpsc_rsv *rsv)
+{
+    if (rb->overwrite_on_full)
+        return reserve_overwrite(rb, rsv);
+    return reserve_lossless(rb, rsv);
+}
+
+/**
+ * ringbuf_mpsc_submit - publish a filled reservation to the consumer
+ * @rb: the buffer
+ * @rsv: handle from a successful ringbuf_mpsc_reserve()
+ *
+ * Callable from any thread. See ringbuf_mpsc.h for the caller-visible
+ * contract.
+ *
+ * One release store, no lock, in either mode -- which is what lets several
+ * fills proceed in parallel and submit independently. That it needs no lock
+ * even in overwrite mode is provable rather than hopeful: an evicting reserve
+ * only ever retires a slot whose stamp it has observed as published, and it
+ * explicitly refuses a slot that is reserved-but-unsubmitted, so no eviction
+ * can be racing us here. Concurrent submits of distinct reservations touch
+ * distinct slots, since at most `capacity` tickets can be outstanding across
+ * all producers.
+ *
+ * The release is edge 3 of the three in ringbuf_mpsc_reserve: it publishes
+ * the caller's fill to pop's acquire load. ticket + 1 is what marks the slot
+ * published and names the ticket it holds.
+ */
+void ringbuf_mpsc_submit(struct ringbuf_mpsc *rb,
+                         const struct ringbuf_mpsc_rsv *rsv)
+{
+    atomic_store_explicit(&rb->stamp[rsv->ticket & rb->mask], rsv->ticket + 1,
+                          memory_order_release);
 }
 
 /**
@@ -422,15 +512,25 @@ static bool push_overwrite(struct ringbuf_mpsc *rb, const void *data)
  * Callable from any number of threads. See ringbuf_mpsc.h for the
  * caller-visible contract.
  *
+ * Exactly reserve + memcpy + submit, rather than a third hand-written path.
+ * Keeping one implementation is deliberate: the ticket and eviction logic is
+ * the subtle part of this file, and a duplicated copy is where a future
+ * ordering fix would get applied only once.
+ *
  * Return: true if the message was stored; false if the buffer is full
  * (lossless mode), or on transient slot-lock contention with an in-flight
  * pop (overwrite mode).
  */
 bool ringbuf_mpsc_push(struct ringbuf_mpsc *rb, const void *data)
 {
-    if (rb->overwrite_on_full)
-        return push_overwrite(rb, data);
-    return push_lossless(rb, data);
+    struct ringbuf_mpsc_rsv rsv;
+
+    if (!ringbuf_mpsc_reserve(rb, &rsv))
+        return false;
+
+    memcpy(rsv.data, data, rb->slot_size);
+    ringbuf_mpsc_submit(rb, &rsv);
+    return true;
 }
 
 /**
@@ -472,7 +572,7 @@ static bool pop_overwrite(struct ringbuf_mpsc *rb, void *data, size_t r)
 
     memcpy(data, rb->tail + idx * rb->slot_size, rb->slot_size);
 
-    /* Commit the receive. The evicting producer in push_overwrite holds
+    /* Commit the receive. An evicting producer in reserve_overwrite holds
      * this same slot_lock while it retires a message, so it cannot be
      * racing us here; this is a CAS mainly for symmetry with that path and
      * as a cheap assertion that the stamp is still what we validated
@@ -514,11 +614,12 @@ bool ringbuf_mpsc_pop(struct ringbuf_mpsc *rb, void *data)
 
     size_t idx = r & rb->mask;
 
-    /* Acquire: pairs with the producer's release store in push_lossless, so
-     * the message bytes are visible before we copy them out. The stamp also
-     * subsumes the empty check -- anything other than "published at our
-     * lap" means there is nothing for us, whether because the ring is empty
-     * or because the producer holding ticket r has not published yet. */
+    /* Acquire: pairs with the producer's release store in
+     * ringbuf_mpsc_submit, so the message bytes are visible before we copy
+     * them out. The stamp also subsumes the empty check -- anything other
+     * than "published at our lap" means there is nothing for us, whether
+     * because the ring is empty, because the producer holding ticket r has
+     * not published yet, or because its reservation is still unsubmitted. */
     size_t st = atomic_load_explicit(&rb->stamp[idx], memory_order_acquire);
     if (st != r + 1)
         return false;

@@ -328,4 +328,18 @@ if(RINGBUF_BUILD_BENCH)
         ${RINGBUF_WARNINGS} -O2 -g)
     target_link_libraries(bench_ringbuf_mpsc_vs_ringbuf_mutex PRIVATE
         Threads::Threads)
+
+    # The two multi-producer variants against each other, both using their
+    # split push so the payload is written in place exactly once on both
+    # sides. That equal footing is what the reserve/submit addition to
+    # ringbuf_mpsc bought: without it the comparison would conflate "one copy
+    # vs two" with "ticket CAS vs caller-held mutex". Links both libraries,
+    # which is also what checks that struct ringbuf_mpsc_rsv and struct
+    # ringbuf_rsv coexist in one translation unit.
+    add_executable(bench_ringbuf_mpsc_vs_ringbuf_zcopy
+        bench_ringbuf_mpsc_vs_ringbuf_zcopy.c ringbuf_mpsc.c ringbuf_zcopy.c)
+    target_compile_options(bench_ringbuf_mpsc_vs_ringbuf_zcopy PRIVATE
+        ${RINGBUF_WARNINGS} -O2 -g)
+    target_link_libraries(bench_ringbuf_mpsc_vs_ringbuf_zcopy PRIVATE
+        Threads::Threads)
 endif()
