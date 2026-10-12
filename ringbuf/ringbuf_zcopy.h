@@ -1,6 +1,8 @@
 #ifndef RINGBUF_ZCOPY_H
 #define RINGBUF_ZCOPY_H
 
+#include <pthread.h>
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stddef.h>
 
@@ -127,17 +129,154 @@
  * Used only through ringbuf_zcopy_push(), there are never any outstanding
  * reservations, and the variant is contract-identical to ringbuf_mutex.h --
  * including overwrite mode's promise that push never fails.
+ *
+ * THE LAYOUT IS VISIBLE. struct ringbuf_zcopy is defined below rather than kept
+ * opaque, so a caller can read a field directly, size the allocation itself, or
+ * inline a hot path. That is a deliberate exception: ringbuf.h,
+ * ringbuf_mutex.h and ringbuf_vslot.h keep theirs private. The fields remain
+ * INTERNAL -- read them if it helps, but every WRITE belongs to the functions
+ * here, which is where the memory ordering each field documents is actually
+ * established. In particular the internal mutex is NOT the push mutex the
+ * SEVERAL PRODUCERS rules ask for: it is unused in lossless mode and not even
+ * initialized there, so supply your own. Nothing below changes behavior for a
+ * caller who ignores it.
  */
 
-struct ringbuf_zcopy;
+/**
+ * struct ringbuf_zcopy - the ring buffer
+ * @capacity: slot count, a power of two >= 2
+ * @mask: @capacity - 1, for mapping a ticket to a slot
+ * @slot_size: bytes per slot, as passed to ringbuf_zcopy_create()
+ * @overwrite_on_full: the mode chosen at create time
+ * @stamp: per-slot publication state, @capacity entries, pointing into @tail
+ * @dropped_count: messages evicted before they were read
+ * @write_idx: next ticket to hand out; single-writer, see below
+ * @lock: reconciles the two writers of @read_idx; overwrite mode only
+ * @read_idx: next ticket to deliver
+ * @tail: slot data, then the stamp array
+ *
+ * Defined here rather than kept opaque so callers can see the layout:
+ * read a field directly, size the allocation themselves, or inline a hot
+ * path. The fields are nonetheless INTERNAL -- read them if you like, but
+ * every write belongs to the functions below, which is where the ordering
+ * documented per field is established. Use ringbuf_zcopy_capacity() and
+ * friends in portable code; they are not going to change.
+ *
+ * @tail is a flexible array member, so this struct CANNOT be a member of
+ * another one (C11 6.7.2.1p3) -- deriving from it means wrapping the
+ * pointer, or allocating the block yourself and treating the result as one
+ * of these. In the latter case ringbuf_zcopy_create() is the specification
+ * of what a valid block looks like: the tail needs @capacity * @slot_size
+ * bytes, the stamp array aligned for atomic_size_t after them, and
+ * stamp[i] = i.
+ */
+struct ringbuf_zcopy {
+    size_t capacity;
+    size_t mask;
+    size_t slot_size;
+    bool overwrite_on_full;
+
+    /* One stamp per slot: the publication state of slot i, and what replaces
+     * write_idx as the readiness marker.
+     *
+     * This is the one structural departure from ringbuf_mutex.c, and the
+     * split push forces it. There, write_idx IS the readiness marker: the
+     * release store that advances it past a slot is the same event that
+     * publishes the message, so "stored" is exactly the prefix below
+     * write_idx. Here reservations are handed out in ticket order but
+     * SUBMITTED in any order, so stored slots no longer form a prefix -- a
+     * single monotonic counter cannot describe a ring with holes in it. The
+     * state has to go per slot.
+     *
+     * Initialized to stamp[i] = i. For a slot holding ticket w the value
+     * means:
+     *
+     *   stamp == w      reserved for ticket w: either free, or claimed by a
+     *                   reservation that has not submitted yet
+     *   stamp == w + 1  submitted, holds ticket w's message
+     *
+     * so a slot's life cycle is i -> i+1 -> i+capacity -> i+capacity+1 ...,
+     * gaining `capacity` each lap. Compared against a ticket as an exact
+     * equality or a signed difference, never as an absolute magnitude, so it
+     * survives the SIZE_MAX wrap like every other counter here.
+     *
+     * Note what the encoding deliberately does NOT distinguish: "free" and
+     * "reserved but unsubmitted" are the same value, w. Nothing needs to tell
+     * them apart, because the question is always asked about a slot's
+     * PREVIOUS lap -- reserve() is about to claim ticket w and asks after
+     * ticket w - capacity, where the two readings differ. See
+     * ringbuf_zcopy_reserve.
+     *
+     * This also subsumes the fullness and emptiness checks, which is why
+     * there is no cached_read or cached_write in this struct -- unlike
+     * ringbuf_mutex.c, whose producer compares the two counters directly. */
+    atomic_size_t *stamp;
+
+    atomic_size_t dropped_count;
+
+    /* Single-writer: only reserve() ever stores to write_idx, in either mode,
+     * exactly as in ringbuf_mutex.c. The split push does not change that --
+     * submit() touches only the stamp, never this counter.
+     *
+     * Note what "single-writer" rests on: reserve() being serialized, not
+     * single-threaded. With several producers under the caller's push mutex
+     * there is still only one store in flight, which is why this stays a
+     * plain counter rather than becoming a CAS target like ringbuf_mpsc.c's.
+     *
+     * Relaxed throughout, which is the one ordering that got WEAKER than
+     * ringbuf_mutex.c's. There the release store on write_idx is what
+     * publishes the message; here publication is the stamp's job, and nothing
+     * reads write_idx to decide a slot is ready: only reserve itself, the
+     * locked eviction path, and the two advisory *_approx helpers.
+     *
+     * The relaxed load/store pair is also the one place the MULTI-producer
+     * arrangement depends on the caller rather than on this file: producer B's
+     * load must observe producer A's store, and relaxed atomics alone promise
+     * no such thing -- the caller's unlock/lock supplies the edge. Hence the
+     * rule above that the mutex be a real lock. Deliberately not promoted
+     * to acquire/release: that would duplicate a mandatory mutex on every
+     * reserve, buying nothing, while implying this counter could carry
+     * concurrent producers on its own, which it cannot. */
+    _Alignas(64) atomic_size_t write_idx;
+
+    /* Retirement counter, and the one place the clean SPSC split breaks: in
+     * overwrite mode the producer advances it too, when it evicts, so it has
+     * two writers.
+     *
+     * `lock` is what reconciles them, held by every pop and by reserve's
+     * eviction branch only -- the arrangement from ringbuf_mutex.c, kept
+     * unchanged because there are still just TWO kinds of writer, not N+1 as
+     * in ringbuf_mpsc.c, however many producers the caller runs: only one of
+     * them can be inside the eviction branch at a time. In particular read_idx
+     * needs no CAS -- a plain store under this lock is already single-valued --
+     * whereas ringbuf_mpsc.c needs advance_read_idx()'s store-max loop
+     * precisely because it declined to serialize its producers. Unused, and
+     * not even initialized, in lossless mode.
+     *
+     * Still atomic rather than a plain size_t, because the *_approx helpers
+     * read it without locking.
+     *
+     * The lock sits on this cache line rather than its own: an eviction takes
+     * it and then immediately stores read_idx, so pairing them costs one line
+     * transfer instead of two. The line is still split off from write_idx,
+     * which the producer owns. */
+    _Alignas(64) pthread_mutex_t lock;
+    atomic_size_t read_idx;
+
+    /* Slot data, then the stamp array. One allocation, so create/destroy stay
+     * a single posix_memalign/free. A reservation's data pointer aims
+     * directly into the slot region here, which is the whole point of the
+     * variant: the caller fills the ring in place. */
+    _Alignas(64) char tail[];
+};
 
 /**
  * struct ringbuf_rsv - a claimed slot, awaiting submit
  * @data: slot_size writable bytes; fill these before submitting
  * @ticket: internal identifier of the claimed slot; do not interpret it
  *
- * Caller-allocated, unlike the opaque buffer handle -- stack-allocate one
- * per reservation. Filled in by ringbuf_zcopy_reserve() and consumed by
+ * Caller-allocated, and by value -- stack-allocate one per reservation,
+ * rather than asking the buffer for one. Filled in by ringbuf_zcopy_reserve() and consumed by
  * ringbuf_zcopy_submit(). Valid until submitted, after which @data must not
  * be touched again: the slot belongs to the consumer.
  *

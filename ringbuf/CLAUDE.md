@@ -339,6 +339,42 @@ fill cost.
 a full buffer fails. With `true`, it evicts the oldest unread slot instead and
 counts it in `ringbuf_dropped_count`.
 
+### Three opaque handles, two exposed structs
+
+`ringbuf`, `ringbuf_mutex` and `ringbuf_vslot` keep their struct definitions in
+the `.c` and declare only `struct ringbuf;` in the header. **`ringbuf_mpsc` and
+`ringbuf_zcopy` do not** — their definitions sit in the header, so a caller can
+see the layout, read a field directly, size the allocation itself, or inline a
+hot path. The fields are still internal: reads are fine, every *write* belongs
+to the library functions, which is where the per-field ordering is established.
+
+Two consequences worth knowing before touching either file:
+
+- **The headers now need `<stdatomic.h>`, and `ringbuf_zcopy.h` also needs
+  `<pthread.h>`** for its embedded `pthread_mutex_t`. Both are self-contained
+  without a feature-test macro — the `.c` files' `_POSIX_C_SOURCE 200112L` is
+  for `posix_memalign`, not for the struct — so a caller including either
+  header standalone compiles clean under `-std=c11 -Wall -Wextra`. There is a
+  check for this worth re-running after edits: compile a TU that includes both
+  headers and takes `sizeof` of each struct.
+- **The per-field commentary moved with the definition.** Each `.c` keeps a
+  short pointer back rather than a copy, per the same rule the function
+  comments follow — the contract lives in the header, and duplicating it in
+  both places means it drifts. So the stamp encoding, why `ringbuf_zcopy`'s
+  `write_idx` is relaxed at both ends, and why its mutex shares a cache line
+  with `read_idx` are all documented in the header now.
+
+Both structs end in a `_Alignas(64) char tail[]` flexible array member, which
+bounds what "derive from it" can mean: C11 6.7.2.1p3 forbids an FAM-terminated
+struct as a *member* of another, so a caller embeds the pointer or allocates
+the block itself and treats the result as one of these. In the latter case
+`*_create()` is the specification of a valid block — the tail wants
+`capacity * slot_size` bytes, the stamp array aligned for `atomic_size_t` after
+them, `stamp[i] = i`, and for `ringbuf_mpsc` in overwrite mode the lock array
+aligned for `atomic_int` with `slot_lock[i] = 0`. Getting the stamps wrong does
+not fail a check: it **hangs**, exactly as the seed hook's missing re-stamp
+does.
+
 **Overwrite mode breaks the clean SPSC split, and that drives most of the
 complexity.** In lossless mode `read_idx` has exactly one writer (the consumer)
 and a plain release store suffices. In overwrite mode the *producer* also

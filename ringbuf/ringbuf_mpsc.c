@@ -8,76 +8,11 @@
 
 #include "ringbuf_mpsc.h"
 
-struct ringbuf_mpsc {
-    size_t capacity;
-    size_t mask;
-    size_t slot_size;
-    bool overwrite_on_full;
-
-    /* One stamp per slot: the publication state of slot i, and the whole
-     * reason this variant needs no read_idx CAS.
-     *
-     * Initialized to stamp[i] = i. For a slot holding ticket w the value
-     * means:
-     *
-     *   stamp == w      free, reserved for the producer holding ticket w
-     *   stamp == w + 1  published, holds ticket w's message
-     *
-     * so a slot's life cycle is i -> i+1 -> i+capacity -> i+capacity+1 ...,
-     * gaining `capacity` each lap. Compared against a ticket as a signed
-     * difference, never absolutely, so it survives the SIZE_MAX wrap like
-     * every other counter here.
-     *
-     * This subsumes the fullness check: a producer compares stamp[w & mask]
-     * with its own w, and a negative difference means a previous lap's
-     * message is still unread. Producers therefore never read read_idx at
-     * all, which is why there is no cached_read in this struct. */
-    atomic_size_t *stamp;
-
-    /* One lock per slot, only present when overwrite_on_full is set. Guards
-     * the single physical slot where an in-flight ringbuf_mpsc_pop can
-     * overlap with a ringbuf_mpsc_push eviction. 0 = free, 1 = held.
-     *
-     * The stamp CAS already decides WHO retires a message; this lock is
-     * what keeps the two memcpys off the same bytes while that is settled.
-     * Both are needed, and they do different jobs.
-     *
-     * Points into the tail after the stamps, or NULL in lossless mode. Kept
-     * as a pointer rather than recomputed so the hot paths index it
-     * directly. */
-    atomic_int *slot_lock;
-    atomic_size_t dropped_count;
-
-    /* Multi-writer, unlike every other variant in this tree: each producer
-     * claims a slot by winning CAS(write_idx: w -> w+1), which is what
-     * serializes concurrent pushes. ringbuf.c can use a relaxed-load /
-     * release-store pair here precisely because it forbids that. */
-    _Alignas(64) atomic_size_t write_idx;
-
-    /* Retirement counter: how far delivery has got, and where the consumer
-     * looks next.
-     *
-     * Single-writer in lossless mode, where the consumer is the only thread
-     * that retires anything and a plain release store suffices. In
-     * overwrite mode every evicting producer writes it too, so there are
-     * N+1 writers and both sides go through advance_read_idx().
-     *
-     * The stamp CAS decides WHO retires a given message; this counter is
-     * what tells the consumer where the live window starts. Both are
-     * needed: an eviction that bumped only the stamp would leave the
-     * consumer waiting on a ticket that no longer exists in the ring.
-     *
-     * The consumer's exclusive right to deliver is what keeps
-     * ringbuf_mpsc_pop single-caller: two poppers would both see the same
-     * r and both copy the same slot. Producers only ever push read_idx
-     * forward past messages they destroyed, never past a live one. */
-    _Alignas(64) atomic_size_t read_idx;
-
-    /* Slot data, then the stamp array, then (in overwrite mode) the
-     * slot_lock array. One allocation, so create/destroy stay a single
-     * posix_memalign/free. */
-    _Alignas(64) char tail[];
-};
+/* struct ringbuf_mpsc lives in the header, so callers can see the layout and
+ * derive from it. The per-field rationale -- which stamp value means what,
+ * why write_idx is a CAS target, what the per-slot lock does that the stamp
+ * cannot -- is documented there alongside the declaration rather than
+ * duplicated here. */
 
 /**
  * next_pow2 - round up to a power of two
