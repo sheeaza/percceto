@@ -6,162 +6,163 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* Lockless fixed-stride record ring, in a fixed-size mapping made at init
- * and never resized.
+/* The ring interface pftrace.c is written against, and the backend
+ * selection that picks an implementation of it.
  *
- * Every record is exactly %PF_REC_BYTES, which is what makes the rest of
- * this file small: a record boundary is any multiple of the stride, so
- * @tail can be moved by arithmetic instead of by walking tags, there is no
- * length to validate, and a corrupt length is not expressible. Variable
- * length would buy a few bytes on the smallest events and cost all of
- * that.
+ * Three backends exist, and they are compared rather than ranked -- see
+ * BENCHMARK_ring_backends.md. Exactly one is compiled in, chosen by a macro
+ * on the command line:
  *
- * Wrap handling is delegated to the MMU rather than to branches: the same
- * physical pages are mapped twice, back to back, so a record that runs off
- * the end of the buffer continues into the mirror and the kernel folds
- * those bytes back to the front. Producers and the reader therefore treat
- * every record as contiguous -- no split memcpy, no padding records, and
- * no wasted tail bytes. Still needed despite the fixed stride, because the
- * stride does not divide a power-of-two @cap: gcd(40, 2^n) is 8, so the
- * in-buffer offset visits every multiple of 8 and records straddle the end
- * on most laps.
+ *   (default)              pf_ring_mmap.c -- the bespoke ring, below
+ *   PF_RING_BACKEND_MPSC   pf_ring_mpsc.c -- wraps ringbuf_mpsc
+ *   PF_RING_BACKEND_ZCOPY  pf_ring_zcopy.c -- wraps ringbuf_zcopy
  *
- * Positions (@head, @tail) are absolute monotonic byte counters, never
- * wrapped; a buffer offset is `pos & mask`. Keeping them absolute is what
- * makes the tag check below work, and it sidesteps the
- * full-versus-empty ambiguity of wrapped indices.
+ * Compile time rather than a vtable of function pointers. A reservation is
+ * a handful of atomics on a path that costs ~130ns end to end, so an
+ * indirect call that defeated inlining would be a measurable fraction of
+ * the thing being measured -- and the comparison would then be partly of
+ * the dispatch mechanism rather than of the rings.
  *
- * Publication is per record, because producers reserve space in order but
- * finish copying out of order. Each record starts with an 8-byte atomic
- * tag, written release-last, holding `pos + PF_REC_BYTES` -- the absolute
- * position just past the record. A reader at absolute position p accepts a
- * record only if its tag equals `p + PF_REC_BYTES`, which rejects three
- * cases with one comparison:
- *   - never written: fresh mapping pages read as zero, and a published
- *     tag is always nonzero because it is biased past its own position;
- *   - still being written: the tag store has not landed yet, so what sits
- *     there is either zero or a lap-stale smaller value;
- *   - lapped: a newer record's tag is larger.
+ * WHAT A BACKEND MUST PROVIDE. The ten functions below, plus a definition
+ * of struct pf_ring in its own header. Beyond that the contracts differ in
+ * ways callers can observe, and pftrace.c is written to tolerate all of
+ * them:
  *
- * The bias is load-bearing. A bare lap counter would read as 0 for a
- * never-written slot and 0 for every slot on lap 0, so the whole first
- * fill of the ring would be indistinguishable from empty -- a reader would
- * accept uninitialised bytes as a record.
+ *   - pf_ring_reserve may fail in overwrite mode. The mmap backend's
+ *     cannot: it claims with an unconditional fetch-add. Both ringbuf
+ *     backends refuse when the slot one lap back is reserved but not yet
+ *     submitted, since a filler may still be writing those bytes. Callers
+ *     must treat a null reservation as a drop in either mode.
+ *   - pf_ring_trim and pf_ring_resync may be no-ops, and
+ *     pf_ring_still_valid may always succeed. They exist for a backend
+ *     whose reader has to defend itself against being lapped mid-copy. A
+ *     backend that retires records as it evicts them has nothing to
+ *     defend, so &pf_stats.resyncs is structurally zero there.
+ *   - The producer may need a lock. ringbuf_zcopy requires the caller to
+ *     serialize every reserve, so that backend alone cannot honour the
+ *     no-lock promise in pftrace.h. See pf_ring_zcopy.c.
  */
 
-/* Every record is a multiple of 8 bytes, so each tag stays naturally
- * aligned and its load/store is a plain instruction plus a fence. */
+/* The payload one event occupies, not counting whatever the backend adds
+ * for its own bookkeeping.
+ *
+ * Backend-agnostic deliberately. The mmap backend publishes through an
+ * 8-byte tag at the front of each record, so its stride is 8 bytes wider
+ * than this (see pf_ring_mmap.h); the ringbuf backends keep readiness in a
+ * separate per-slot array and need no in-record header at all. Folding the
+ * mmap tag into this constant would make every backend pay for it -- 8
+ * bytes and a quarter of the slot's memory traffic per event, on the
+ * backend whose cost is being measured against the others.
+ *
+ * pftrace.c pins its struct pf_rec to this with a _Static_assert. */
+#define PF_PAYLOAD_BYTES 32u
+
+/* Every payload is a multiple of 8 bytes, so each of its fields stays
+ * naturally aligned and a backend may hand out 8-byte aligned slots. */
 #define PF_REC_ALIGN 8u
-
-/**
- * struct pf_rec_hdr - The tag every record begins with.
- * @tag: `pos + PF_REC_BYTES`, as described above.
- *
- * Owned by pf_ring, not by the code storing records in it: pf_ring_submit
- * writes @tag release-last and the reader's check is a load of it, so
- * a producer reserves space for this header plus its payload, fills only
- * the payload, and leaves @tag alone. That split is what makes publication
- * atomic per record.
- *
- * Callers embed this as their record's first member -- see struct pf_rec in
- * pftrace.c -- so the payload offsets either side of the ring agree by
- * construction instead of by a matching pair of constants.
- */
-struct pf_rec_hdr {
-    _Atomic uint64_t tag;
-};
-
-/* The stride, and so also the largest (and only) record size. Every
- * position the ring hands out is a multiple of this.
- *
- * pftrace.c pins its struct pf_rec to this with a _Static_assert; the two
- * must agree, and this is the one that pf_ring's arithmetic uses. */
-#define PF_REC_BYTES 40u
-_Static_assert(PF_REC_BYTES % PF_REC_ALIGN == 0,
-               "the stride keeps every tag 8-byte aligned");
+_Static_assert(PF_PAYLOAD_BYTES % PF_REC_ALIGN == 0,
+               "the payload keeps every field 8-byte aligned");
 
 #define PF_RING_MIN_BYTES (64u * 1024u)
 
-struct pf_ring {
-    uint8_t *base; /* first of two mappings of the same pages */
-    size_t cap; /* power of two, hence also a page multiple */
-    size_t mask; /* cap - 1 */
-
-    /* Lap records the reader has not consumed, rather than refusing new
-     * ones. Set for snapshot mode, where overwriting the oldest events is
-     * the entire point, and clear for continuous mode, which drops
-     * instead. */
-    bool overwrite;
-
-    _Atomic uint64_t head; /* next byte to reserve */
-    _Atomic uint64_t tail; /* oldest byte the reader still needs */
-    _Atomic uint64_t dropped;
-    _Atomic uint64_t resyncs;
-    _Atomic uint64_t published;
-};
-
-/** struct pf_ring_reader - A walk in progress over published records. */
-struct pf_ring_reader {
-    uint64_t pos;
-    uint64_t end;
+/**
+ * struct pf_rec_res - A reservation held between reserve and submit.
+ * @rec: Where to write the payload, or %NULL if it was dropped.
+ * @tag: Opaque to the caller; how the backend identifies the slot.
+ *
+ * @rec points at %PF_PAYLOAD_BYTES writable bytes, past whatever header
+ * the backend keeps for itself. Fill them and submit this exact handle.
+ *
+ * @tag cannot live in the slot until submit, in any backend: for the mmap
+ * ring its value is precisely what the reader accepts as "published", so a
+ * half-filled record would read as complete; for the ringbuf backends it
+ * is a ticket number the slot's own stamp is compared against. Nor can
+ * submit recompute it from @rec -- a pointer into the storage yields an
+ * offset, not the absolute position or ticket, and a producer delayed a
+ * full lap would recover the wrong one and stamp a live record with a tag
+ * that validates. Keeping it out here is what makes a lapped producer's
+ * submit land as something the reader rejects.
+ *
+ * Two words, so it returns in registers rather than through memory.
+ */
+struct pf_rec_res {
+    uint8_t *rec;
+    uint64_t tag;
 };
 
 /**
- * pf_ring_init() - Map the ring.
+ * struct pf_ring_reader - A walk in progress over published records.
+ * @pos: Backend-defined cursor. Absolute byte position for the mmap ring,
+ *      a ticket for the ringbuf backends; either way it only ever moves
+ *      forward, and pf_ring_read_commit() releases everything below it.
+ * @prev: The @pos the most recent pf_ring_next() returned a record at,
+ *      which is what pf_ring_still_valid() wants. Recorded by the backend
+ *      rather than recovered by the caller as `pos - stride`: the stride
+ *      is the backend's business, and on a slot-indexed backend the cursor
+ *      counts records rather than bytes.
+ * @end: One past the last record this walk will consider, so a walk
+ *      terminates even while producers keep publishing.
+ */
+struct pf_ring_reader {
+    uint64_t pos;
+    uint64_t prev;
+    uint64_t end;
+};
+
+/* The backend's definition of struct pf_ring, and whatever it wants
+ * inlined. Included after the types above, since a backend header may use
+ * them, and before the declarations below, which need the struct complete
+ * for pftrace.c to embed it. */
+#if defined(PF_RING_BACKEND_MPSC)
+#include "pf_ring_mpsc.h"
+#elif defined(PF_RING_BACKEND_ZCOPY)
+#include "pf_ring_zcopy.h"
+#else
+#include "pf_ring_mmap.h"
+#endif
+
+/**
+ * pf_ring_init() - Create the ring.
  * @r: Ring to initialize.
- * @want_bytes: Requested capacity; rounded up to a power of two, with a
- *      floor of %PF_RING_MIN_BYTES. Since the result is a power of two no
- *      smaller than 64 KiB it is necessarily a page multiple too.
+ * @want_bytes: Requested capacity for payloads, with a floor of
+ *      %PF_RING_MIN_BYTES. Backends round it up -- to a power of two, to a
+ *      page multiple, to a whole number of slots -- so the result is a
+ *      lower bound. Read the real figure back with
+ *      pf_ring_capacity_bytes().
  * @overwrite: Overwrite unconsumed records rather than dropping new ones.
+ *
+ * Performs the ring's one allocation. Nothing on the hot path allocates
+ * afterwards, in any backend.
  *
  * Return: 0 on success, -1 with errno set on failure.
  */
 int pf_ring_init(struct pf_ring *r, size_t want_bytes, bool overwrite);
 
 /**
- * pf_ring_destroy() - Unmap the ring.
- * @r: Ring to destroy. Safe on an already-destroyed or zeroed ring.
+ * pf_ring_destroy() - Release the ring.
+ * @r: Ring to destroy. Safe on an already-destroyed or zeroed ring, and
+ *      safe to call after a failed pf_ring_init().
  */
 void pf_ring_destroy(struct pf_ring *r);
-
-/**
- * struct pf_rec_res - A reservation held between reserve and submit.
- * @rec: Where to write the record, or %NULL if it was dropped.
- * @tag: The tag pf_ring_submit() will store. Opaque to the caller.
- *
- * @tag cannot simply live in @rec until submit: the tag's value is exactly
- * what the reader accepts, so a half-filled record would read as
- * published. Nor can submit recompute it from @rec alone -- a pointer into
- * the mapping yields `pos & mask`, not the absolute position -- and
- * recovering it from @head would get it wrong for a producer delayed a
- * full lap, stamping a live record with a tag that validates. Keeping it
- * here, outside the ring, is what makes a lapped producer's submit land as
- * a stale tag the reader rejects.
- *
- * Two words, so it returns in registers rather than through memory.
- */
-struct pf_rec_res {
-    struct pf_rec_hdr *rec;
-    uint64_t tag;
-};
 
 /**
  * pf_ring_reserve() - Reserve space for one record.
  * @r: Ring.
  *
- * Reserves the next %PF_REC_BYTES, owned exclusively by the caller, who
- * may then fill them concurrently with other producers filling theirs.
- * Write the payload after the returned header and leave the header itself
- * alone; it is pf_ring_submit()'s to store.
+ * Reserves %PF_PAYLOAD_BYTES, owned exclusively by the caller, who may
+ * then fill them concurrently with other producers filling theirs. Every
+ * successful reservation must be submitted exactly once; there is no
+ * cancel, and abandoning one stalls the reader behind it.
  *
- * Without @overwrite this reserves with a compare-exchange rather than a
- * fetch-add, so that a refusal for lack of space leaves @head untouched. A
- * fetch-add would advance @head first and then have nowhere to put a valid
- * tag, leaving a permanent hole that the reader could never walk past.
+ * Callable from any number of threads, except on the ringbuf_zcopy
+ * backend, which requires the caller to serialize these calls -- that
+ * backend's wrapper does so internally, so this signature holds
+ * regardless.
  *
- * Return: The reservation, whose @rec is %NULL if the record was dropped
- * (only without @overwrite, reader too far behind). A dropped reservation
- * must not be submitted.
+ * Return: The reservation, whose @rec is %NULL if the record was dropped.
+ * A dropped reservation must not be submitted. Unlike the mmap backend,
+ * where only a lossless ring can refuse, the ringbuf backends can refuse
+ * in either mode -- see the contract notes at the top of this file.
  */
 struct pf_rec_res pf_ring_reserve(struct pf_ring *r);
 
@@ -170,8 +171,11 @@ struct pf_rec_res pf_ring_reserve(struct pf_ring *r);
  * @r: Ring.
  * @res: Reservation from pf_ring_reserve(), whose @rec is not %NULL.
  *
- * Release-stores the tag, so a reader that acquire-loads it sees the
- * fully written payload.
+ * Release-stores the backend's readiness marker, so a reader that
+ * acquire-loads it sees the fully written payload. Never blocks and takes
+ * no lock in any backend, including the one whose reserve needs one:
+ * a producer refused by a peer's unsubmitted slot must be able to make
+ * progress without waiting on that peer's lock.
  */
 void pf_ring_submit(struct pf_ring *r, struct pf_rec_res res);
 
@@ -188,25 +192,27 @@ void pf_ring_read_begin(struct pf_ring *r, struct pf_ring_reader *rd);
  * @rd: Walk state.
  *
  * Stops at the first record that is not yet published, which costs at
- * most one in-flight memcpy of latency and resolves on the next walk.
+ * most one in-flight fill of latency and resolves on the next walk. That
+ * a later record may already be readable does not help: handing it over
+ * early would reorder the stream.
  *
- * Return: Pointer to the record, contiguous for %PF_REC_BYTES thanks to
- * the mirror, or %NULL at the end of the published run.
+ * Return: Pointer to %PF_PAYLOAD_BYTES contiguous bytes, or %NULL at the
+ * end of the published run. The storage is the backend's and is valid only
+ * until the next call on @rd.
  */
 const uint8_t *pf_ring_next(struct pf_ring *r, struct pf_ring_reader *rd);
 
 /**
  * pf_ring_still_valid() - Check a record was not overwritten while read.
  * @r: Ring.
- * @pos: Absolute position of the record being checked.
+ * @pos: Cursor the record was read at, i.e. &pf_ring_reader.prev after the
+ *      pf_ring_next() that returned it.
  *
- * Only an @overwrite (snapshot) ring can overwrite a record out from under
- * the reader, so this always succeeds otherwise. Call it after
- * consuming a record's bytes and discard the result if it fails; this is
- * the second half of a seqlock, with pf_ring_next()'s tag check as the
- * first. Still required despite the fixed stride: the tag check alone
- * leaves a window in which a producer laps the slot after the reader has
- * accepted it but before it has finished copying the body.
+ * The second half of a seqlock, with pf_ring_next()'s readiness check as
+ * the first: call it after consuming a record's bytes and discard the
+ * result if it fails. Only a backend that can recycle a record out from
+ * under a reader needs this, and only in overwrite mode; elsewhere it
+ * always succeeds.
  *
  * Return: %true if the record's bytes are still intact.
  */
@@ -217,28 +223,25 @@ bool pf_ring_still_valid(const struct pf_ring *r, uint64_t pos);
  * @r: Ring.
  * @rd: Walk state.
  *
- * Advances @tail, freeing the space for producers. Without @overwrite this
- * is what lets them stop dropping.
+ * Frees the space for producers. In a lossless ring this is what lets
+ * them stop dropping.
  */
 void pf_ring_read_commit(struct pf_ring *r, struct pf_ring_reader *rd);
 
 /**
  * pf_ring_trim() - Drop the oldest records to keep a safety margin.
  * @r: Ring.
- * @retain_bytes: Most recent bytes worth keeping. Rounded down to a
- *      whole number of records, so @tail lands on a boundary.
+ * @retain_bytes: Most recent bytes worth keeping, rounded down to a whole
+ *      number of records.
  *
- * Snapshot mode never consumes records, so without this @tail would stay
- * at 0 while producers lap the buffer repeatedly, and the reader would
- * start from a position long overwritten. Moving @tail forward keeps a
+ * For a backend whose reader starts from a position producers may have
+ * lapped: without this the oldest retained record is one already
+ * recycled, and a dump reads as empty. Moving the floor forward keeps a
  * margin between the newest producer and the oldest retained record, so a
  * dump is never racing a wrap.
  *
- * Cheap: with a fixed stride every multiple of %PF_REC_BYTES is a record
- * boundary, so this is arithmetic plus one compare-exchange. It reads no
- * tags and cannot fail, which is why it has no return value -- a
- * variable-length ring would have to walk the records to find a boundary,
- * and could lose the race to a producer recycling the one it started from.
+ * A no-op on a backend that retires each record as it evicts it, which
+ * has no stale floor to advance.
  */
 void pf_ring_trim(struct pf_ring *r, size_t retain_bytes);
 
@@ -246,19 +249,67 @@ void pf_ring_trim(struct pf_ring *r, size_t retain_bytes);
  * pf_ring_resync() - Abandon buffered records after losing the window.
  * @r: Ring.
  *
- * Moves @tail to @head, which is always a record boundary, discarding what
- * had not been read and bumping the resync counter.
+ * Discards what had not been read, skipping to the newest data, and bumps
+ * the resync counter. Reached when pf_ring_still_valid() fails mid-walk;
+ * with @overwrite that is a normal outcome under load, not a fault, since
+ * there is no backpressure to prevent it. Losing the older part of the
+ * window is the lesser cost, and the recent records a snapshot is for
+ * survive.
  *
- * Reached when a reader finds that a producer lapped the record it was
- * copying -- pf_ring_still_valid() failing mid-walk. With @overwrite that
- * is a normal outcome under load, not a fault: there is no backpressure to
- * prevent it. Losing the older part of the window is the lesser cost, and
- * the recent records a snapshot is actually for survive.
- *
- * Note pf_ring_trim() does not need this. With a fixed stride it derives a
- * boundary arithmetically rather than by walking records, so there is no
- * boundary for a producer to recycle out from under it.
+ * A no-op wherever pf_ring_still_valid() cannot fail.
  */
 void pf_ring_resync(struct pf_ring *r);
+
+/**
+ * pf_ring_capacity_bytes() - Payload bytes the ring holds.
+ * @r: Ring.
+ *
+ * The rounded-up capacity, which is what pf_ring_init()'s @want_bytes was
+ * a lower bound on. Callers sizing a fraction of the ring -- a watermark,
+ * a retained window -- must use this rather than what they asked for.
+ *
+ * Return: The capacity in bytes.
+ */
+size_t pf_ring_capacity_bytes(const struct pf_ring *r);
+
+/**
+ * pf_ring_reader_may_be_lapped() - Whether a record can be recycled while
+ *      the reader holds it.
+ * @r: Ring.
+ *
+ * Asks the question a reader actually needs answered, which is narrower
+ * than "is this overwrite mode": can a producer rewrite the bytes
+ * pf_ring_next() just handed back, before they have been consumed?
+ *
+ * True only for the mmap backend in overwrite mode, where pf_ring_next()
+ * returns a pointer into live ring storage with no backpressure protecting
+ * it. The ringbuf backends copy each record into private storage as they
+ * retire it, so what the caller holds is already a snapshot and no
+ * producer can reach it -- which is also why pf_ring_still_valid() cannot
+ * fail there.
+ *
+ * A caller that gets %false may encode straight from the returned pointer
+ * and skip both the defensive copy and the pf_ring_still_valid() check.
+ *
+ * Return: %true if the reader must copy before trusting a record.
+ */
+bool pf_ring_reader_may_be_lapped(const struct pf_ring *r);
+
+/**
+ * pf_ring_stats() - Read the ring's counters.
+ * @r: Ring.
+ * @published: Records successfully submitted.
+ * @dropped: Records refused for lack of space. Counts refusals only, not
+ *      records intentionally overwritten in snapshot mode: those are the
+ *      mode working as intended, and &pf_stats.dropped is documented as
+ *      meaning a gap in the output.
+ * @resyncs: Times the reader lost its place and skipped ahead. Always 0
+ *      on a backend whose reader cannot be lapped.
+ *
+ * Every pointer is required. Relaxed loads: these are counters, and no
+ * caller orders anything against them.
+ */
+void pf_ring_stats(const struct pf_ring *r, uint64_t *published,
+                   uint64_t *dropped, uint64_t *resyncs);
 
 #endif /* PF_RING_H */

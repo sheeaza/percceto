@@ -1,10 +1,14 @@
-# Ring mechanics in isolation: compiles pf_ring.c directly rather than
-# linking pftrace, so the ring can be tested without protobuf, files or any
-# of the library's state. That is also why it needs src/ on the include
+# Ring mechanics in isolation: compiles the mmap backend directly rather
+# than linking pftrace, so the ring can be tested without protobuf, files or
+# any of the library's state. That is also why it needs src/ on the include
 # path -- pf_ring.h is private to the implementation.
+#
+# The mmap backend specifically, not whichever one is selected: this suite
+# asserts on the double mapping and the straddling records only that
+# backend has. See the file's own header comment.
 add_executable(test_ring
   test_ring.c
-  ${PROJECT_SOURCE_DIR}/src/pf_ring.c
+  ${PROJECT_SOURCE_DIR}/src/pf_ring_mmap.c
 )
 target_include_directories(test_ring PRIVATE ${PROJECT_SOURCE_DIR}/src)
 target_link_libraries(test_ring PRIVATE Threads::Threads)
@@ -14,6 +18,12 @@ target_compile_definitions(test_ring PRIVATE _GNU_SOURCE)
 # where snapshot windowing and continuous gaplessness actually get tested.
 # memmem, used to confirm which events survived in a window, needs
 # _GNU_SOURCE.
+#
+# Built once per backend when the benchmarks are on: these two use the
+# public API only, so they are the correctness gate for an alternative ring
+# -- each writes its traces to its own paths, so the variants can run
+# concurrently under ctest. The traces tools/run_checks.sh validates come
+# from the default build's test_stress.
 add_executable(test_stress test_stress.c)
 target_link_libraries(test_stress PRIVATE pftrace Threads::Threads)
 target_compile_definitions(test_stress PRIVATE _GNU_SOURCE)
@@ -33,6 +43,28 @@ target_link_libraries(bench PRIVATE pftrace Threads::Threads)
 add_test(NAME ring COMMAND test_ring)
 add_test(NAME stress COMMAND test_stress)
 add_test(NAME noalloc COMMAND test_noalloc)
+
+if(PFTRACE_BUILD_BENCH)
+  foreach(backend mpsc zcopy)
+    add_executable(test_stress_${backend} test_stress.c)
+    target_link_libraries(test_stress_${backend}
+      PRIVATE pftrace_${backend} Threads::Threads
+    )
+    target_compile_definitions(test_stress_${backend} PRIVATE
+      _GNU_SOURCE PF_TRACE_PREFIX="stress_${backend}_"
+    )
+    add_test(NAME stress_${backend} COMMAND test_stress_${backend})
+
+    add_executable(test_noalloc_${backend} test_noalloc.c)
+    target_link_libraries(test_noalloc_${backend}
+      PRIVATE pftrace_${backend} Threads::Threads ${CMAKE_DL_LIBS}
+    )
+    target_compile_definitions(test_noalloc_${backend} PRIVATE
+      PF_TRACE_PREFIX="noalloc_${backend}_"
+    )
+    add_test(NAME noalloc_${backend} COMMAND test_noalloc_${backend})
+  endforeach()
+endif()
 
 # The name contract is enforced by the compiler, so the test for it has to
 # be a compilation. Each mode is an object-only build of the same file:

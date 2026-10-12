@@ -1,11 +1,19 @@
 # ThreadSanitizer suppressions.
 #
-# Snapshot mode (pf_ring with overwrite = true) deliberately lets producers
-# overwrite records a reader may be inspecting: keeping the most recent
-# window is the entire point, so there is no backpressure to stop them.
-# The reader guards against it with a seqlock rather than a lock -- the lap
-# check in pf_ring_next opens it, pf_ring_still_valid closes it, and a
-# record that was rewritten in between is discarded instead of trusted.
+# For the mmap ring backend ONLY. The two ringbuf backends run clean with
+# no suppressions at all, and tools/run_checks.sh deliberately runs them
+# without this file: their readers pop each record into a private buffer
+# instead of walking live ring storage, so the race below is not merely
+# tolerated there, it does not arise. A backend that starts needing this
+# file has acquired that race.
+#
+# Snapshot mode (the mmap ring with overwrite = true) deliberately lets
+# producers overwrite records a reader may be inspecting: keeping the most
+# recent window is the entire point, so there is no backpressure to stop
+# them. The reader guards against it with a seqlock rather than a lock --
+# the lap check in pf_ring_next opens it, pf_ring_still_valid closes it,
+# and a record that was rewritten in between is discarded instead of
+# trusted.
 #
 # TSan cannot see that contract. It reports the producer's plain stores
 # into a record body against the reader's load of the same bytes, which is

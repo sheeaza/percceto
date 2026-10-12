@@ -69,11 +69,13 @@
 #define FN_NAME_STR 2
 
 /* --- Ring record layout -------------------------------------------------
- * Opens with pf_ring's tag, which pf_ring owns and this file only reserves
- * room for; everything after it is plain bytes written by the owning
- * producer alone.
+ * The payload one event occupies in the ring, written by the owning
+ * producer alone. Whatever a backend needs for its own publication
+ * bookkeeping sits outside this -- pf_ring_reserve hands back a pointer to
+ * the payload, so this struct is the same shape on every backend and the
+ * comparison between them is not measuring a difference in record size.
  *
- * Fixed size, which is what lets pf_ring drop its length bookkeeping
+ * Fixed size, which is what lets a backend drop its length bookkeeping
  * entirely -- see pf_ring.h. The name is a borrowed pointer rather than
  * inline bytes: names are string literals, so copying them would spend up
  * to 255 bytes and a memcpy per event to duplicate something immortal.
@@ -86,23 +88,19 @@
  * TrackEvent fields (e.g. categories, name, ..) are not supported for
  * TYPE_COUNTER events". RF_HAS_VALUE selects the arm.
  *
- *   0       8       16      24      32   36   40
- *   +-------+-------+-------+-------+----+----+
- *   | hdr   | ts    | track | name  |type|flag|
- *   |       |       |       | value |    |    |
- *   +-------+-------+-------+-------+----+----+
+ *   0       8       16      24   28   32
+ *   +-------+-------+-------+----+----+
+ *   | ts    | track | name  |type|flag|
+ *   |       |       | value |    |    |
+ *   +-------+-------+-------+----+----+
  *
  * Overlaid on the ring rather than copied field by field, which is sound
- * because every member is naturally aligned: pf_ring hands out 8-byte
- * aligned records (PF_REC_ALIGN) and the two 4-byte fields sit in the
- * 32..39 tail. Any buffer this is cast onto must be 8-byte aligned too --
+ * because every member is naturally aligned: a backend hands out 8-byte
+ * aligned payloads (PF_REC_ALIGN) and the two 4-byte fields sit in the
+ * 24..31 tail. Any buffer this is cast onto must be 8-byte aligned too --
  * see pf_trace.rec_copy.
  */
 struct pf_rec {
-    /* pf_ring's publication tag. Claimed and skipped, never touched:
-     * pf_ring_submit writes it once the fields below are in place. */
-    struct pf_rec_hdr hdr;
-
     uint64_t ts; /* timestamp, ns */
     uint64_t track; /* track_uuid */
 
@@ -120,16 +118,15 @@ struct pf_rec {
 #define RF_VALUE_IS_DOUBLE 0x2u
 
 /* The layout is the on-ring wire format, so pin it. The size is pinned
- * against pf_ring's stride, which is what the ring's arithmetic assumes;
- * the two must not drift apart. */
-_Static_assert(sizeof(struct pf_rec) == PF_REC_BYTES,
-               "the record is exactly pf_ring's stride");
-_Static_assert(offsetof(struct pf_rec, hdr) == 0, "the tag leads the record");
-_Static_assert(offsetof(struct pf_rec, ts) == 8, "ts follows the tag");
-_Static_assert(offsetof(struct pf_rec, track) == 16, "track follows ts");
-_Static_assert(offsetof(struct pf_rec, u) == 24, "name/value follows track");
-_Static_assert(offsetof(struct pf_rec, type) == 32, "type follows name/value");
-_Static_assert(offsetof(struct pf_rec, flags) == 36, "no padding before flags");
+ * against the payload every backend carries, which is what the ring's
+ * arithmetic assumes; the two must not drift apart. */
+_Static_assert(sizeof(struct pf_rec) == PF_PAYLOAD_BYTES,
+               "the record is exactly the ring's payload");
+_Static_assert(offsetof(struct pf_rec, ts) == 0, "ts leads the record");
+_Static_assert(offsetof(struct pf_rec, track) == 8, "track follows ts");
+_Static_assert(offsetof(struct pf_rec, u) == 16, "name/value follows track");
+_Static_assert(offsetof(struct pf_rec, type) == 24, "type follows name/value");
+_Static_assert(offsetof(struct pf_rec, flags) == 28, "no padding before flags");
 
 /* Cap on a track's stored name. Fixed so the track table is one
  * allocation at open and never grows. */
@@ -142,7 +139,7 @@ _Static_assert(offsetof(struct pf_rec, flags) == 36, "no padding before flags");
  * honest typical name rather than a worst case the ring no longer
  * imposes. */
 #define PF_NAME_WARM 256u
-#define PF_PACKET_WARM (PF_REC_BYTES + PF_NAME_WARM)
+#define PF_PACKET_WARM (PF_PAYLOAD_BYTES + PF_NAME_WARM)
 
 /* Flush the staging buffer once it passes this, so one write() carries
  * many packets instead of one syscall per event. */
@@ -304,7 +301,7 @@ struct pf_trace {
      * Aligned because emit_record overlays struct pf_rec on whatever it is
      * handed, and in this mode that is this buffer rather than the ring's
      * own 8-byte aligned slot. */
-    _Alignas(struct pf_rec) uint8_t rec_copy[PF_REC_BYTES];
+    _Alignas(struct pf_rec) uint8_t rec_copy[PF_PAYLOAD_BYTES];
 
     struct intern_table name_table;
     bool header_written;
@@ -559,30 +556,29 @@ static int drain_locked(struct pf_trace *t)
 
     const uint8_t *rec;
     while ((rec = pf_ring_next(&t->ring, &rd)) != NULL) {
-        uint64_t rec_pos = rd.pos - PF_REC_BYTES;
-
-        /* Snapshot mode has no backpressure, so a producer may be
-         * overwriting this record right now. Copy it out before touching
-         * it, then verify the source bytes were stable for the whole copy:
-         * the tag check in pf_ring_next opened this seqlock and
-         * pf_ring_still_valid closes it.
+        /* Where a producer may be rewriting this record right now, copy it
+         * out before touching it, then verify the source bytes were stable
+         * for the whole copy: the readiness check in pf_ring_next opened
+         * this seqlock and pf_ring_still_valid closes it.
          *
          * Copying first is what makes the rest safe. Encoding straight
          * from the ring would feed a torn record into the intern table,
          * and since the table outlives the rolled-back packet, a later
          * valid event could reference an iid whose InternedData record was
-         * never written -- an unreadable trace. A non-overwriting ring
-         * cannot be overwritten under the reader, so it skips the copy
-         * entirely and encodes in place. */
+         * never written -- an unreadable trace.
+         *
+         * Skipped entirely where the backend cannot be lapped: either it
+         * refuses to claim space the reader has not released, or its
+         * reader already holds a private copy. Both make the returned
+         * bytes stable, so they are encoded in place. */
         const uint8_t *src = rec;
-        if (t->ring.overwrite) {
-            memcpy(t->rec_copy, rec, PF_REC_BYTES);
-            if (!pf_ring_still_valid(&t->ring, rec_pos)) {
-                /* Lapped mid-copy. The position is still a valid boundary
-                 * -- every multiple of the stride is -- but everything
-                 * from here to head-minus-a-ring has been recycled too, so
-                 * walking on would mostly re-read overwritten slots.
-                 * Restart from head, keeping what was already staged. */
+        if (pf_ring_reader_may_be_lapped(&t->ring)) {
+            memcpy(t->rec_copy, rec, PF_PAYLOAD_BYTES);
+            if (!pf_ring_still_valid(&t->ring, rd.prev)) {
+                /* Lapped mid-copy. Everything from here to the newest
+                 * record has been recycled too, so walking on would mostly
+                 * re-read overwritten slots. Restart from the newest data,
+                 * keeping what was already staged. */
                 pf_ring_resync(&t->ring);
                 return out_flush(t);
             }
@@ -674,9 +670,7 @@ static void maybe_wake_drain(struct pf_trace *t, uint32_t need)
     if (t->cfg.mode != PF_MODE_CONTINUOUS)
         return;
 
-    uint64_t head = atomic_load_explicit(&t->ring.head, memory_order_relaxed);
-    uint64_t tail = atomic_load_explicit(&t->ring.tail, memory_order_relaxed);
-    if (head + need - tail < t->watermark_bytes)
+    if (pf_ring_occupancy_bytes(&t->ring, need) < t->watermark_bytes)
         return;
 
     if (atomic_exchange_explicit(&t->wake_pending, 1, memory_order_acq_rel) !=
@@ -689,12 +683,18 @@ static void maybe_wake_drain(struct pf_trace *t, uint32_t need)
 }
 
 /* --- Event emission (hot path) ------------------------------------------
- * Reserve a slot, fill it, submit it. No allocation, no I/O, and no
- * lock: concurrent producers own disjoint slots, so their writes proceed
- * in parallel and only the reservation itself is serialized, by one
- * atomic.
+ * Reserve a slot, fill it, submit it. No allocation and no I/O, in any
+ * backend.
  *
- * Six stores and no string work at all: the name is stored by address,
+ * Whether it takes a lock is the backend's business, and the one thing
+ * they genuinely differ on. The mmap and ringbuf_mpsc rings take none:
+ * concurrent producers own disjoint slots, so their writes proceed in
+ * parallel and only the claim itself is serialized, by one atomic. The
+ * ringbuf_zcopy ring must serialize claims with a mutex -- held across the
+ * claim alone, never the fill or the submit -- which is the cost that
+ * backend exists to measure. See BENCHMARK_ring_backends.md.
+ *
+ * Four stores and no string work at all: the name is stored by address,
  * and the drain thread is what eventually reads the characters. */
 
 static void emit_event(struct pf_trace *t, uint32_t type, uint64_t track_uuid,
@@ -713,7 +713,7 @@ static void emit_event(struct pf_trace *t, uint32_t type, uint64_t track_uuid,
 
     struct pf_rec_res res = pf_ring_reserve(&t->ring);
     if (!res.rec)
-        return; /* continuous mode, reader behind; counted as dropped */
+        return; /* no space, or a peer mid-fill; counted as dropped */
 
     struct pf_rec *r = (struct pf_rec *)res.rec;
     r->ts = ts;
@@ -728,7 +728,7 @@ static void emit_event(struct pf_trace *t, uint32_t type, uint64_t track_uuid,
                (value_is_double ? RF_VALUE_IS_DOUBLE : 0u);
 
     pf_ring_submit(&t->ring, res);
-    maybe_wake_drain(t, PF_REC_BYTES);
+    maybe_wake_drain(t, PF_PAYLOAD_BYTES);
 }
 
 void pf_slice_begin_impl(struct pf_trace *t, uint64_t track_uuid,
@@ -854,9 +854,13 @@ struct pf_trace *pf_trace_open(const struct pf_config *cfg)
                      t->cfg.mode == PF_MODE_SNAPSHOT) != 0)
         goto fail;
 
-    t->watermark_bytes = t->ring.cap / 100u * t->cfg.watermark_pct;
-    t->retain_bytes =
-        t->ring.cap / PF_SNAPSHOT_RETAIN_DEN * PF_SNAPSHOT_RETAIN_NUM;
+    /* The rounded-up capacity, not what was asked for: backends round
+     * up to a power of two, a page multiple or a whole number of slots,
+     * and a watermark derived from the request would be a different
+     * fraction of the ring than it claims to be. */
+    size_t cap = pf_ring_capacity_bytes(&t->ring);
+    t->watermark_bytes = cap / 100u * t->cfg.watermark_pct;
+    t->retain_bytes = cap / PF_SNAPSHOT_RETAIN_DEN * PF_SNAPSHOT_RETAIN_NUM;
 
     /* O_APPEND so every write lands at the end, which is what lets a
      * continuous trace stay readable while it is still being written. */
@@ -932,12 +936,9 @@ void pf_trace_stats(const struct pf_trace *t, struct pf_stats *out)
     /* Casting away const to read atomics: these are counters, and
      * reading them does not modify the trace in any observable way. */
     struct pf_trace *m = (struct pf_trace *)t;
-    out->events =
-        atomic_load_explicit(&m->ring.published, memory_order_relaxed);
+    pf_ring_stats(&m->ring, &out->events, &out->dropped, &out->resyncs);
     out->bytes_written =
         atomic_load_explicit(&m->bytes_written, memory_order_relaxed);
-    out->dropped = atomic_load_explicit(&m->ring.dropped, memory_order_relaxed);
-    out->resyncs = atomic_load_explicit(&m->ring.resyncs, memory_order_relaxed);
 }
 
 void pf_trace_close(struct pf_trace *t)

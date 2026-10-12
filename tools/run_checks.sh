@@ -13,7 +13,7 @@ root=$PWD
 build=${BUILD_DIR:-build}
 cc=$(grep -m1 '^CMAKE_C_COMPILER:' "$build/CMakeCache.txt" 2>/dev/null | cut -d= -f2)
 cc=${cc:-cc}
-src=(src/pftrace.c src/pf_ring.c src/pb_writer.c)
+src=(src/pftrace.c src/pf_ring_mmap.c src/pb_writer.c)
 flags=(-std=c11 -Wall -Wextra -g -D_GNU_SOURCE -Iinclude -Isrc)
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
@@ -33,7 +33,7 @@ check $? "ctest"
 
 step "ring under ASan/UBSan"
 "$cc" "${flags[@]}" -O1 -fsanitize=address,undefined \
-    tests/test_ring.c src/pf_ring.c -o "$tmp/ring_asan" -lpthread || fail=1
+    tests/test_ring.c src/pf_ring_mmap.c -o "$tmp/ring_asan" -lpthread || fail=1
 (cd "$tmp" && ./ring_asan >/dev/null)
 check $? "ring, ASan/UBSan"
 
@@ -45,7 +45,7 @@ check $? "stress, ASan/UBSan"
 
 step "ring under ThreadSanitizer"
 "$cc" "${flags[@]}" -O1 -fsanitize=thread \
-    tests/test_ring.c src/pf_ring.c -o "$tmp/ring_tsan" -lpthread || fail=1
+    tests/test_ring.c src/pf_ring_mmap.c -o "$tmp/ring_tsan" -lpthread || fail=1
 out=$(cd "$tmp" && TSAN_OPTIONS="suppressions=$root/.tsan-suppressions" \
     ./ring_tsan 2>&1)
 n=$(grep -c 'WARNING: ThreadSanitizer' <<<"$out")
@@ -60,6 +60,41 @@ out=$(cd "$tmp" && TSAN_OPTIONS="suppressions=$root/.tsan-suppressions" \
 n=$(grep -c 'WARNING: ThreadSanitizer' <<<"$out")
 echo "TSan warnings: $n"
 check "$([ "$n" -eq 0 ] && echo 0 || echo 1)" "library, TSan race-free"
+
+# The alternative ring backends, under both sanitizers.
+#
+# Run with NO suppression file, deliberately, and that is the point rather
+# than an oversight: neither backend's reader walks live ring storage -- it
+# pops each record into a private buffer -- so there is no overwrite race to
+# tolerate and nothing to suppress. If one of these ever needs
+# .tsan-suppressions, the backend has acquired a race the mmap ring's design
+# has and these do not, which is worth failing over.
+#
+# Not gated on PFTRACE_BUILD_BENCH: these compile from source here, exactly
+# as the gates above do, so they run whether or not CMake built the bench
+# libraries.
+for backend in mpsc zcopy; do
+    define="PF_RING_BACKEND_$(tr '[:lower:]' '[:upper:]' <<<"$backend")"
+    bsrc=(src/pftrace.c "src/pf_ring_$backend.c" "src/ringbuf_$backend.c"
+          src/pb_writer.c)
+
+    step "$backend backend under ASan/UBSan"
+    "$cc" "${flags[@]}" "-D$define" -O1 -fsanitize=address,undefined \
+        tests/test_stress.c "${bsrc[@]}" -o "$tmp/stress_asan_$backend" \
+        -lpthread || fail=1
+    (cd "$tmp" && "./stress_asan_$backend" >/dev/null)
+    check $? "stress, $backend, ASan/UBSan"
+
+    step "$backend backend under ThreadSanitizer"
+    "$cc" "${flags[@]}" "-D$define" -O1 -fsanitize=thread \
+        tests/test_stress.c "${bsrc[@]}" -o "$tmp/stress_tsan_$backend" \
+        -lpthread || fail=1
+    out=$(cd "$tmp" && "./stress_tsan_$backend" 2>&1)
+    n=$(grep -c 'WARNING: ThreadSanitizer' <<<"$out")
+    echo "TSan warnings: $n (unsuppressed)"
+    check "$([ "$n" -eq 0 ] && echo 0 || echo 1)" \
+        "$backend, TSan race-free with no suppressions"
+done
 
 step "end-to-end: example output validates"
 (cd "$build" && ./example_basic >/dev/null) || fail=1

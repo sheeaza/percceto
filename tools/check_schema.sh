@@ -21,3 +21,23 @@ for f in demo_continuous demo_snapshot stress_paced stress_continuous; do
     echo "--- $f"
     PYTHONPATH="$gen" TRACE="$f.pftrace" python3 "$root/tools/check_schema.py"
 done
+
+# The alternative ring backends, when PFTRACE_BUILD_BENCH built them. Their
+# test_stress variants run under ctest, which gives each test its own
+# working directory, so these land in tests/ rather than the build root.
+#
+# Globbed rather than listed: the backend set is a CMake loop, and a
+# hardcoded list here would silently stop covering a backend added there.
+# The loop above stays explicit because those four are the files whose
+# absence should be noticed.
+#
+# Globbing the full filename and stripping the suffix, since an unmatched
+# glob expands to itself and the [ -f ] guard then has to see a real path.
+shopt -s nullglob
+for p in tests/stress_*_stress_paced.pftrace \
+    tests/stress_*_stress_continuous.pftrace; do
+    f=${p%.pftrace}
+    echo "--- $f"
+    PYTHONPATH="$gen" TRACE="$p" python3 "$root/tools/check_schema.py"
+done
+shopt -u nullglob

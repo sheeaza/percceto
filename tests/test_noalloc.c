@@ -24,6 +24,11 @@
 
 #include "pftrace.h"
 
+/* Prefix for this build's output files; see the note in test_stress.c. */
+#ifndef PF_TRACE_PREFIX
+#define PF_TRACE_PREFIX ""
+#endif
+
 static atomic_bool armed;
 static atomic_uint_least64_t violations;
 
@@ -75,7 +80,8 @@ static void check_mode(const char *label, enum pf_mode mode, bool dump)
     printf("%s:\n", label);
 
     char path[64];
-    snprintf(path, sizeof(path), "noalloc_%s.pftrace", label);
+    snprintf(path, sizeof(path), PF_TRACE_PREFIX "noalloc_%s.pftrace",
+             label);
     unlink(path);
 
     struct pf_config cfg;

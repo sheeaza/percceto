@@ -5,7 +5,10 @@
 
 #include "pf_ring.h"
 
-/* A record's tag lives at its start and is the only atomically accessed
+/* The bespoke backend. See pf_ring_mmap.h for the design and pf_ring.h for
+ * the interface it implements.
+ *
+ * A record's tag lives at its start and is the only atomically accessed
  * field. The mirror guarantees the whole record is contiguous, and every
  * record is 8-byte aligned, so this cast is well defined.
  *
@@ -123,11 +126,28 @@ void pf_ring_destroy(struct pf_ring *r)
 }
 
 /* The reservation for the record at absolute @pos, with the tag submit
- * will store precomputed -- see struct pf_rec_res. */
+ * will store precomputed -- see struct pf_rec_res.
+ *
+ * @rec points past the header, at the payload: the tag is this backend's
+ * to write, and a producer that could reach it might publish a record it
+ * had not finished filling. Recovering the header from it is one
+ * subtraction, since the payload immediately follows it -- see
+ * hdr_of_payload. */
 static struct pf_rec_res res_at(const struct pf_ring *r, uint64_t pos)
 {
-    void *at = r->base + (pos & r->mask);
-    return (struct pf_rec_res){ .rec = at, .tag = tag_make(pos) };
+    uint8_t *at = r->base + (pos & r->mask);
+    return (struct pf_rec_res){ .rec = at + sizeof(struct pf_rec_hdr),
+                                .tag = tag_make(pos) };
+}
+
+/* The header of the record whose payload is @payload. Valid because
+ * res_at and pf_ring_next both hand out exactly
+ * `record start + sizeof(struct pf_rec_hdr)`, and the mirror keeps the two
+ * contiguous even for a record that straddles the end of the buffer. */
+static _Atomic uint64_t *hdr_of_payload(uint8_t *payload)
+{
+    void *at = payload - sizeof(struct pf_rec_hdr);
+    return &((struct pf_rec_hdr *)at)->tag;
 }
 
 struct pf_rec_res pf_ring_reserve(struct pf_ring *r)
@@ -188,13 +208,15 @@ void pf_ring_submit(struct pf_ring *r, struct pf_rec_res res)
 {
     /* Release: everything written into the record is visible to any reader
      * that acquire-loads this tag. */
-    atomic_store_explicit(&res.rec->tag, res.tag, memory_order_release);
+    atomic_store_explicit(hdr_of_payload(res.rec), res.tag,
+                          memory_order_release);
     atomic_fetch_add_explicit(&r->published, 1, memory_order_relaxed);
 }
 
 void pf_ring_read_begin(struct pf_ring *r, struct pf_ring_reader *rd)
 {
     rd->pos = atomic_load_explicit(&r->tail, memory_order_relaxed);
+    rd->prev = rd->pos;
     rd->end = atomic_load_explicit(&r->head, memory_order_acquire);
 }
 
@@ -212,7 +234,11 @@ const uint8_t *pf_ring_next(struct pf_ring *r, struct pf_ring_reader *rd)
     if (w != tag_make(rd->pos))
         return NULL;
 
-    const uint8_t *p = r->base + (rd->pos & r->mask);
+    /* Past the header, so the caller sees the same PF_PAYLOAD_BYTES a
+     * producer filled and never this backend's tag. */
+    const uint8_t *p =
+        r->base + (rd->pos & r->mask) + sizeof(struct pf_rec_hdr);
+    rd->prev = rd->pos;
     rd->pos += PF_REC_BYTES;
     return p;
 }
@@ -271,4 +297,29 @@ void pf_ring_resync(struct pf_ring *r)
     uint64_t head = atomic_load_explicit(&r->head, memory_order_acquire);
     atomic_store_explicit(&r->tail, head, memory_order_release);
     atomic_fetch_add_explicit(&r->resyncs, 1, memory_order_relaxed);
+}
+
+size_t pf_ring_capacity_bytes(const struct pf_ring *r)
+{
+    return r->cap;
+}
+
+bool pf_ring_reader_may_be_lapped(const struct pf_ring *r)
+{
+    /* pf_ring_next hands back a pointer into live ring storage, so in
+     * overwrite mode a producer can rewrite those bytes under the reader.
+     * Lossless mode refuses to claim space the reader has not released,
+     * so a published record is stable until it commits past it. */
+    return r->overwrite;
+}
+
+void pf_ring_stats(const struct pf_ring *r, uint64_t *published,
+                   uint64_t *dropped, uint64_t *resyncs)
+{
+    /* Casting away const to read atomics: these are counters, and reading
+     * them does not modify the ring in any observable way. */
+    struct pf_ring *m = (struct pf_ring *)r;
+    *published = atomic_load_explicit(&m->published, memory_order_relaxed);
+    *dropped = atomic_load_explicit(&m->dropped, memory_order_relaxed);
+    *resyncs = atomic_load_explicit(&m->resyncs, memory_order_relaxed);
 }

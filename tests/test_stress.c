@@ -23,6 +23,16 @@
 
 #include "pftrace.h"
 
+/* Prefix for this build's output files. Set per backend by CMake so the
+ * same source can be linked against each ring and run concurrently under
+ * ctest without the variants overwriting one another's traces.
+ *
+ * The default build leaves it empty, which keeps the filenames the ones
+ * tools/run_checks.sh and tools/check_schema.sh validate by name. */
+#ifndef PF_TRACE_PREFIX
+#define PF_TRACE_PREFIX ""
+#endif
+
 static int failures;
 
 #define CHECK(cond, ...)         \
@@ -63,7 +73,7 @@ static void test_snapshot_window(void)
     printf("snapshot window (%d events through a %dKiB ring):\n", EVENTS,
            RING_BYTES / 1024);
 
-    const char *path = "stress_snapshot.pftrace";
+    const char *path = PF_TRACE_PREFIX "stress_snapshot.pftrace";
     unlink(path);
 
     struct pf_config cfg;
@@ -152,7 +162,7 @@ static void test_continuous_gapless(void)
 {
     printf("continuous, saturated (4 threads, %d events each):\n", EVENTS / 4);
 
-    const char *path = "stress_continuous.pftrace";
+    const char *path = PF_TRACE_PREFIX "stress_continuous.pftrace";
     unlink(path);
 
     struct pf_config cfg;
@@ -216,7 +226,7 @@ static void test_continuous_paced(void)
 {
     printf("continuous, paced (realistic event rate):\n");
 
-    const char *path = "stress_paced.pftrace";
+    const char *path = PF_TRACE_PREFIX "stress_paced.pftrace";
     unlink(path);
 
     struct pf_config cfg;
@@ -316,7 +326,7 @@ static void test_long_names(void)
 {
     printf("long names:\n");
 
-    const char *path = "stress_names.pftrace";
+    const char *path = PF_TRACE_PREFIX "stress_names.pftrace";
     unlink(path);
 
     struct pf_config cfg;

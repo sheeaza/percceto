@@ -44,9 +44,11 @@ enum pf_mode {
  * struct pf_config - Trace parameters, fixed for the life of the trace.
  * @path: Output file path. Required. Opened with O_APPEND, so an
  *      existing file is extended rather than truncated.
- * @ring_bytes: In-RAM ring buffer size. Rounded up to a power of two and
- *      a page multiple. 0 selects 8 MiB. This is the only sizeable
- *      allocation the library makes, and it happens once, at open.
+ * @ring_bytes: In-RAM ring buffer size. Rounded up -- to a power of two
+ *      and a page multiple, or to a whole number of slots, depending on
+ *      the ring backend -- so it is a lower bound rather than the figure
+ *      used. 0 selects 8 MiB. This is the only sizeable allocation the
+ *      library makes, and it happens once, at open.
  * @mode: Snapshot or continuous; see &enum pf_mode.
  * @watermark_pct: Ring fill percentage that triggers an automatic drain,
  *      1-99. 0 selects 75. Ignored unless @mode is %PF_MODE_CONTINUOUS.
@@ -70,10 +72,15 @@ struct pf_config {
  * struct pf_stats - Cumulative counters, for checking a trace is honest.
  * @events: Events successfully published to the ring.
  * @bytes_written: Bytes handed to write() across all dumps.
- * @dropped: Events discarded because the ring was full of data the drain
- *      thread had not yet written. Only ever nonzero in
- *      %PF_MODE_CONTINUOUS, where it means the output file has a gap:
- *      either the ring or the drain interval is too small.
+ * @dropped: Events discarded rather than recorded, which means the output
+ *      file has a gap. Never counts the events %PF_MODE_SNAPSHOT
+ *      intentionally overwrites -- those are that mode working as
+ *      intended. In the default build this only happens in
+ *      %PF_MODE_CONTINUOUS, when the ring fills with data the drain
+ *      thread has not yet written: either the ring or the drain interval
+ *      is too small. A library built against a slot-indexed ring backend
+ *      can also drop in either mode, rarely, when a producer holds a slot
+ *      long enough to exhaust another's retries.
  * @resyncs: Times the drain thread lost its place in the ring and skipped
  *      to the newest data. Only possible in %PF_MODE_SNAPSHOT, which has
  *      no backpressure: a producer can recycle a record while the reader
@@ -81,6 +88,9 @@ struct pf_config {
  *      zero -- each one costs part of the retained history, not the dump,
  *      so a snapshot still captures the window leading up to it. Growing
  *      steadily means the ring is too small for the event rate.
+ *      Structurally zero on a backend whose reader copies each record out
+ *      as it retires it, since nothing can then be recycled underneath
+ *      it.
  */
 struct pf_stats {
     uint64_t events;
@@ -226,9 +236,11 @@ PF_API uint64_t pf_track_counter(struct pf_trace *t, uint64_t parent_uuid,
  * @track_uuid: Track to begin the slice on.
  * @name: Slice name. Must be a string literal -- see PF_NAME_LITERAL().
  *
- * Copies its arguments into the ring and returns; no allocation, no
- * I/O, and no lock unless the ring is being drained. The name itself is
- * not copied, only its address, which is why it has to be a literal.
+ * Copies its arguments into the ring and returns; no allocation and no
+ * I/O. Takes no lock in the default build, where only a drain can
+ * contend with it; a library built against an alternative ring backend
+ * may serialize the claim with a short mutex. The name itself is not
+ * copied, only its address, which is why it has to be a literal.
  *
  * Slices on a given track must be ended in stack (LIFO) order via
  * pf_slice_end().

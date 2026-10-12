@@ -3,7 +3,14 @@
  * The properties worth proving are the ones that would be invisible in a
  * passing end-to-end run: that the mirror really makes a straddling
  * record contiguous, that concurrent producers never corrupt each other,
- * and that a dropped event is counted rather than silently lost. */
+ * and that a dropped event is counted rather than silently lost.
+ *
+ * Specific to the mmap backend, and deliberately so: the geometry cases
+ * below read @base, @cap and @mask, and the straddle case exists because
+ * that backend lets a record cross the end of the buffer. The ringbuf
+ * backends index fixed slots and have neither property, so they are
+ * covered by their own upstream suites and by this project's end-to-end
+ * tests rather than here. */
 
 #include <inttypes.h>
 #include <pthread.h>
@@ -26,21 +33,21 @@ static int failures;
         }                                                 \
     } while (0)
 
-/* Test records: pf_ring's tag, an 8-byte sequence number, then a
- * byte-pattern payload derived from that number so corruption is
- * detectable rather than merely suspected.
+/* Test records: an 8-byte sequence number, then a byte-pattern payload
+ * derived from that number so corruption is detectable rather than merely
+ * suspected.
  *
- * Fixed size, like every record the ring now carries: the payload fills
- * whatever the stride leaves after the tag and the sequence number. */
+ * Fixed size, like every record the ring now carries, and laid over the
+ * payload the ring hands out -- the backend's own publication tag sits
+ * outside it and is never visible here. */
 struct t_rec {
-    struct pf_rec_hdr hdr;
     uint64_t seq;
     uint8_t payload[];
 };
 
 #define T_SEQ offsetof(struct t_rec, seq)
 #define T_PAYLOAD offsetof(struct t_rec, payload)
-#define T_PAYLOAD_BYTES (PF_REC_BYTES - T_PAYLOAD)
+#define T_PAYLOAD_BYTES (PF_PAYLOAD_BYTES - T_PAYLOAD)
 
 static void fill_rec(uint8_t *rec, uint64_t seq)
 {
@@ -126,7 +133,7 @@ static void test_straddle(void)
             break;
         res = pf_ring_reserve(&r);
         CHECK(res.rec != NULL, "reserve filler");
-        fill_rec((uint8_t *)res.rec, head);
+        fill_rec(res.rec, head);
         pf_ring_submit(&r, res);
         pf_ring_trim(&r, r.cap / 2);
     }
@@ -134,12 +141,15 @@ static void test_straddle(void)
     res = pf_ring_reserve(&r);
     CHECK(res.rec != NULL, "reserve straddling record");
     /* Offset within the buffer, which is all this check needs; the
-     * absolute position lives in the reservation's tag. */
-    straddle_off = (size_t)((uint8_t *)res.rec - r.base);
+     * absolute position lives in the reservation's tag. Backed up over the
+     * header, since @rec points at the payload and it is the whole record
+     * that has to straddle the end. */
+    straddle_off =
+        (size_t)(res.rec - sizeof(struct pf_rec_hdr) - r.base);
     CHECK(straddle_off > r.cap - PF_REC_BYTES,
           "record starts in the last stride, at %zu of %zu", straddle_off,
           r.cap);
-    fill_rec((uint8_t *)res.rec, marker);
+    fill_rec(res.rec, marker);
     pf_ring_submit(&r, res);
 
     /* The part past cap must be visible at the front of the buffer. */
@@ -186,7 +196,7 @@ static void *producer_fn(void *p)
             continue; /* dropping-mode drop; counted by the ring */
         /* Sequence encodes which producer wrote it, so a torn record
          * shows up as a payload mismatch rather than going unnoticed. */
-        fill_rec((uint8_t *)res.rec, ((uint64_t)a->id << 32) | i);
+        fill_rec(res.rec, ((uint64_t)a->id << 32) | i);
         pf_ring_submit(a->ring, res);
         a->published++;
     }
@@ -319,11 +329,11 @@ static void test_concurrent_overwriting(void)
     const uint8_t *got;
     uint64_t seen = 0, torn = 0;
     while ((got = pf_ring_next(&r, &rd)) != NULL) {
-        uint64_t pos = rd.pos - PF_REC_BYTES, seq;
+        uint64_t seq;
         bool ok = check_rec(got, &seq);
         /* Only hold a record to account if it was not overwritten while
          * being examined -- the same seqlock the drainer uses. */
-        if (pf_ring_still_valid(&r, pos)) {
+        if (pf_ring_still_valid(&r, rd.prev)) {
             seen++;
             if (!ok)
                 torn++;
@@ -352,7 +362,7 @@ static void test_drop_accounting(void)
         struct pf_rec_res res = pf_ring_reserve(&r);
         if (!res.rec)
             continue;
-        fill_rec((uint8_t *)res.rec, i);
+        fill_rec(res.rec, i);
         pf_ring_submit(&r, res);
         ok++;
     }
@@ -403,7 +413,7 @@ static void test_uncontended_wraps(void)
     for (unsigned i = 0; i < 5000; i++) {
         struct pf_rec_res res = pf_ring_reserve(&r);
         CHECK(res.rec != NULL, "reserve %u", i);
-        fill_rec((uint8_t *)res.rec, i);
+        fill_rec(res.rec, i);
         pf_ring_submit(&r, res);
         if (i % 16 == 0)
             pf_ring_trim(&r, r.cap / 4 * 3);
