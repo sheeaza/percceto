@@ -1,8 +1,7 @@
 #include <errno.h>
 #include <sched.h>
+#include <stdlib.h>
 #include <string.h>
-#include <sys/mman.h>
-#include <unistd.h>
 
 #include "pf_ring.h"
 
@@ -21,8 +20,9 @@ static void cpu_relax(void)
  * the interface it implements.
  *
  * A record's tag lives at its start and is the only atomically accessed
- * field. The mirror guarantees the whole record is contiguous, and every
- * record is 8-byte aligned, so this cast is well defined.
+ * field. Every slot begins at a multiple of the stride from a 64-byte
+ * aligned base, and the stride is a multiple of 8, so this cast is well
+ * defined.
  *
  * In an overwriting (snapshot) ring a producer may be overwriting the very
  * record a reader is inspecting -- that is the mode's defining behaviour,
@@ -34,18 +34,23 @@ static void cpu_relax(void)
  * the body read against the producer's plain stores, which is why
  * .tsan-suppressions exists.
  */
+static uint8_t *slot_at(const struct pf_ring *r, uint64_t pos)
+{
+    return r->base + (pos & r->mask) * PF_REC_BYTES;
+}
+
 static _Atomic uint64_t *tag_at(const struct pf_ring *r, uint64_t pos)
 {
-    void *at = r->base + (pos & r->mask);
+    void *at = slot_at(r, pos);
     return &((struct pf_rec_hdr *)at)->tag;
 }
 
 /* The tag a record at @pos carries once published: its own end position.
  * Biased past @pos so it is never zero, which is what distinguishes a
- * published record from the zeroed pages a fresh mapping starts as. */
+ * published record from the zeroed storage a fresh ring starts as. */
 static uint64_t tag_make(uint64_t pos)
 {
-    return pos + PF_REC_BYTES;
+    return pos + 1;
 }
 
 static size_t round_up_pow2(size_t v)
@@ -66,55 +71,39 @@ int pf_ring_init(struct pf_ring *r, size_t want_bytes, bool overwrite)
 
     if (want_bytes < PF_RING_MIN_BYTES)
         want_bytes = PF_RING_MIN_BYTES;
-    size_t cap = round_up_pow2(want_bytes);
+
+    /* Slots, not bytes. Divided by the stride, so the allocation below is
+     * the same size the double-mapped version made for the same request
+     * and the capacity reported back is unchanged -- this commit is the
+     * representation change only. */
+    size_t cap = round_up_pow2(want_bytes / PF_REC_BYTES);
 
     /* The ring must hold more than one record for the dropping mode's
      * space check to ever succeed. PF_RING_MIN_BYTES is far above a single
      * record, so this only guards absurd configs. */
-    if (cap < 2 * PF_REC_BYTES) {
+    if (cap < 2) {
         errno = EINVAL;
         return -1;
     }
 
-    int fd = memfd_create("pftrace-ring", MFD_CLOEXEC);
-    if (fd < 0)
-        return -1;
-    if (ftruncate(fd, (off_t)cap) != 0) {
-        int saved = errno;
-        close(fd);
-        errno = saved;
-        return -1;
-    }
-
-    /* Reserve one contiguous 2*cap window first, so the two mappings are
-     * guaranteed adjacent; mapping them separately could race another
-     * thread's mmap and land apart. */
-    uint8_t *base = mmap(NULL, 2 * cap, PROT_NONE,
-                         MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
-    if (base == MAP_FAILED) {
-        int saved = errno;
-        close(fd);
-        errno = saved;
+    /* One plain allocation: every position is a slot boundary, so there is
+     * nothing for a double mapping to stitch together. Zeroed, because a
+     * zero tag is what the reader reads as "never written" -- see
+     * pf_ring_mmap.h. 64-byte aligned to keep slots off shared cache lines
+     * with whatever the allocator puts nearby.
+     *
+     * posix_memalign rather than aligned_alloc, which C11 requires to be
+     * passed a size that is a multiple of the alignment -- `cap * 40` is
+     * not a multiple of 64 for any power-of-two @cap. Also what the
+     * ringbuf backends allocate with. */
+    void *mem = NULL;
+    int rc = posix_memalign(&mem, 64, cap * PF_REC_BYTES);
+    if (rc != 0) {
+        errno = rc;
         return -1;
     }
-
-    /* Map the same pages at both halves. A write past cap lands in the
-     * mirror, which is the same memory as the front of the buffer. */
-    for (size_t half = 0; half < 2; half++) {
-        void *want = base + half * cap;
-        void *got = mmap(want, cap, PROT_READ | PROT_WRITE,
-                         MAP_SHARED | MAP_FIXED, fd, 0);
-        if (got == MAP_FAILED) {
-            int saved = errno;
-            munmap(base, 2 * cap);
-            close(fd);
-            errno = saved;
-            return -1;
-        }
-    }
-
-    /* The mappings hold a reference; the descriptor is no longer needed. */
-    close(fd);
+    uint8_t *base = mem;
+    memset(base, 0, cap * PF_REC_BYTES);
 
     r->base = base;
     r->cap = cap;
@@ -132,7 +121,7 @@ void pf_ring_destroy(struct pf_ring *r)
 {
     if (!r || !r->base)
         return;
-    munmap(r->base, 2 * r->cap);
+    free(r->base);
     r->base = NULL;
     r->cap = 0;
 }
@@ -147,15 +136,14 @@ void pf_ring_destroy(struct pf_ring *r)
  * hdr_of_payload. */
 static struct pf_rec_res res_at(const struct pf_ring *r, uint64_t pos)
 {
-    uint8_t *at = r->base + (pos & r->mask);
+    uint8_t *at = slot_at(r, pos);
     return (struct pf_rec_res){ .rec = at + sizeof(struct pf_rec_hdr),
                                 .tag = tag_make(pos) };
 }
 
 /* The header of the record whose payload is @payload. Valid because
  * res_at and pf_ring_next both hand out exactly
- * `record start + sizeof(struct pf_rec_hdr)`, and the mirror keeps the two
- * contiguous even for a record that straddles the end of the buffer. */
+ * `slot start + sizeof(struct pf_rec_hdr)`. */
 static _Atomic uint64_t *hdr_of_payload(uint8_t *payload)
 {
     void *at = payload - sizeof(struct pf_rec_hdr);
@@ -169,30 +157,27 @@ struct pf_rec_res pf_ring_reserve(struct pf_ring *r)
     if (r->overwrite) {
         /* Snapshot mode: overwriting the oldest record is intended, so
          * the reservation cannot fail and needs no loop. */
-        off = atomic_fetch_add_explicit(&r->head, PF_REC_BYTES,
-                                        memory_order_relaxed);
+        off = atomic_fetch_add_explicit(&r->head, 1, memory_order_relaxed);
 
         /* Keep @tail within one ring of the @head this reservation just
          * produced.
          *
          * Nothing stops producers from lapping it: that is the mode's
          * defining behaviour. But once @head - @tail exceeds @cap the
-         * reader's starting point is a position whose record has already
-         * been recycled, and pf_ring_next rejects it immediately -- the
-         * ring would read as empty and a dump would produce nothing.
-         * Checking here rather than in a caller's "am I near the end"
-         * heuristic is what makes that hold: the check sees the @head this
-         * reservation actually produced, so there is no window between
-         * deciding and reserving for another producer to slip through.
+         * reader's starting point is a slot whose record has already been
+         * recycled, and pf_ring_next rejects it immediately -- the ring
+         * would read as empty and a dump would produce nothing. Checking
+         * here rather than in a caller's "am I near the end" heuristic is
+         * what makes that hold: the check sees the @head this reservation
+         * actually produced, so there is no window between deciding and
+         * reserving for another producer to slip through.
          *
-         * Note this is about the width of the window, not about landing on
-         * a boundary -- with a fixed stride every position is a boundary.
          * Trimming to half the ring, not to the brink, so the next few
          * reservations find @tail already inside the window and skip the
          * call entirely. */
         uint64_t tail = atomic_load_explicit(&r->tail, memory_order_relaxed);
-        if (off + PF_REC_BYTES - tail > r->cap)
-            pf_ring_trim(r, r->cap / 2);
+        if (off + 1 - tail > r->cap)
+            pf_ring_trim(r, r->cap / 2 * PF_REC_BYTES);
 
         return res_at(r, off);
     }
@@ -216,13 +201,12 @@ struct pf_rec_res pf_ring_reserve(struct pf_ring *r)
         off = atomic_load_explicit(&r->head, memory_order_relaxed);
         for (;;) {
             uint64_t tail = atomic_load_explicit(&r->tail, memory_order_acquire);
-            if (off + PF_REC_BYTES - tail > r->cap)
+            if (off + 1 - tail > r->cap)
                 break; /* full; fall through to the backoff below */
 
             /* On failure @off is reloaded with the current head, so the
              * space check is redone against it. */
-            if (atomic_compare_exchange_weak_explicit(&r->head, &off,
-                                                      off + PF_REC_BYTES,
+            if (atomic_compare_exchange_weak_explicit(&r->head, &off, off + 1,
                                                       memory_order_relaxed,
                                                       memory_order_relaxed))
                 return res_at(r, off);
@@ -263,60 +247,59 @@ const uint8_t *pf_ring_next(struct pf_ring *r, struct pf_ring_reader *rd)
 
     /* One comparison rejects not-yet-written (zero tag), mid-write (stale
      * tag) and lapped (newer tag) records alike. The fixed stride is what
-     * reduces it to this: there is no length to validate, and @end is a
-     * whole number of records ahead, so a published record always fits. */
+     * reduces it to this: there is no length to validate, and every
+     * position names a whole slot. */
     if (w != tag_make(rd->pos))
         return NULL;
 
     /* Past the header, so the caller sees the same PF_PAYLOAD_BYTES a
      * producer filled and never this backend's tag. */
-    const uint8_t *p =
-        r->base + (rd->pos & r->mask) + sizeof(struct pf_rec_hdr);
+    const uint8_t *p = slot_at(r, rd->pos) + sizeof(struct pf_rec_hdr);
     rd->prev = rd->pos;
-    rd->pos += PF_REC_BYTES;
+    rd->pos++;
     return p;
 }
 
 bool pf_ring_still_valid(const struct pf_ring *r, uint64_t pos)
 {
     if (!r->overwrite)
-        return true; /* producers never overwrite unconsumed bytes */
+        return true; /* producers never overwrite unconsumed slots */
     uint64_t head = atomic_load_explicit(&r->head, memory_order_acquire);
     return head - pos <= r->cap;
 }
 
 void pf_ring_read_commit(struct pf_ring *r, struct pf_ring_reader *rd)
 {
-    /* Release: the reader is done with these bytes before a producer can
-     * see the space as free. */
+    /* Release: the reader is done with these slots before a producer can
+     * see them as free. */
     atomic_store_explicit(&r->tail, rd->pos, memory_order_release);
 }
 
 void pf_ring_trim(struct pf_ring *r, size_t retain_bytes)
 {
-    if (retain_bytes > r->cap)
-        retain_bytes = r->cap;
+    /* Bytes in, slots out: @retain_bytes is a fraction of
+     * pf_ring_capacity_bytes, which reports the whole allocation.
+     * Truncating division retains at least @retain_bytes worth of
+     * records. */
+    size_t retain = retain_bytes / PF_REC_BYTES;
+    if (retain > r->cap)
+        retain = r->cap;
 
     uint64_t head = atomic_load_explicit(&r->head, memory_order_acquire);
     uint64_t tail = atomic_load_explicit(&r->tail, memory_order_relaxed);
-    if (head - tail <= retain_bytes)
+    if (head - tail <= retain)
         return;
 
-    /* Round the retained span down to whole records, so @pos lands on a
-     * boundary and retains at least @retain_bytes. @head is a multiple of
-     * the stride -- it starts at 0 and only ever advances by one record --
-     * so @pos is too. Callers pass fractions of @cap, which is a power of
-     * two and so never a multiple of the stride; rounding here is what
-     * reconciles the two.
-     *
+    /* Plain arithmetic, because the counters name slots: there is no
+     * rounding to a record boundary to do, since every position is one.
      * This is the whole of what a variable-length ring needed a
      * record-by-record walk for, and the walk could lose its boundary to a
      * producer recycling the record it started from. */
-    uint64_t pos = head - retain_bytes / PF_REC_BYTES * PF_REC_BYTES;
+    uint64_t pos = head - retain;
 
     /* Only ever advance. Trims can run concurrently (a producer trimming
      * inline while the drain thread does the same), and a plain store of a
-     * staler @pos would drag @tail backwards onto bytes already recycled. */
+     * staler @pos would drag @tail backwards onto slots already recycled. */
     uint64_t cur = tail;
     while (cur < pos) {
         if (atomic_compare_exchange_weak_explicit(&r->tail, &cur, pos,
@@ -335,7 +318,10 @@ void pf_ring_resync(struct pf_ring *r)
 
 size_t pf_ring_capacity_bytes(const struct pf_ring *r)
 {
-    return r->cap;
+    /* The whole allocation, tags included, which is what @cap held before
+     * it counted slots. Unchanged here deliberately: see the next commit,
+     * which makes this payload bytes to match the ringbuf backends. */
+    return r->cap * PF_REC_BYTES;
 }
 
 bool pf_ring_reader_may_be_lapped(const struct pf_ring *r)

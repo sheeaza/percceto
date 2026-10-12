@@ -1,16 +1,14 @@
 /* Ring mechanics in isolation -- no protobuf, no files, no pftrace.
  *
  * The properties worth proving are the ones that would be invisible in a
- * passing end-to-end run: that the mirror really makes a straddling
- * record contiguous, that concurrent producers never corrupt each other,
- * and that a dropped event is counted rather than silently lost.
+ * passing end-to-end run: that the slot geometry and the publication tag
+ * agree, that concurrent producers never corrupt each other, and that a
+ * dropped event is counted rather than silently lost.
  *
- * Specific to the mmap backend, and deliberately so: the geometry cases
- * below read @base, @cap and @mask, and the straddle case exists because
- * that backend lets a record cross the end of the buffer. The ringbuf
- * backends index fixed slots and have neither property, so they are
- * covered by their own upstream suites and by this project's end-to-end
- * tests rather than here. */
+ * Specific to the mmap backend, and deliberately so: the geometry case
+ * below reads @base, @cap and @mask. The ringbuf backends keep their own
+ * equivalents private and are covered by their upstream suites and by this
+ * project's end-to-end tests rather than here. */
 
 #include <inttypes.h>
 #include <pthread.h>
@@ -75,100 +73,121 @@ static void test_geometry(void)
 {
     printf("geometry:\n");
 
-    /* A non-power-of-two request rounds up; a tiny one hits the floor. */
+    /* @cap counts SLOTS now, not bytes: 100 KiB / 40 = 2560 slots, rounded
+     * up to 4096. The capacity read back is still the whole allocation,
+     * tags included, exactly as it was when @cap was a byte count. */
     struct pf_ring r;
     CHECK(pf_ring_init(&r, 100 * 1024, true) == 0, "init 100KiB");
-    CHECK(r.cap == 128 * 1024, "cap rounded to 128KiB, got %zu", r.cap);
+    CHECK(r.cap == 4096, "cap rounded to 4096 slots, got %zu", r.cap);
     CHECK((r.cap & r.mask) == 0, "cap is a power of two");
+    CHECK(pf_ring_capacity_bytes(&r) == 4096 * PF_REC_BYTES,
+          "capacity is the allocation, got %zu", pf_ring_capacity_bytes(&r));
+    CHECK(pf_ring_capacity_bytes(&r) >= 100 * 1024,
+          "capacity is a lower bound on the request");
     pf_ring_destroy(&r);
 
     CHECK(pf_ring_init(&r, 1, true) == 0, "init below floor");
-    CHECK(r.cap >= PF_RING_MIN_BYTES, "floor applied, got %zu", r.cap);
+    CHECK(pf_ring_capacity_bytes(&r) >= PF_RING_MIN_BYTES,
+          "floor applied, got %zu", pf_ring_capacity_bytes(&r));
     pf_ring_destroy(&r);
 
-    /* The two mappings must be the same memory: a write through the
-     * mirror has to be visible at the front of the buffer. */
+    /* Slots must tile the allocation exactly: consecutive reservations are
+     * one stride apart and never overlap, which is what replaced the
+     * double mapping. */
     CHECK(pf_ring_init(&r, PF_RING_MIN_BYTES, true) == 0, "init");
-    r.base[0] = 0xAB;
-    CHECK(r.base[r.cap] == 0xAB, "mirror aliases the front of the buffer");
-    r.base[r.cap + 7] = 0xCD;
-    CHECK(r.base[7] == 0xCD, "front aliases the mirror");
+    struct pf_rec_res a = pf_ring_reserve(&r);
+    struct pf_rec_res b = pf_ring_reserve(&r);
+    CHECK(a.rec && b.rec, "two reserves");
+    CHECK(b.rec - a.rec == (ptrdiff_t)PF_REC_BYTES,
+          "consecutive slots are one stride apart, got %td", b.rec - a.rec);
+    CHECK(a.rec - sizeof(struct pf_rec_hdr) == r.base,
+          "slot 0 starts at base");
+    /* The last slot's payload must end exactly at the end of the
+     * allocation: no mirror, so there is nothing past it to run into. */
+    const uint8_t *last_end = r.base + (r.cap - 1) * PF_REC_BYTES +
+                              sizeof(struct pf_rec_hdr) + PF_PAYLOAD_BYTES;
+    CHECK(last_end == r.base + r.cap * PF_REC_BYTES,
+          "the last slot ends at the end of the allocation");
     pf_ring_destroy(&r);
     printf("  ok\n");
 }
 
-/* --- 2. Straddling the end -------------------------------------------- */
+/* --- 2. Wrapping ------------------------------------------------------- */
 
-/* The case the mirror exists for. The stride does not divide cap --
- * gcd(40, 2^n) is 8 -- so as head advances the in-buffer offset visits
- * every multiple of 8, and a record eventually starts close enough to the
- * end to cross it. This finds that record, writes it with one memcpy, and
- * reads it back as one contiguous span.
+/* What the old straddle test guarded, now that there is no mirror to
+ * exercise. When byte positions indexed a power-of-two buffer the stride
+ * did not divide it -- gcd(40, 2^n) is 8 -- so a record eventually started
+ * close enough to the end to cross it, and the double mapping existed to
+ * keep those bytes contiguous. Indexing slots removes the case entirely:
+ * position cap - 1 is the last slot and position cap is slot 0.
+ *
+ * So the property left to prove is that the wrap itself is clean -- a
+ * record written at the last slot is read back intact, and the one written
+ * at slot 0 immediately after it does not disturb it. A stride that was
+ * mis-scaled anywhere (reserve, next, trim) would show up here as overlap.
  *
  * Trimming as it fills mirrors what the drain thread does in snapshot
  * mode: an untrimmed ring is exactly full by the time head reaches the
- * end, so the straddling record's tail would legitimately overwrite the
- * record at offset 0 and the reader would be right to refuse it. */
-static void test_straddle(void)
+ * end, and the reader would be right to refuse the recycled records. */
+static void test_wrap_boundary(void)
 {
-    printf("straddle:\n");
+    printf("wrap boundary:\n");
 
     struct pf_ring r;
     CHECK(pf_ring_init(&r, PF_RING_MIN_BYTES, true) == 0, "init");
 
-    /* Advance until the next record would cross cap, i.e. starts in the
-     * last PF_REC_BYTES of the buffer without landing exactly on the end.
-     * Reachable because the stride is coprime to cap beyond a factor 8. */
-    const uint64_t marker = 0xFEEDFACEu;
-    struct pf_rec_res res;
-    size_t straddle_off;
-    uint64_t guard = 0;
-    while (true) {
-        uint64_t head = atomic_load_explicit(&r.head, memory_order_relaxed);
-        size_t off = (size_t)(head & r.mask);
-        if (off > r.cap - PF_REC_BYTES)
-            break;
-        CHECK(guard++ < r.cap, "straddling offset is reachable");
-        if (guard > r.cap)
-            break;
-        res = pf_ring_reserve(&r);
-        CHECK(res.rec != NULL, "reserve filler");
-        fill_rec(res.rec, head);
-        pf_ring_submit(&r, res);
-        pf_ring_trim(&r, r.cap / 2);
+    /* Fill up to the last slot of lap 0, so the next two reservations are
+     * the ones either side of the wrap. */
+    const uint64_t last_marker = 0xFEEDFACEu;
+    const uint64_t first_marker = 0xC0FFEEu;
+    while (atomic_load_explicit(&r.head, memory_order_relaxed) < r.cap - 1) {
+        struct pf_rec_res f = pf_ring_reserve(&r);
+        CHECK(f.rec != NULL, "reserve filler");
+        fill_rec(f.rec, atomic_load_explicit(&r.head, memory_order_relaxed));
+        pf_ring_submit(&r, f);
+        pf_ring_trim(&r, pf_ring_capacity_bytes(&r) / 2);
     }
 
-    res = pf_ring_reserve(&r);
-    CHECK(res.rec != NULL, "reserve straddling record");
-    /* Offset within the buffer, which is all this check needs; the
-     * absolute position lives in the reservation's tag. Backed up over the
-     * header, since @rec points at the payload and it is the whole record
-     * that has to straddle the end. */
-    straddle_off =
-        (size_t)(res.rec - sizeof(struct pf_rec_hdr) - r.base);
-    CHECK(straddle_off > r.cap - PF_REC_BYTES,
-          "record starts in the last stride, at %zu of %zu", straddle_off,
-          r.cap);
-    fill_rec(res.rec, marker);
-    pf_ring_submit(&r, res);
+    /* The last slot of the lap. */
+    struct pf_rec_res last = pf_ring_reserve(&r);
+    CHECK(last.rec != NULL, "reserve the last slot");
+    CHECK((size_t)(last.rec - sizeof(struct pf_rec_hdr) - r.base) ==
+              (r.cap - 1) * PF_REC_BYTES,
+          "it is the last slot");
+    fill_rec(last.rec, last_marker);
+    pf_ring_submit(&r, last);
 
-    /* The part past cap must be visible at the front of the buffer. */
-    size_t past = straddle_off + PF_REC_BYTES - r.cap;
-    CHECK(memcmp(r.base + r.cap, r.base, past) == 0,
-          "the %zu bytes past cap alias the front", past);
+    /* And the first slot of the next lap, which must land back at base
+     * without touching the record above. */
+    struct pf_rec_res first = pf_ring_reserve(&r);
+    CHECK(first.rec != NULL, "reserve across the wrap");
+    CHECK(first.rec - sizeof(struct pf_rec_hdr) == r.base,
+          "the wrap lands back at slot 0");
+    fill_rec(first.rec, first_marker);
+    pf_ring_submit(&r, first);
 
-    /* And the reader must see it as one undivided record. */
+    /* The record at the last slot must have survived the wrap intact: if
+     * anything were scaled wrong the write at slot 0 would have clipped
+     * it. */
+    uint64_t seq;
+    CHECK(check_rec(last.rec, &seq) && seq == last_marker,
+          "the last slot's record survived the wrap");
+
+    /* And the reader must see both. */
+    pf_ring_trim(&r, pf_ring_capacity_bytes(&r) / 2);
     struct pf_ring_reader rd;
     pf_ring_read_begin(&r, &rd);
-    bool found = false;
+    bool saw_last = false, saw_first = false;
     const uint8_t *got;
     while ((got = pf_ring_next(&r, &rd)) != NULL) {
-        uint64_t seq;
         CHECK(check_rec(got, &seq), "record intact");
-        if (seq == marker)
-            found = true;
+        if (seq == last_marker)
+            saw_last = true;
+        if (seq == first_marker)
+            saw_first = true;
     }
-    CHECK(found, "straddling record was read back");
+    CHECK(saw_last, "the pre-wrap record was read back");
+    CHECK(saw_first, "the post-wrap record was read back");
 
     pf_ring_destroy(&r);
     printf("  ok\n");
@@ -306,7 +325,7 @@ static void test_concurrent_overwriting(void)
     bool joined[NTHREADS] = { false };
     unsigned n_joined = 0;
     while (n_joined < NTHREADS) {
-        pf_ring_trim(&r, r.cap / 4 * 3);
+        pf_ring_trim(&r, pf_ring_capacity_bytes(&r) / 4 * 3);
         for (unsigned i = 0; i < NTHREADS; i++) {
             if (!joined[i] && pthread_tryjoin_np(th[i], NULL) == 0) {
                 joined[i] = true;
@@ -323,7 +342,7 @@ static void test_concurrent_overwriting(void)
 
     /* Whatever survives must be well formed: the tag has to keep the
      * reader out of records that were overwritten under it. */
-    pf_ring_trim(&r, r.cap / 2);
+    pf_ring_trim(&r, pf_ring_capacity_bytes(&r) / 2);
     struct pf_ring_reader rd;
     pf_ring_read_begin(&r, &rd);
     const uint8_t *got;
@@ -369,17 +388,16 @@ static void test_drop_accounting(void)
 
     uint64_t dropped = atomic_load_explicit(&r.dropped, memory_order_relaxed);
     printf("  accepted=%" PRIu64 " dropped=%" PRIu64 "\n", ok, dropped);
-    CHECK(ok == r.cap / PF_REC_BYTES,
-          "accepted exactly a ringful: %" PRIu64 " vs %zu", ok,
-          r.cap / PF_REC_BYTES);
+    CHECK(ok == r.cap, "accepted exactly a ringful: %" PRIu64 " vs %zu", ok,
+          r.cap);
     CHECK(ok + dropped == 100000, "all attempts accounted for");
 
     /* head must not have advanced past what was actually published: a
      * refused reservation has to leave no hole. */
     uint64_t head = atomic_load_explicit(&r.head, memory_order_relaxed);
-    CHECK(head == ok * PF_REC_BYTES,
+    CHECK(head == ok,
           "no gap left by refused reservations: head=%" PRIu64 " want=%" PRIu64,
-          head, ok * PF_REC_BYTES);
+          head, ok);
 
     /* Draining frees space, so claims must succeed again. */
     struct pf_ring_reader rd;
@@ -416,10 +434,10 @@ static void test_uncontended_wraps(void)
         fill_rec(res.rec, i);
         pf_ring_submit(&r, res);
         if (i % 16 == 0)
-            pf_ring_trim(&r, r.cap / 4 * 3);
+            pf_ring_trim(&r, pf_ring_capacity_bytes(&r) / 4 * 3);
     }
 
-    pf_ring_trim(&r, r.cap / 2);
+    pf_ring_trim(&r, pf_ring_capacity_bytes(&r) / 2);
     struct pf_ring_reader rd;
     pf_ring_read_begin(&r, &rd);
     const uint8_t *got;
@@ -440,7 +458,7 @@ static void test_uncontended_wraps(void)
 int main(void)
 {
     test_geometry();
-    test_straddle();
+    test_wrap_boundary();
     test_drop_accounting();
     test_uncontended_wraps();
     test_concurrent_dropping();
