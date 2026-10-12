@@ -115,8 +115,10 @@ struct pf_ring {
  * per-event cost this backend is being measured on. The other accessors
  * run once at open or once per dump.
  *
- * Scaled by the stride, to match what pf_ring_capacity_bytes reports: the
- * counters hold slots, so a byte figure has to be recovered from them.
+ * Payload bytes, to match pf_ring_capacity_bytes: the counters hold slots,
+ * so they are scaled by %PF_PAYLOAD_BYTES rather than by the stride, and
+ * this backend's per-record tag is excluded exactly as it is from the
+ * capacity the watermark is a fraction of.
  *
  * Relaxed loads. The result is a heuristic -- it decides whether to nudge
  * the drain thread -- and nothing is ordered against it. A subtraction of
@@ -131,7 +133,7 @@ static inline uint64_t pf_ring_occupancy_bytes(const struct pf_ring *r,
     struct pf_ring *m = (struct pf_ring *)r;
     uint64_t head = atomic_load_explicit(&m->head, memory_order_relaxed);
     uint64_t tail = atomic_load_explicit(&m->tail, memory_order_relaxed);
-    return (head - tail) * PF_REC_BYTES + need;
+    return (head - tail) * PF_PAYLOAD_BYTES + need;
 }
 
 #endif /* PF_RING_MMAP_H */

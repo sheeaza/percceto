@@ -118,14 +118,14 @@ struct pf_rec_res {
 
 /**
  * struct pf_ring_reader - A walk in progress over published records.
- * @pos: Backend-defined cursor. Absolute byte position for the mmap ring,
- *      a ticket for the ringbuf backends; either way it only ever moves
- *      forward, and pf_ring_read_commit() releases everything below it.
+ * @pos: Backend-defined cursor. An absolute slot position for the mmap
+ *      ring, a ticket for the ringbuf backends; either way it only ever
+ *      moves forward, and pf_ring_read_commit() releases everything below
+ *      it.
  * @prev: The @pos the most recent pf_ring_next() returned a record at,
  *      which is what pf_ring_still_valid() wants. Recorded by the backend
- *      rather than recovered by the caller as `pos - stride`: the stride
- *      is the backend's business, and on a slot-indexed backend the cursor
- *      counts records rather than bytes.
+ *      rather than recovered by the caller as `pos - 1`: how the cursor
+ *      advances is the backend's business.
  * @end: One past the last record this walk will consider, so a walk
  *      terminates even while producers keep publishing.
  */
@@ -151,10 +151,9 @@ struct pf_ring_reader {
  * pf_ring_init() - Create the ring.
  * @r: Ring to initialize.
  * @want_bytes: Requested capacity for payloads, with a floor of
- *      %PF_RING_MIN_BYTES. Backends round it up -- to a power of two, to a
- *      page multiple, to a whole number of slots -- so the result is a
- *      lower bound. Read the real figure back with
- *      pf_ring_capacity_bytes().
+ *      %PF_RING_MIN_BYTES. Backends round it up -- to a power of two
+ *      number of slots in all three -- so the result is a lower bound.
+ *      Read the real figure back with pf_ring_capacity_bytes().
  * @overwrite: Overwrite unconsumed records rather than dropping new ones.
  *
  * Performs the ring's one allocation. Nothing on the hot path allocates
@@ -257,7 +256,8 @@ void pf_ring_read_commit(struct pf_ring *r, struct pf_ring_reader *rd);
 /**
  * pf_ring_trim() - Drop the oldest records to keep a safety margin.
  * @r: Ring.
- * @retain_bytes: Most recent bytes worth keeping, rounded down to a whole
+ * @retain_bytes: Most recent bytes worth keeping, in the same payload-byte
+ *      unit pf_ring_capacity_bytes() reports, and rounded down to a whole
  *      number of records.
  *
  * For a backend whose reader starts from a position producers may have
@@ -293,6 +293,22 @@ void pf_ring_resync(struct pf_ring *r);
  * The rounded-up capacity, which is what pf_ring_init()'s @want_bytes was
  * a lower bound on. Callers sizing a fraction of the ring -- a watermark,
  * a retained window -- must use this rather than what they asked for.
+ *
+ * PAYLOAD bytes in every backend, excluding whatever each keeps for its
+ * own bookkeeping, so the figure counts the same thing everywhere: the
+ * same @want_bytes buys the same event count on all three. The mmap
+ * backend's allocation is correspondingly larger than this, by its 8-byte
+ * per-record tag; the ringbuf backends hold their per-slot stamps outside
+ * the slot array and so allocate this plus an array of counters.
+ *
+ * Worth stating explicitly because it was briefly untrue. The mmap
+ * backend used to return its raw allocation, tags included, so a 64 KiB
+ * request bought 1638 events there against 2048 on the slot-indexed pair
+ * while all three reported 65536 -- and since the watermark and the
+ * retained window are fractions of this, they were fractions of a
+ * different event count per backend. The same class of hazard as the
+ * retry policy above, where a difference in policy got read as a
+ * difference in ring.
  *
  * Return: The capacity in bytes.
  */

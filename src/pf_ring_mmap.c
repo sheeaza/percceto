@@ -72,11 +72,23 @@ int pf_ring_init(struct pf_ring *r, size_t want_bytes, bool overwrite)
     if (want_bytes < PF_RING_MIN_BYTES)
         want_bytes = PF_RING_MIN_BYTES;
 
-    /* Slots, not bytes. Divided by the stride, so the allocation below is
-     * the same size the double-mapped version made for the same request
-     * and the capacity reported back is unchanged -- this commit is the
-     * representation change only. */
-    size_t cap = round_up_pow2(want_bytes / PF_REC_BYTES);
+    /* Slots, not bytes, and divided by the PAYLOAD rather than by the
+     * stride -- so @want_bytes is read as "bytes of events I want to
+     * hold", which is what the ringbuf backends already do with it (see
+     * pf_ring_mpsc.c) and what pf_ring_capacity_bytes reports back. The
+     * storage allocated below is correspondingly larger, by this backend's
+     * 8-byte tag per slot.
+     *
+     * Deliberate, and a change from when these were byte counters: then
+     * @cap was the raw allocation and included the tags, so the same
+     * request bought 1638 events here against 2048 on the slot-indexed
+     * backends while all three reported 65536. The watermark and the
+     * retained window are fractions of that figure, so they were fractions
+     * of different event counts per backend -- the same class of hazard as
+     * the retry policy documented in pf_ring.h, where a difference in
+     * policy got read as a difference in ring. Equal event counts are the
+     * axis a drop-rate comparison needs. */
+    size_t cap = round_up_pow2(want_bytes / PF_PAYLOAD_BYTES);
 
     /* The ring must hold more than one record for the dropping mode's
      * space check to ever succeed. PF_RING_MIN_BYTES is far above a single
@@ -177,7 +189,7 @@ struct pf_rec_res pf_ring_reserve(struct pf_ring *r)
          * call entirely. */
         uint64_t tail = atomic_load_explicit(&r->tail, memory_order_relaxed);
         if (off + 1 - tail > r->cap)
-            pf_ring_trim(r, r->cap / 2 * PF_REC_BYTES);
+            pf_ring_trim(r, r->cap / 2 * PF_PAYLOAD_BYTES);
 
         return res_at(r, off);
     }
@@ -277,11 +289,10 @@ void pf_ring_read_commit(struct pf_ring *r, struct pf_ring_reader *rd)
 
 void pf_ring_trim(struct pf_ring *r, size_t retain_bytes)
 {
-    /* Bytes in, slots out: @retain_bytes is a fraction of
-     * pf_ring_capacity_bytes, which reports the whole allocation.
-     * Truncating division retains at least @retain_bytes worth of
-     * records. */
-    size_t retain = retain_bytes / PF_REC_BYTES;
+    /* Payload bytes in, slots out: @retain_bytes is a fraction of
+     * pf_ring_capacity_bytes, which reports payload. Truncating division
+     * retains at least @retain_bytes worth of records. */
+    size_t retain = retain_bytes / PF_PAYLOAD_BYTES;
     if (retain > r->cap)
         retain = r->cap;
 
@@ -318,10 +329,11 @@ void pf_ring_resync(struct pf_ring *r)
 
 size_t pf_ring_capacity_bytes(const struct pf_ring *r)
 {
-    /* The whole allocation, tags included, which is what @cap held before
-     * it counted slots. Unchanged here deliberately: see the next commit,
-     * which makes this payload bytes to match the ringbuf backends. */
-    return r->cap * PF_REC_BYTES;
+    /* Payload bytes, excluding this backend's per-slot tag, so the figure
+     * means the same thing here as on the ringbuf backends -- see the note
+     * in pf_ring_init. The allocation is larger by cap * sizeof(struct
+     * pf_rec_hdr). */
+    return r->cap * PF_PAYLOAD_BYTES;
 }
 
 bool pf_ring_reader_may_be_lapped(const struct pf_ring *r)

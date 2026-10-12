@@ -12,9 +12,10 @@
  * The like-for-like alternative to the mmap backend: producers claim with
  * a ticket CAS, so any number of threads may reserve concurrently with no
  * caller-held lock, and pftrace.h's promise that an event takes no lock
- * holds unchanged. What differs is the storage model -- fixed slots
- * indexed by ticket, rather than a byte stream with a double mapping --
- * and three consequences follow from it:
+ * holds unchanged. Both index fixed slots, so what differs is how a slot
+ * is claimed and how readiness is recorded -- a ticket plus a separate
+ * per-slot stamp array here, against a fetch-add plus a tag inside the
+ * record there -- and three consequences follow from it:
  *
  *   - A reserve can fail in EITHER mode. The mmap backend's overwrite
  *     reserve is an unconditional fetch-add and cannot; here a slot whose

@@ -73,15 +73,18 @@ static void test_geometry(void)
 {
     printf("geometry:\n");
 
-    /* @cap counts SLOTS now, not bytes: 100 KiB / 40 = 2560 slots, rounded
-     * up to 4096. The capacity read back is still the whole allocation,
-     * tags included, exactly as it was when @cap was a byte count. */
+    /* @cap counts SLOTS, and a request in bytes is read as payload bytes:
+     * 100 KiB / 32 = 3200 slots, rounded up to 4096. */
     struct pf_ring r;
     CHECK(pf_ring_init(&r, 100 * 1024, true) == 0, "init 100KiB");
     CHECK(r.cap == 4096, "cap rounded to 4096 slots, got %zu", r.cap);
     CHECK((r.cap & r.mask) == 0, "cap is a power of two");
-    CHECK(pf_ring_capacity_bytes(&r) == 4096 * PF_REC_BYTES,
-          "capacity is the allocation, got %zu", pf_ring_capacity_bytes(&r));
+    /* The capacity reported back is payload bytes, which is the unit
+     * pftrace derives its watermark and retained window from -- and the
+     * same unit the ringbuf backends report, so the same request buys the
+     * same event count on all three. */
+    CHECK(pf_ring_capacity_bytes(&r) == 4096 * PF_PAYLOAD_BYTES,
+          "capacity is payload bytes, got %zu", pf_ring_capacity_bytes(&r));
     CHECK(pf_ring_capacity_bytes(&r) >= 100 * 1024,
           "capacity is a lower bound on the request");
     pf_ring_destroy(&r);
