@@ -14,22 +14,6 @@
  * the rest of this file is.
  */
 
-/* How hard to retry a refused reserve before calling it a drop.
- *
- * A refusal means the slot one lap back is claimed but unsubmitted, so a
- * peer is mid-fill. pftrace's fill is four stores with no syscall, no
- * allocation and no lock, so the window is nanoseconds and spinning
- * briefly is nearly always enough. Bounded anyway: a producer that was
- * preempted mid-fill can hold a slot for a scheduler quantum, and
- * pf_ring_reserve must not block the caller's thread for that long --
- * dropping one event is the lesser cost, and it is counted.
- *
- * The yield threshold is deliberately low. Past a handful of pauses the
- * holder is not merely slow but descheduled, and further spinning burns
- * the caller's quantum without helping it along. */
-#define PF_MPSC_SPINS 64u
-#define PF_MPSC_YIELD_EVERY 8u
-
 /* Pause between spins: tells the core this is a spin-wait loop, which
  * costs less power and clears the pipeline of speculated loads. */
 static void cpu_relax(void)
@@ -96,7 +80,7 @@ struct pf_rec_res pf_ring_reserve(struct pf_ring *r)
      *     being evicted -- clears when the pop finishes.
      *
      * A refusal consumes no ticket, so retrying leaves no hole. */
-    for (unsigned spin = 0; spin < PF_MPSC_SPINS; spin++) {
+    for (unsigned spin = 0; spin < PF_RESERVE_SPINS; spin++) {
         if (ringbuf_mpsc_reserve(r->rb, &rsv)) {
             /* Publication is submit's job; count it there, so @published
              * never leads what a reader could see. */
@@ -106,7 +90,7 @@ struct pf_rec_res pf_ring_reserve(struct pf_ring *r)
 
         atomic_fetch_add_explicit(&r->retries, 1, memory_order_relaxed);
 
-        if (spin % PF_MPSC_YIELD_EVERY == PF_MPSC_YIELD_EVERY - 1)
+        if (spin % PF_RESERVE_YIELD_EVERY == PF_RESERVE_YIELD_EVERY - 1)
             sched_yield();
         else
             cpu_relax();

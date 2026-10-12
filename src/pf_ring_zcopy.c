@@ -13,18 +13,6 @@
  * are the same there and documented more fully.
  */
 
-/* How hard to retry a refused reserve before calling it a drop. Same
- * values and the same reasoning as pf_ring_mpsc.c, kept separate so the
- * two backends can be tuned independently if the benchmark says they
- * should be.
- *
- * With several producers a refusal is usually a PEER's unsubmitted slot
- * rather than our own, so retrying is productive here in a way it would
- * not be for a lone producer -- for which a refusal means our own
- * unsubmitted slot and no amount of spinning helps. */
-#define PF_ZCOPY_SPINS 64u
-#define PF_ZCOPY_YIELD_EVERY 8u
-
 static void cpu_relax(void)
 {
 #if defined(__x86_64__) || defined(__i386__)
@@ -81,7 +69,7 @@ struct pf_rec_res pf_ring_reserve(struct pf_ring *r)
 {
     struct ringbuf_rsv rsv;
 
-    for (unsigned spin = 0; spin < PF_ZCOPY_SPINS; spin++) {
+    for (unsigned spin = 0; spin < PF_RESERVE_SPINS; spin++) {
         /* The lock covers the CLAIM and nothing else.
          *
          * Everything this backend is for lives outside it: the caller
@@ -109,7 +97,7 @@ struct pf_rec_res pf_ring_reserve(struct pf_ring *r)
          * why ringbuf_zcopy.h forbids that. */
         atomic_fetch_add_explicit(&r->retries, 1, memory_order_relaxed);
 
-        if (spin % PF_ZCOPY_YIELD_EVERY == PF_ZCOPY_YIELD_EVERY - 1)
+        if (spin % PF_RESERVE_YIELD_EVERY == PF_RESERVE_YIELD_EVERY - 1)
             sched_yield();
         else
             cpu_relax();

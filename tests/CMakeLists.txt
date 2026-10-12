@@ -64,6 +64,35 @@ if(PFTRACE_BUILD_BENCH)
     )
     add_test(NAME noalloc_${backend} COMMAND test_noalloc_${backend})
   endforeach()
+
+  # The three-way ring comparison: one source, linked once per backend,
+  # since the backend is a compile-time choice and `struct pf_ring` is a
+  # different type in each -- one process cannot hold two of them.
+  #
+  # Deliberately NOT add_test entries. These are measurements, not pass/fail
+  # checks: they take minutes, and their output is numbers to read rather
+  # than a verdict. Keeping them out of ctest keeps ctest fast and its
+  # results meaningful.
+  #
+  # Always -O2 -g regardless of CMAKE_BUILD_TYPE. Benchmarking a -O0 or -Og
+  # build measures nothing useful, and a stray Debug configure would
+  # otherwise produce garbage numbers silently.
+  #
+  # The backend selector reaches these through the library's PUBLIC compile
+  # definitions, so bench_ring.c sees the same macro pf_ring.h switched on
+  # and labels its rows correctly.
+  foreach(target_backend mmap mpsc zcopy)
+    if(target_backend STREQUAL "mmap")
+      set(lib pftrace)
+    else()
+      set(lib pftrace_${target_backend})
+    endif()
+    add_executable(bench_ring_${target_backend} bench_ring.c)
+    target_link_libraries(bench_ring_${target_backend}
+      PRIVATE ${lib} Threads::Threads
+    )
+    target_compile_options(bench_ring_${target_backend} PRIVATE -O2 -g)
+  endforeach()
 endif()
 
 # The name contract is enforced by the compiler, so the test for it has to

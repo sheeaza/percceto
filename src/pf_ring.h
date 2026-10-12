@@ -65,6 +65,32 @@ _Static_assert(PF_PAYLOAD_BYTES % PF_REC_ALIGN == 0,
 
 #define PF_RING_MIN_BYTES (64u * 1024u)
 
+/* How hard pf_ring_reserve() retries a refused claim before counting a
+ * drop, and how often it yields while doing so.
+ *
+ * SHARED BY EVERY BACKEND, and that is the point: the retry policy is a
+ * property of this interface rather than of any one ring, so the
+ * comparison in BENCHMARK_ring_backends.md isolates the cost of claiming
+ * a slot instead of accidentally measuring two different drop policies.
+ * Getting this wrong is not subtle -- an early version of the benchmark
+ * gave only the slot-indexed backends a retry loop, and the mmap ring
+ * then posted nearly double the throughput while dropping 33% of events
+ * against their 0.05%. Both numbers were real; the comparison was
+ * meaningless.
+ *
+ * Bounded, because a refusal can mean a peer was preempted mid-fill and
+ * holds its slot for a scheduler quantum. pftrace's fill is four stores
+ * with no syscall, allocation or lock, so the window is normally
+ * nanoseconds and a short spin covers it; waiting out the pathological
+ * case instead would block the caller's thread for far longer than
+ * dropping one event costs. The drop is counted either way.
+ *
+ * The yield threshold is deliberately low. Past a handful of pauses the
+ * holder is not merely slow but descheduled, and further spinning burns
+ * the caller's quantum without helping it along. */
+#define PF_RESERVE_SPINS 64u
+#define PF_RESERVE_YIELD_EVERY 8u
+
 /**
  * struct pf_rec_res - A reservation held between reserve and submit.
  * @rec: Where to write the payload, or %NULL if it was dropped.

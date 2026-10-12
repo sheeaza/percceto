@@ -1,9 +1,21 @@
 #include <errno.h>
+#include <sched.h>
 #include <string.h>
 #include <sys/mman.h>
 #include <unistd.h>
 
 #include "pf_ring.h"
+
+/* Pause between spins: tells the core this is a spin-wait loop, which
+ * costs less power and clears the pipeline of speculated loads. */
+static void cpu_relax(void)
+{
+#if defined(__x86_64__) || defined(__i386__)
+    __builtin_ia32_pause();
+#else
+    atomic_thread_fence(memory_order_relaxed);
+#endif
+}
 
 /* The bespoke backend. See pf_ring_mmap.h for the design and pf_ring.h for
  * the interface it implements.
@@ -186,22 +198,44 @@ struct pf_rec_res pf_ring_reserve(struct pf_ring *r)
     }
 
     /* Continuous mode: decide before moving @head, so that a refusal
-     * leaves no gap. */
-    off = atomic_load_explicit(&r->head, memory_order_relaxed);
-    for (;;) {
-        uint64_t tail = atomic_load_explicit(&r->tail, memory_order_acquire);
-        if (off + PF_REC_BYTES - tail > r->cap) {
-            atomic_fetch_add_explicit(&r->dropped, 1, memory_order_relaxed);
-            return (struct pf_rec_res){ .rec = NULL };
+     * leaves no gap.
+     *
+     * Retries a full ring on the shared schedule before giving up, for the
+     * reason in pf_ring.h: a refusal here means the reader has not yet
+     * committed past the space this claim wants, which clears as soon as
+     * the drain thread makes progress -- the same transient as a peer
+     * finishing a fill on the slot-indexed backends. Refusing immediately
+     * would make this backend's drop rate a different policy from theirs
+     * rather than a different ring, which is exactly what made an earlier
+     * version of the benchmark incomparable.
+     *
+     * The compare-exchange retry below is separate and unbounded: that one
+     * is losing a race to another producer, where @off is simply stale and
+     * re-reading it is guaranteed progress. */
+    for (unsigned spin = 0; spin < PF_RESERVE_SPINS; spin++) {
+        off = atomic_load_explicit(&r->head, memory_order_relaxed);
+        for (;;) {
+            uint64_t tail = atomic_load_explicit(&r->tail, memory_order_acquire);
+            if (off + PF_REC_BYTES - tail > r->cap)
+                break; /* full; fall through to the backoff below */
+
+            /* On failure @off is reloaded with the current head, so the
+             * space check is redone against it. */
+            if (atomic_compare_exchange_weak_explicit(&r->head, &off,
+                                                      off + PF_REC_BYTES,
+                                                      memory_order_relaxed,
+                                                      memory_order_relaxed))
+                return res_at(r, off);
         }
-        /* On failure @off is reloaded with the current head, so the
-         * space check is redone against it. */
-        if (atomic_compare_exchange_weak_explicit(&r->head, &off,
-                                                  off + PF_REC_BYTES,
-                                                  memory_order_relaxed,
-                                                  memory_order_relaxed))
-            return res_at(r, off);
+
+        if (spin % PF_RESERVE_YIELD_EVERY == PF_RESERVE_YIELD_EVERY - 1)
+            sched_yield();
+        else
+            cpu_relax();
     }
+
+    atomic_fetch_add_explicit(&r->dropped, 1, memory_order_relaxed);
+    return (struct pf_rec_res){ .rec = NULL };
 }
 
 void pf_ring_submit(struct pf_ring *r, struct pf_rec_res res)
