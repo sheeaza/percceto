@@ -56,3 +56,7 @@ add_subdirectory(src)
 add_subdirectory(examples)
 add_subdirectory(tools)
 add_subdirectory(tests)
+
+# Independent of pftrace: its own libraries, tests and benchmarks, sharing
+# this build's flags, output directory and compile_commands.json.
+add_subdirectory(ringbuf)

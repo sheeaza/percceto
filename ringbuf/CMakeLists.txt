@@ -1,15 +1,5 @@
-cmake_minimum_required(VERSION 3.16)
-
-# Emit build/compile_commands.json for clangd. Set before project() so it
-# covers every target, including the compiler checks project() itself runs.
-set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
-
-project(ringbuf LANGUAGES C)
-
-# The Makefile this replaced defaulted to -O2 -g.
-if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
-    set(CMAKE_BUILD_TYPE RelWithDebInfo CACHE STRING "Build type" FORCE)
-endif()
+# Included from the root CMakeLists.txt, which owns project(), the build
+# type, compile_commands.json and the system include dirs for clangd.
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -26,26 +16,6 @@ if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
 else()
     set(RINGBUF_WARNINGS)
 endif()
-
-# Bake the compiler's own system include dirs into compile_commands.json.
-#
-# On Nix, CMAKE_C_COMPILER is a wrapper script that injects the paths to
-# the freestanding headers (stddef.h) and the libc headers (stdio.h) via
-# NIX_CFLAGS_COMPILE at invocation time. Those flags never reach
-# compile_commands.json, and clangd runs the bare clang driver without
-# the wrapper's environment -- so it resolves neither. There is no
-# /usr/include to fall back on, so every system header goes missing.
-#
-# CMake already probes the real search path during compiler detection, so
-# reuse its answer rather than re-deriving it. Harmless elsewhere: on a
-# normal toolchain these are the dirs clangd would have found anyway.
-#
-# The SHELL: prefix keeps each flag/path pair together. Without it CMake
-# de-duplicates the repeated bare "-isystem" token and the second path
-# onward is emitted with no flag at all.
-foreach(dir IN LISTS CMAKE_C_IMPLICIT_INCLUDE_DIRECTORIES)
-    add_compile_options("SHELL:-isystem ${dir}")
-endforeach()
 
 add_library(ringbuf ringbuf.c ringbuf.h)
 target_include_directories(ringbuf PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
