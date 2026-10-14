@@ -35,15 +35,14 @@ function(pftrace_add_library name ring define extra)
   )
   target_link_libraries(${target} PUBLIC Threads::Threads)
 
-  # memfd_create (the mmap ring's double mapping) is glibc's, not ISO C's,
-  # and unlike clock_gettime/CLOCK_BOOTTIME it is not exposed by
-  # _DEFAULT_SOURCE -- only _GNU_SOURCE declares it. Without this the build
-  # fails on an implicit declaration. PRIVATE: the public header is
-  # self-contained and needs no feature macro from consumers.
+  # clock_gettime/CLOCK_BOOTTIME (pftrace.c) and posix_memalign (the mmap
+  # ring) are not ISO C; _DEFAULT_SOURCE exposes both. Without it, a strict
+  # -std=c11 build fails on implicit declarations. PRIVATE: the public header
+  # is self-contained and needs no feature macro from consumers.
   #
   # The vendored ringbuf sources declare their own _POSIX_C_SOURCE for
   # posix_memalign and need nothing from here.
-  target_compile_definitions(${target} PRIVATE _GNU_SOURCE)
+  target_compile_definitions(${target} PRIVATE _DEFAULT_SOURCE)
   if(define)
     # PUBLIC, not PRIVATE: pf_ring.h picks the backend's struct definition
     # from this, so anything compiling against these sources -- the bench
