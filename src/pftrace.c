@@ -97,8 +97,8 @@
  * Overlaid on the ring rather than copied field by field, which is sound
  * because every member is naturally aligned: a backend hands out 8-byte
  * aligned payloads (PF_REC_ALIGN) and the two 4-byte fields sit in the
- * 24..31 tail. Any buffer this is cast onto must be 8-byte aligned too --
- * see pf_trace.rec_copy.
+ * 24..31 tail. Any buffer this is cast onto must be 8-byte aligned too, as the ring's
+ * slots and each backend's pop_buf are.
  */
 struct pf_rec {
     uint64_t ts; /* timestamp, ns */
@@ -294,15 +294,6 @@ struct pf_trace {
     /* Holds one InternedData entry while it is built, before being
      * embedded into scratch_a. Separate so the two never alias. */
     struct pb_buf scratch_entry;
-    /* Snapshot mode copies each record out of the ring before encoding it,
-     * so a producer overwriting the original mid-encode cannot feed torn
-     * bytes into the intern table. Fixed size, so no allocation.
-     *
-     * Aligned because emit_record overlays struct pf_rec on whatever it is
-     * handed, and in this mode that is this buffer rather than the ring's
-     * own 8-byte aligned slot. */
-    _Alignas(struct pf_rec) uint8_t rec_copy[PF_PAYLOAD_BYTES];
-
     struct intern_table name_table;
     bool header_written;
 
@@ -556,36 +547,9 @@ static int drain_locked(struct pf_trace *t)
 
     const uint8_t *rec;
     while ((rec = pf_ring_next(&t->ring, &rd)) != NULL) {
-        /* Where a producer may be rewriting this record right now, copy it
-         * out before touching it, then verify the source bytes were stable
-         * for the whole copy: the readiness check in pf_ring_next opened
-         * this seqlock and pf_ring_still_valid closes it.
-         *
-         * Copying first is what makes the rest safe. Encoding straight
-         * from the ring would feed a torn record into the intern table,
-         * and since the table outlives the rolled-back packet, a later
-         * valid event could reference an iid whose InternedData record was
-         * never written -- an unreadable trace.
-         *
-         * Skipped entirely where the backend cannot be lapped: either it
-         * refuses to claim space the reader has not released, or its
-         * reader already holds a private copy. Both make the returned
-         * bytes stable, so they are encoded in place. */
-        const uint8_t *src = rec;
-        if (pf_ring_reader_may_be_lapped(&t->ring)) {
-            memcpy(t->rec_copy, rec, PF_PAYLOAD_BYTES);
-            if (!pf_ring_still_valid(&t->ring, rd.prev)) {
-                /* Lapped mid-copy. Everything from here to the newest
-                 * record has been recycled too, so walking on would mostly
-                 * re-read overwritten slots. Restart from the newest data,
-                 * keeping what was already staged. */
-                pf_ring_resync(&t->ring);
-                return out_flush(t);
-            }
-            src = t->rec_copy;
-        }
-
-        if (emit_record(t, src) != 0)
+        /* Every backend hands back a record no producer can rewrite while we
+         * encode it, so it is encoded in place. */
+        if (emit_record(t, rec) != 0)
             return -1;
     }
 
@@ -687,7 +651,7 @@ static void maybe_wake_drain(struct pf_trace *t, uint32_t need)
  * backend.
  *
  * Whether it takes a lock is the backend's business, and the one thing
- * they genuinely differ on. The mmap and ringbuf_mpsc rings take none:
+ * they genuinely differ on. The ringbuf_mpsc ring takes none:
  * concurrent producers own disjoint slots, so their writes proceed in
  * parallel and only the claim itself is serialized, by one atomic. The
  * ringbuf_zcopy ring must serialize claims with a mutex -- held across the

@@ -3,9 +3,7 @@
 # trace-format validator, and the benchmark.
 #
 # The sanitizer builds are made here rather than as CMake targets because
-# each needs the whole library rebuilt with different instrumentation, and
-# TSan additionally needs the suppression file for snapshot mode's
-# deliberate overwrite race (see .tsan-suppressions).
+# each needs the whole library rebuilt with different instrumentation.
 set -uo pipefail
 
 cd "$(dirname "$0")/.."
@@ -13,7 +11,7 @@ root=$PWD
 build=${BUILD_DIR:-build}
 cc=$(grep -m1 '^CMAKE_C_COMPILER:' "$build/CMakeCache.txt" 2>/dev/null | cut -d= -f2)
 cc=${cc:-cc}
-src=(src/pftrace.c src/pf_ring_mmap.c src/pb_writer.c)
+src=(src/pftrace.c src/pf_ring_mpsc.c ringbuf/ringbuf_mpsc.c src/pb_writer.c)
 flags=(-std=c11 -Wall -Wextra -g -D_GNU_SOURCE -Iinclude -Isrc -Iringbuf)
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
@@ -31,44 +29,26 @@ step "unit + stress + no-allocation suite"
 (cd "$build" && ctest --output-on-failure)
 check $? "ctest"
 
-step "ring under ASan/UBSan"
-"$cc" "${flags[@]}" -O1 -fsanitize=address,undefined \
-    tests/test_ring.c src/pf_ring_mmap.c -o "$tmp/ring_asan" -lpthread || fail=1
-(cd "$tmp" && ./ring_asan >/dev/null)
-check $? "ring, ASan/UBSan"
-
 step "library under ASan/UBSan"
 "$cc" "${flags[@]}" -O1 -fsanitize=address,undefined \
     tests/test_stress.c "${src[@]}" -o "$tmp/stress_asan" -lpthread || fail=1
 (cd "$tmp" && ./stress_asan >/dev/null)
 check $? "stress, ASan/UBSan"
 
-step "ring under ThreadSanitizer"
-"$cc" "${flags[@]}" -O1 -fsanitize=thread \
-    tests/test_ring.c src/pf_ring_mmap.c -o "$tmp/ring_tsan" -lpthread || fail=1
-out=$(cd "$tmp" && TSAN_OPTIONS="suppressions=$root/.tsan-suppressions" \
-    ./ring_tsan 2>&1)
-n=$(grep -c 'WARNING: ThreadSanitizer' <<<"$out")
-echo "TSan warnings: $n"
-check "$([ "$n" -eq 0 ] && echo 0 || echo 1)" "ring, TSan race-free"
-
 step "library under ThreadSanitizer"
 "$cc" "${flags[@]}" -O1 -fsanitize=thread \
     tests/test_stress.c "${src[@]}" -o "$tmp/stress_tsan" -lpthread || fail=1
-out=$(cd "$tmp" && TSAN_OPTIONS="suppressions=$root/.tsan-suppressions" \
-    ./stress_tsan 2>&1)
+out=$(cd "$tmp" && ./stress_tsan 2>&1)
 n=$(grep -c 'WARNING: ThreadSanitizer' <<<"$out")
 echo "TSan warnings: $n"
 check "$([ "$n" -eq 0 ] && echo 0 || echo 1)" "library, TSan race-free"
 
 # The alternative ring backends, under both sanitizers.
 #
-# Run with NO suppression file, deliberately, and that is the point rather
-# than an oversight: neither backend's reader walks live ring storage -- it
+# Run with NO suppressions, deliberately: neither backend's reader walks live ring storage -- it
 # pops each record into a private buffer -- so there is no overwrite race to
-# tolerate and nothing to suppress. If one of these ever needs
-# .tsan-suppressions, the backend has acquired a race the mmap ring's design
-# has and these do not, which is worth failing over.
+# tolerate and nothing to suppress. If one of these ever needs a
+# suppression, the backend has acquired a race, which is worth failing over.
 #
 # Not gated on PFTRACE_BUILD_BENCH: these compile from source here, exactly
 # as the gates above do, so they run whether or not CMake built the bench

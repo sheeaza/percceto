@@ -9,7 +9,7 @@
  *
  * Identical to pf_ring_mpsc.c except for the push mutex, which is the
  * whole substance of the comparison between them. Read that file first;
- * the retry policy, the reader's pop-and-count and the no-op trim/resync
+ * the retry policy, the reader's pop-and-count and the no-op trim
  * are the same there and documented more fully.
  */
 
@@ -149,14 +149,6 @@ const uint8_t *pf_ring_next(struct pf_ring *r, struct pf_ring_reader *rd)
     return r->pop_buf;
 }
 
-bool pf_ring_still_valid(const struct pf_ring *r, uint64_t pos)
-{
-    (void)r;
-    (void)pos;
-    /* pf_ring_next already copied the record out. */
-    return true;
-}
-
 void pf_ring_read_commit(struct pf_ring *r, struct pf_ring_reader *rd)
 {
     (void)r;
@@ -172,21 +164,9 @@ void pf_ring_trim(struct pf_ring *r, size_t retain_bytes)
      * pf_ring_mpsc.c, where the same no-op is explained in full. */
 }
 
-void pf_ring_resync(struct pf_ring *r)
-{
-    (void)r;
-    /* Unreachable: pf_ring_still_valid never fails. */
-}
-
 size_t pf_ring_capacity_bytes(const struct pf_ring *r)
 {
     return r->cap_bytes;
-}
-
-bool pf_ring_reader_may_be_lapped(const struct pf_ring *r)
-{
-    (void)r;
-    return false;
 }
 
 void pf_ring_stats(const struct pf_ring *r, uint64_t *published,

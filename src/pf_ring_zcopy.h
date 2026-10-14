@@ -36,8 +36,7 @@
  *
  * Otherwise identical in shape to the ringbuf_mpsc backend: fixed slots,
  * a reserve that can fail in either mode, a reader that copies out, and
- * self-maintaining eviction that leaves trim and resync with nothing to
- * do. Read pf_ring_mpsc.h for the reasoning on all four; only the
+ * self-maintaining eviction that leaves trim with nothing to do. Read pf_ring_mpsc.h for the reasoning on all four; only the
  * synchronization differs.
  *
  * The buffer is held by POINTER, not embedded: struct ringbuf_zcopy ends
@@ -68,8 +67,7 @@ struct pf_ring {
     /* Where pf_ring_next retires a record to. Owned by the draining
      * thread, which pf_trace.out_lock serializes.
      *
-     * Aligned because the caller overlays a struct on it -- the same
-     * reason pf_trace.rec_copy is aligned. */
+     * Aligned because the caller overlays a struct on it. */
     _Alignas(PF_REC_ALIGN) uint8_t pop_buf[PF_PAYLOAD_BYTES];
 
     /* The caller-supplied mutex ringbuf_zcopy's multi-producer

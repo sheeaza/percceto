@@ -1,17 +1,17 @@
 /* The three ring backends, measured through pftrace's own hot path.
  *
- * WHAT THIS IS FOR. src/pf_ring.h selects one of three rings at compile
- * time: the bespoke mmap ring, ringbuf_mpsc, or ringbuf_zcopy. All three
+ * WHAT THIS IS FOR. src/pf_ring.h selects one of two rings at compile
+ * time: ringbuf_mpsc or ringbuf_zcopy. Both
  * sit under the same pftrace.c, the same protobuf encoder and the same
  * drain thread, so a difference measured here is attributable to the ring
  * and to nothing above it. Results are written up in
  * BENCHMARK_ring_backends.md.
  *
- * ONE SOURCE, THREE BINARIES. The backend is a compile-time choice, so one
+ * ONE SOURCE, TWO BINARIES. The backend is a compile-time choice, so one
  * process cannot hold two of them -- `struct pf_ring` is a different type
- * in each. CMake links this file once per backend into bench_ring_mmap,
- * bench_ring_mpsc and bench_ring_zcopy, and each prints its own name in
- * every row. Comparing means running all three and reading the tables side
+ * in each. CMake links this file once per backend into bench_ring_mpsc and
+ * bench_ring_zcopy, and each prints its own name in
+ * every row. Comparing means running both and reading the tables side
  * by side, which is also why the row label is the backend rather than the
  * scenario.
  *
@@ -23,17 +23,13 @@
  * what differs between backends, and it is a minority of it, so the
  * headline per-event figures are closer together than the rings are.
  *
- * WHAT THE THREE BACKENDS DO DIFFERENTLY, since it is what the columns are
+ * WHAT THE TWO BACKENDS DO DIFFERENTLY, since it is what the columns are
  * for:
  *
- *   mmap    One fetch-add to claim, payload written straight into the
- *           mapping, publication via an in-record tag. Its reader walks
- *           the ring in place and defends itself with a seqlock. Never
- *           refuses a claim in overwrite mode.
  *   mpsc    Ticket CAS to claim, lock-free with N producers, payload
  *           written in place. Its reader POPS each record into a private
- *           buffer -- one extra copy per event that the mmap reader does
- *           not pay, in exchange for needing no seqlock.
+ *           buffer -- one extra copy per event that an in-place reader would
+ *           not pay.
  *   zcopy   Same storage model, but producers must be serialized by a
  *           mutex this program supplies. The lock covers the claim only;
  *           the fill and the submit happen outside it. The one backend
@@ -78,12 +74,10 @@
 /* Which backend this binary was linked against. Only for labelling: the
  * code below is identical in all three, since it goes through the public
  * API. Mirrors the selector pf_ring.h switches on. */
-#if defined(PF_RING_BACKEND_MPSC)
-#define BACKEND_NAME "ringbuf_mpsc"
-#elif defined(PF_RING_BACKEND_ZCOPY)
+#if defined(PF_RING_BACKEND_ZCOPY)
 #define BACKEND_NAME "ringbuf_zcopy+mu"
 #else
-#define BACKEND_NAME "pf_ring (mmap)"
+#define BACKEND_NAME "ringbuf_mpsc"
 #endif
 
 /* Repetitions per cell, and the row reports ONE of them -- see
@@ -513,10 +507,8 @@ static void bench_cost(void)
  *
  * The reader side, which only matters in continuous mode, where it sets
  * the rate above which events start being dropped. This is where the
- * backends' readers differ most: the mmap reader encodes straight out of
- * the mapping, while both ringbuf readers pop each record into a private
- * buffer first -- an extra copy per event, in exchange for not needing a
- * seqlock.
+ * backends' readers differ most: the ringbuf readers pop each record into a private
+ * buffer first -- an extra copy per event, which is the cost being priced.
  */
 static void bench_drain(void)
 {
@@ -621,10 +613,8 @@ int main(void)
     printf("\n[2] Drain cost: encode and write one pre-filled ring\n");
     printf("    The reader side, which sets continuous mode's ceiling."
            " Where the two\n");
-    printf("    ringbuf backends pay an extra copy per event that the mmap"
-           " reader does\n");
-    printf("    not -- they pop into a private buffer instead of encoding"
-           " in place.\n");
+    printf("    ringbuf backends pay an extra copy per event, because they"
+           " pop into a private buffer instead of encoding in place.\n");
     bench_drain();
 
     printf("\n[3] Lossless (continuous), BY PRODUCER COUNT, 8MiB ring\n");
@@ -650,8 +640,7 @@ int main(void)
            " the ring\n");
     printf("    recycles instead. Any drop here is a backend REFUSING a"
            " claim, which\n");
-    printf("    the mmap ring structurally cannot do and the slot-indexed"
-           " pair can.\n");
+    printf("    the slot-indexed pair can do.\n");
     for (unsigned p = 0; p < sizeof prod_counts / sizeof *prod_counts; p++) {
         printf("  producers=%u\n", prod_counts[p]);
         print_header();

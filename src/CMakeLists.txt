@@ -27,16 +27,15 @@ function(pftrace_add_library name ring define extra)
 
   # include/ is PUBLIC (consumers need the API header); this directory is
   # PRIVATE, holding pf_ring.h, the backend it selects and pb_writer.h,
-  # which are implementation details. tests/test_ring.c reaches in here
-  # deliberately -- see its own CMakeLists.txt.
+  # which are implementation details.
   target_include_directories(${target}
     PUBLIC ${PROJECT_SOURCE_DIR}/include
     PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}
   )
   target_link_libraries(${target} PUBLIC Threads::Threads)
 
-  # clock_gettime/CLOCK_BOOTTIME (pftrace.c) and posix_memalign (the mmap
-  # ring) are not ISO C; _DEFAULT_SOURCE exposes both. Without it, a strict
+  # clock_gettime/CLOCK_BOOTTIME (pftrace.c) is not ISO C; _DEFAULT_SOURCE
+  # exposes it. Without it, a strict
   # -std=c11 build fails on implicit declarations. PRIVATE: the public header
   # is self-contained and needs no feature macro from consumers.
   #
@@ -57,10 +56,13 @@ function(pftrace_add_library name ring define extra)
   )
 endfunction()
 
-pftrace_add_library("" pf_ring_mmap.c "" "")
+pftrace_add_library("" pf_ring_mpsc.c "" ringbuf_mpsc)
+
+# The default is ringbuf_mpsc, so the mpsc bench target is an alias for it.
+# It exists so the bench loops in tests/ can address every backend by name.
+add_library(pftrace_mpsc ALIAS pftrace)
 
 if(PFTRACE_BUILD_BENCH)
-  pftrace_add_library(_mpsc pf_ring_mpsc.c PF_RING_BACKEND_MPSC ringbuf_mpsc)
   pftrace_add_library(_zcopy pf_ring_zcopy.c PF_RING_BACKEND_ZCOPY
                       ringbuf_zcopy)
 endif()

@@ -1,19 +1,3 @@
-# Ring mechanics in isolation: compiles the mmap backend directly rather
-# than linking pftrace, so the ring can be tested without protobuf, files or
-# any of the library's state. That is also why it needs src/ on the include
-# path -- pf_ring.h is private to the implementation.
-#
-# The mmap backend specifically, not whichever one is selected: this suite
-# asserts on the double mapping and the straddling records only that
-# backend has. See the file's own header comment.
-add_executable(test_ring
-  test_ring.c
-  ${PROJECT_SOURCE_DIR}/src/pf_ring_mmap.c
-)
-target_include_directories(test_ring PRIVATE ${PROJECT_SOURCE_DIR}/src)
-target_link_libraries(test_ring PRIVATE Threads::Threads)
-target_compile_definitions(test_ring PRIVATE _GNU_SOURCE)
-
 # Drives enough events through a small ring to force many wraps, which is
 # where snapshot windowing and continuous gaplessness actually get tested.
 # memmem, used to confirm which events survived in a window, needs
@@ -40,7 +24,7 @@ target_link_libraries(test_noalloc
 add_executable(bench bench.c)
 target_link_libraries(bench PRIVATE pftrace Threads::Threads)
 
-add_test(NAME ring COMMAND test_ring)
+
 add_test(NAME stress COMMAND test_stress)
 add_test(NAME noalloc COMMAND test_noalloc)
 
@@ -65,7 +49,7 @@ if(PFTRACE_BUILD_BENCH)
     add_test(NAME noalloc_${backend} COMMAND test_noalloc_${backend})
   endforeach()
 
-  # The three-way ring comparison: one source, linked once per backend,
+  # The ring comparison: one source, linked once per backend,
   # since the backend is a compile-time choice and `struct pf_ring` is a
   # different type in each -- one process cannot hold two of them.
   #
@@ -81,15 +65,10 @@ if(PFTRACE_BUILD_BENCH)
   # The backend selector reaches these through the library's PUBLIC compile
   # definitions, so bench_ring.c sees the same macro pf_ring.h switched on
   # and labels its rows correctly.
-  foreach(target_backend mmap mpsc zcopy)
-    if(target_backend STREQUAL "mmap")
-      set(lib pftrace)
-    else()
-      set(lib pftrace_${target_backend})
-    endif()
+  foreach(target_backend mpsc zcopy)
     add_executable(bench_ring_${target_backend} bench_ring.c)
     target_link_libraries(bench_ring_${target_backend}
-      PRIVATE ${lib} Threads::Threads
+      PRIVATE pftrace_${target_backend} Threads::Threads
     )
     target_compile_options(bench_ring_${target_backend} PRIVATE -O2 -g)
   endforeach()

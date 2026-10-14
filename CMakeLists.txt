@@ -39,7 +39,7 @@ find_package(Threads REQUIRED)
 
 # Keep every artifact at the top of the build dir even though the targets
 # are now declared in subdirectories. Without this CMake mirrors the source
-# tree (build/tests/test_ring, build/tools/dump_trace), which splits the
+# tree (build/tests/test_stress, build/tools/dump_trace), which splits the
 # build files -- the point of the subdirectories -- but also moves every
 # binary, breaking existing invocations and tools/run_checks.sh for no gain.
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})

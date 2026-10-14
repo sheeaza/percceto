@@ -54,7 +54,7 @@ Every number below is from after that change.
 
 ```bash
 cmake -B build -DPFTRACE_BUILD_BENCH=ON && cmake --build build -j8
-cd build && ./bench_ring_mmap && ./bench_ring_mpsc && ./bench_ring_zcopy
+cd build && ./bench_ring_mpsc && ./bench_ring_zcopy
 ```
 
 ~70 s per binary. One source (`tests/bench_ring.c`) linked three times: the

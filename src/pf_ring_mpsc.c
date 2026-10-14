@@ -134,12 +134,8 @@ const uint8_t *pf_ring_next(struct pf_ring *r, struct pf_ring_reader *rd)
     if (rd->pos >= rd->end)
         return NULL;
 
-    /* Retires the record into our own buffer, which is the structural
-     * difference from the mmap reader: that one returns a pointer into
-     * live storage and defends it with a seqlock, while this hands back a
-     * private copy nothing can reach. Hence pf_ring_still_valid below
-     * cannot fail.
-     *
+    /* Retires the record into our own buffer, so what we hand back is a
+     * private copy nothing can reach.\n     *
      * A false return does not mean empty -- the oldest slot may be
      * reserved and still filling, which blocks delivery head-of-line.
      * Stop the walk rather than spin: those records are not lost, and the
@@ -154,15 +150,6 @@ const uint8_t *pf_ring_next(struct pf_ring *r, struct pf_ring_reader *rd)
     rd->prev = rd->pos;
     rd->pos++;
     return r->pop_buf;
-}
-
-bool pf_ring_still_valid(const struct pf_ring *r, uint64_t pos)
-{
-    (void)r;
-    (void)pos;
-    /* pf_ring_next already copied the record out, so what the caller
-     * holds is a snapshot no producer can reach. */
-    return true;
 }
 
 void pf_ring_read_commit(struct pf_ring *r, struct pf_ring_reader *rd)
@@ -180,32 +167,13 @@ void pf_ring_trim(struct pf_ring *r, size_t retain_bytes)
     (void)retain_bytes;
     /* Eviction advances the library's own read index, so the retained
      * window is bounded by the ring's capacity at all times and the
-     * reader's starting point is never a slot already recycled. The mmap
-     * backend needs this call because its @tail would otherwise sit at 0
-     * while producers lapped the buffer; there is no equivalent stale
-     * floor here. */
-}
-
-void pf_ring_resync(struct pf_ring *r)
-{
-    (void)r;
-    /* Unreachable: pf_ring_still_valid never fails, so no caller gets to
-     * the lost-the-window path. Kept as a no-op rather than an abort
-     * because the interface requires it, and &pf_stats.resyncs stays 0 --
-     * see pf_ring_mpsc.h. */
+     * reader's starting point is never a slot already recycled. Nothing is left to
+     * advance here. */
 }
 
 size_t pf_ring_capacity_bytes(const struct pf_ring *r)
 {
     return r->cap_bytes;
-}
-
-bool pf_ring_reader_may_be_lapped(const struct pf_ring *r)
-{
-    (void)r;
-    /* In either mode: the reader holds a private copy, so there is
-     * nothing for a producer to lap. */
-    return false;
 }
 
 void pf_ring_stats(const struct pf_ring *r, uint64_t *published,

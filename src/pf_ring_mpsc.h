@@ -6,28 +6,23 @@
 /* The ringbuf_mpsc backend: lock-free, multi-producer, slot-indexed.
  *
  * Included by pf_ring.h, which is the interface this implements and the
- * file to read first. Never include this directly. Selected with
- * -DPF_RING_BACKEND_MPSC.
+ * file to read first. Never include this directly. The default backend:
+ * selected unless -DPF_RING_BACKEND_ZCOPY is given.
  *
- * The like-for-like alternative to the mmap backend: producers claim with
- * a ticket CAS, so any number of threads may reserve concurrently with no
- * caller-held lock, and pftrace.h's promise that an event takes no lock
- * holds unchanged. Both index fixed slots, so what differs is how a slot
- * is claimed and how readiness is recorded -- a ticket plus a separate
- * per-slot stamp array here, against a fetch-add plus a tag inside the
- * record there -- and three consequences follow from it:
- *
- *   - A reserve can fail in EITHER mode. The mmap backend's overwrite
- *     reserve is an unconditional fetch-add and cannot; here a slot whose
+ * Producers claim with a ticket CAS, so any number of threads may reserve
+ * concurrently with no caller-held lock, and pftrace.h's promise that an event
+ * takes no lock holds unchanged. Readiness is recorded in a separate per-slot
+ * stamp array, and three consequences follow from it: *
+ *   - A reserve can fail in EITHER mode. A slot whose
  *     previous-lap reservation has not been submitted is refused, because
  *     a filler may still be writing those bytes. Rare with pftrace's
  *     four-store fill, but pf_ring_reserve retries before giving up.
  *   - The reader copies out rather than walking in place. ringbuf_mpsc_pop
  *     retires a record into a caller buffer, which is strictly safer --
  *     nothing can lap a record the reader already holds -- but it costs a
- *     memcpy per event that the mmap reader avoids. That trade is one of
+ *     memcpy per event that an in-place reader would avoid. That trade is one of
  *     the things the benchmark measures.
- *   - trim and resync have nothing to do. Eviction advances the library's
+ *   - trim has nothing to do. Eviction advances the library's
  *     own read index, so the snapshot window maintains itself and the
  *     reader's starting point is never a position already recycled.
  *     &pf_stats.resyncs is therefore structurally zero.
@@ -68,16 +63,14 @@ struct pf_ring {
 
     /* Reserve attempts that were refused and retried. Diagnostic: the
      * figure the benchmark reports to show what the slot-indexed model
-     * costs under contention, which the mmap backend has no equivalent
-     * of. */
+     * costs under contention. */
     _Atomic uint64_t retries;
 
     /* Where pf_ring_next retires a record to. Owned by the draining
      * thread, which pf_trace.out_lock serializes, so one buffer suffices
      * and the reader allocates nothing.
      *
-     * Aligned because the caller overlays a struct on it -- the same
-     * reason pf_trace.rec_copy is aligned. */
+     * Aligned because the caller overlays a struct on it. */
     _Alignas(PF_REC_ALIGN) uint8_t pop_buf[PF_PAYLOAD_BYTES];
 };
 
