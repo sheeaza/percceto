@@ -3,6 +3,7 @@
 #include <string.h>
 
 #include "pf_ring.h"
+#include "pf_util.h"
 
 /* The ringbuf_mpsc backend. See pf_ring_mpsc.h for the design and
  * pf_ring.h for the interface it implements.
@@ -13,17 +14,6 @@
  * reader's pop-and-count, and keeping occupancy cheap -- and they are what
  * the rest of this file is.
  */
-
-/* Pause between spins: tells the core this is a spin-wait loop, which
- * costs less power and clears the pipeline of speculated loads. */
-static void cpu_relax(void)
-{
-#if defined(__x86_64__) || defined(__i386__)
-    __builtin_ia32_pause();
-#else
-    atomic_thread_fence(memory_order_relaxed);
-#endif
-}
 
 int pf_ring_init(struct pf_ring *r, size_t want_bytes, bool overwrite)
 {
