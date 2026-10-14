@@ -4,8 +4,8 @@
 set(CMAKE_C_EXTENSIONS OFF)
 
 option(RINGBUF_BUILD_TESTS "Build the ringbuf test binary" ON)
-option(RINGBUF_BUILD_TSAN "Also build a ThreadSanitizer test binary" OFF)
-option(RINGBUF_BUILD_BENCH "Also build the benchmark binary" OFF)
+option(RINGBUF_BUILD_TSAN "Also build a ThreadSanitizer test binary" ON)
+option(RINGBUF_BUILD_BENCH "Also build the benchmark binary" ON)
 
 add_library(ringbuf ringbuf.c ringbuf.h)
 target_include_directories(ringbuf PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
@@ -52,7 +52,7 @@ target_link_libraries(ringbuf_zcopy PUBLIC Threads::Threads)
 #
 # Linux-only, and the one target here that is: the mirror needs
 # memfd_create(2). Skipped quietly rather than FATAL_ERROR, unlike
-# RINGBUF_BUILD_BENCH below -- that one is opt-in, so failing loudly is
+# RINGBUF_BUILD_BENCH below -- that one is on by default, so failing loudly is
 # fine, whereas this would break a default configure on a non-Linux host.
 set(RINGBUF_HAVE_VAR OFF)
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
@@ -230,9 +230,10 @@ if(RINGBUF_BUILD_TESTS)
     endif()
 endif()
 
-# Benchmark. Opt-in and OFF by default: it runs for tens of seconds and is a
+# Benchmark. On by default: it runs for tens of seconds and is a
 # measurement, not a pass/fail check, so it is deliberately NOT an add_test
-# entry -- `ctest` stays fast and its results stay meaningful.
+# entry -- `ctest` stays fast and its results stay meaningful. Pass
+# -DRINGBUF_BUILD_BENCH=OFF to skip building it.
 #
 #   cmake -B build -DRINGBUF_BUILD_BENCH=ON && cmake --build build -j
 #   ./build/bench_ringbuf
