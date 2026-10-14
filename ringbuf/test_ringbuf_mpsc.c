@@ -183,7 +183,7 @@ static bool run_lossless_test(void)
 {
     /* Small, non-trivial capacity forces heavy wraparound during the run. */
     struct ringbuf_mpsc *rb =
-        ringbuf_mpsc_create(sizeof(struct message), 16, false);
+        ringbuf_mpsc_create(sizeof(struct message), 16, RINGBUF_DROP_NEWEST);
     if (!rb) {
         fprintf(stderr, "lossless: ringbuf_mpsc_create failed\n");
         return false;
@@ -258,7 +258,7 @@ static bool run_overwrite_basic_on(struct ringbuf_mpsc *rb, const char *label)
 static bool run_overwrite_basic_test(void)
 {
     struct ringbuf_mpsc *rb =
-        ringbuf_mpsc_create(sizeof(struct message), 4, true);
+        ringbuf_mpsc_create(sizeof(struct message), 4, RINGBUF_DROP_OLDEST);
     if (!rb) {
         fprintf(stderr, "overwrite_basic: ringbuf_mpsc_create failed\n");
         return false;
@@ -452,7 +452,7 @@ static bool run_overwrite_stress_on(struct ringbuf_mpsc *rb, uint64_t n,
 static bool run_overwrite_stress_test(void)
 {
     struct ringbuf_mpsc *rb =
-        ringbuf_mpsc_create(sizeof(struct message), 4, true);
+        ringbuf_mpsc_create(sizeof(struct message), 4, RINGBUF_DROP_OLDEST);
     if (!rb) {
         fprintf(stderr, "overwrite_stress: ringbuf_mpsc_create failed\n");
         return false;
@@ -708,7 +708,7 @@ static bool run_mp_stress_on(struct ringbuf_mpsc *rb, uint64_t n, bool lossless,
 static bool run_mp_lossless_test(void)
 {
     struct ringbuf_mpsc *rb =
-        ringbuf_mpsc_create(sizeof(struct message), 16, false);
+        ringbuf_mpsc_create(sizeof(struct message), 16, RINGBUF_DROP_NEWEST);
     if (!rb) {
         fprintf(stderr, "mpsc_lossless: ringbuf_mpsc_create failed\n");
         return false;
@@ -730,7 +730,7 @@ static bool run_mp_lossless_test(void)
 static bool run_mp_overwrite_stress_test(void)
 {
     struct ringbuf_mpsc *rb =
-        ringbuf_mpsc_create(sizeof(struct message), 4, true);
+        ringbuf_mpsc_create(sizeof(struct message), 4, RINGBUF_DROP_OLDEST);
     if (!rb) {
         fprintf(stderr, "mpsc_overwrite_stress: ringbuf_mpsc_create failed\n");
         return false;
@@ -776,7 +776,7 @@ static void fill_in_place(void *slot, uint64_t seq, uint32_t producer_id)
 static bool run_reserve_basic_test(void)
 {
     struct ringbuf_mpsc *rb =
-        ringbuf_mpsc_create(sizeof(struct message), 8, false);
+        ringbuf_mpsc_create(sizeof(struct message), 8, RINGBUF_DROP_NEWEST);
     if (!rb) {
         fprintf(stderr, "reserve_basic: ringbuf_mpsc_create failed\n");
         return false;
@@ -843,7 +843,7 @@ out:
 static bool run_ooo_submit_test(void)
 {
     struct ringbuf_mpsc *rb =
-        ringbuf_mpsc_create(sizeof(struct message), 4, false);
+        ringbuf_mpsc_create(sizeof(struct message), 4, RINGBUF_DROP_NEWEST);
     if (!rb) {
         fprintf(stderr, "ooo_submit: ringbuf_mpsc_create failed\n");
         return false;
@@ -920,7 +920,7 @@ out:
 static bool run_reserve_exhaust_test(void)
 {
     struct ringbuf_mpsc *rb =
-        ringbuf_mpsc_create(sizeof(struct message), 4, false);
+        ringbuf_mpsc_create(sizeof(struct message), 4, RINGBUF_DROP_NEWEST);
     if (!rb) {
         fprintf(stderr, "reserve_exhaust: ringbuf_mpsc_create failed\n");
         return false;
@@ -1033,7 +1033,7 @@ out:
 static bool run_unsubmitted_blocks_evict_test(void)
 {
     struct ringbuf_mpsc *rb =
-        ringbuf_mpsc_create(sizeof(struct message), 4, true);
+        ringbuf_mpsc_create(sizeof(struct message), 4, RINGBUF_DROP_OLDEST);
     if (!rb) {
         fprintf(stderr,
                 "unsubmitted_blocks_evict: ringbuf_mpsc_create failed\n");
@@ -1266,7 +1266,7 @@ static bool run_parallel_fill_on(struct ringbuf_mpsc *rb, uint64_t n,
 static bool run_parallel_fill_test(void)
 {
     struct ringbuf_mpsc *rb =
-        ringbuf_mpsc_create(sizeof(struct message), 16, false);
+        ringbuf_mpsc_create(sizeof(struct message), 16, RINGBUF_DROP_NEWEST);
     if (!rb) {
         fprintf(stderr, "parallel_fill: ringbuf_mpsc_create failed\n");
         return false;
@@ -1288,7 +1288,7 @@ static bool run_parallel_fill_test(void)
 static bool run_parallel_fill_overwrite_test(void)
 {
     struct ringbuf_mpsc *rb =
-        ringbuf_mpsc_create(sizeof(struct message), 4, true);
+        ringbuf_mpsc_create(sizeof(struct message), 4, RINGBUF_DROP_OLDEST);
     if (!rb) {
         fprintf(stderr,
                 "parallel_fill_overwrite: ringbuf_mpsc_create failed\n");
@@ -1329,8 +1329,8 @@ static bool run_parallel_fill_overwrite_test(void)
 static bool run_wrap_boundary_test(void)
 {
     const uint64_t capacity = 16;
-    struct ringbuf_mpsc *rb =
-        ringbuf_mpsc_create(sizeof(struct message), (size_t)capacity, false);
+    struct ringbuf_mpsc *rb = ringbuf_mpsc_create(
+        sizeof(struct message), (size_t)capacity, RINGBUF_DROP_NEWEST);
     if (!rb) {
         fprintf(stderr, "wrap_boundary: ringbuf_mpsc_create failed\n");
         return false;
@@ -1429,7 +1429,7 @@ fail:
 static bool run_wrap_overwrite_basic_test(void)
 {
     struct ringbuf_mpsc *rb =
-        ringbuf_mpsc_create(sizeof(struct message), 4, true);
+        ringbuf_mpsc_create(sizeof(struct message), 4, RINGBUF_DROP_OLDEST);
     if (!rb) {
         fprintf(stderr, "wrap_overwrite_basic: ringbuf_mpsc_create failed\n");
         return false;
@@ -1452,7 +1452,7 @@ static bool run_wrap_overwrite_basic_test(void)
 static bool run_wrap_lossless_concurrent_test(void)
 {
     struct ringbuf_mpsc *rb =
-        ringbuf_mpsc_create(sizeof(struct message), 16, false);
+        ringbuf_mpsc_create(sizeof(struct message), 16, RINGBUF_DROP_NEWEST);
     if (!rb) {
         fprintf(stderr,
                 "wrap_lossless_concurrent: ringbuf_mpsc_create failed\n");
@@ -1472,7 +1472,7 @@ static bool run_wrap_lossless_concurrent_test(void)
 static bool run_wrap_overwrite_stress_test(void)
 {
     struct ringbuf_mpsc *rb =
-        ringbuf_mpsc_create(sizeof(struct message), 4, true);
+        ringbuf_mpsc_create(sizeof(struct message), 4, RINGBUF_DROP_OLDEST);
     if (!rb) {
         fprintf(stderr, "wrap_overwrite_stress: ringbuf_mpsc_create failed\n");
         return false;
@@ -1496,7 +1496,7 @@ static bool run_wrap_overwrite_stress_test(void)
 static bool run_mp_wrap_overwrite_stress_test(void)
 {
     struct ringbuf_mpsc *rb =
-        ringbuf_mpsc_create(sizeof(struct message), 4, true);
+        ringbuf_mpsc_create(sizeof(struct message), 4, RINGBUF_DROP_OLDEST);
     if (!rb) {
         fprintf(stderr,
                 "mpsc_wrap_overwrite_stress: ringbuf_mpsc_create failed\n");
@@ -1523,7 +1523,7 @@ static bool run_mp_wrap_overwrite_stress_test(void)
 static bool run_wrap_parallel_fill_test(void)
 {
     struct ringbuf_mpsc *rb =
-        ringbuf_mpsc_create(sizeof(struct message), 4, true);
+        ringbuf_mpsc_create(sizeof(struct message), 4, RINGBUF_DROP_OLDEST);
     if (!rb) {
         fprintf(stderr, "wrap_parallel_fill: ringbuf_mpsc_create failed\n");
         return false;

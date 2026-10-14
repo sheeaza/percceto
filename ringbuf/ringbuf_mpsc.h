@@ -5,6 +5,8 @@
 #include <stdbool.h>
 #include <stddef.h>
 
+#include "ringbuf_common.h"
+
 /*
  * Multi-producer / single-consumer lock-free ring buffer.
  *
@@ -86,9 +88,9 @@
  * @capacity: slot count, a power of two >= 2
  * @mask: @capacity - 1, for mapping a ticket to a slot
  * @slot_size: bytes per slot, as passed to ringbuf_mpsc_create()
- * @overwrite_on_full: the mode chosen at create time
+ * @mode: the mode chosen at create time
  * @stamp: per-slot publication state, @capacity entries, pointing into @tail
- * @slot_lock: per-slot spinlock, @capacity entries, or NULL in lossless mode
+ * @slot_lock: per-slot spinlock, @capacity entries, or NULL in drop-newest mode
  * @dropped_count: messages evicted before they were read
  * @write_idx: next ticket to hand out; multi-writer, see below
  * @read_idx: next ticket to deliver
@@ -114,7 +116,7 @@ struct ringbuf_mpsc {
     size_t capacity;
     size_t mask;
     size_t slot_size;
-    bool overwrite_on_full;
+    enum ringbuf_mode mode;
 
     /* One stamp per slot: the publication state of slot i, and the whole
      * reason this variant needs no read_idx CAS.
@@ -136,7 +138,7 @@ struct ringbuf_mpsc {
      * all, which is why there is no cached_read in this struct. */
     atomic_size_t *stamp;
 
-    /* One lock per slot, only present when overwrite_on_full is set. Guards
+    /* One lock per slot, only present in RINGBUF_DROP_OLDEST mode. Guards
      * the single physical slot where an in-flight ringbuf_mpsc_pop can
      * overlap with a ringbuf_mpsc_push eviction. 0 = free, 1 = held.
      *
@@ -144,7 +146,7 @@ struct ringbuf_mpsc {
      * what keeps the two memcpys off the same bytes while that is settled.
      * Both are needed, and they do different jobs.
      *
-     * Points into the tail after the stamps, or NULL in lossless mode. Kept
+     * Points into the tail after the stamps, or NULL in drop-newest mode. Kept
      * as a pointer rather than recomputed so the hot paths index it
      * directly. */
     atomic_int *slot_lock;
@@ -159,7 +161,7 @@ struct ringbuf_mpsc {
     /* Retirement counter: how far delivery has got, and where the consumer
      * looks next.
      *
-     * Single-writer in lossless mode, where the consumer is the only thread
+     * Single-writer in drop-newest mode, where the consumer is the only thread
      * that retires anything and a plain release store suffices. In
      * overwrite mode every evicting producer writes it too, so there are
      * N+1 writers and both sides go through advance_read_idx().
@@ -207,15 +209,14 @@ struct ringbuf_mpsc_rsv {
  * @slot_size: size of each slot in bytes; must be non-zero
  * @min_capacity: lower bound on the slot count, rounded up to the next
  *	power of two >= @min_capacity (minimum 2)
- * @overwrite_on_full: if true, a push onto a full buffer evicts the oldest
- *	unread slot (counted in ringbuf_mpsc_dropped_count()) instead of
- *	failing. If false, a push onto a full buffer fails.
+ * @mode: what a push does on a full buffer; see enum ringbuf_mode.
+ *	RINGBUF_BLOCK is not supported and is rejected.
  *
  * Return: the new buffer, or NULL on allocation failure or invalid
- * arguments.
+ * arguments, including an unsupported @mode.
  */
 struct ringbuf_mpsc *ringbuf_mpsc_create(size_t slot_size, size_t min_capacity,
-                                         bool overwrite_on_full);
+                                         enum ringbuf_mode mode);
 
 /**
  * ringbuf_mpsc_destroy - free a ring buffer
@@ -244,7 +245,7 @@ void ringbuf_mpsc_destroy(struct ringbuf_mpsc *rb);
  *
  * A false return has three causes, none of them an error:
  *
- *   - The buffer is full of unread messages. Lossless mode only; in
+ *   - The buffer is full of unread messages. Drop-newest mode only; in
  *     overwrite mode this evicts instead.
  *   - The slot is still held by an earlier reservation that has not been
  *     submitted yet. This happens in BOTH modes -- an unsubmitted slot is
@@ -302,7 +303,7 @@ void ringbuf_mpsc_submit(struct ringbuf_mpsc *rb,
  * Each producer's own messages do stay in the order it pushed them.
  *
  * Return: true if the message was stored. false if the buffer is full
- * (lossless mode only), or transiently: in overwrite mode when the consumer
+ * (drop-newest mode only), or transiently: in overwrite mode when the consumer
  * holds the slot being evicted. A false return never consumes a ticket, so
  * retrying is always safe.
  */
@@ -359,7 +360,7 @@ size_t ringbuf_mpsc_slot_size(const struct ringbuf_mpsc *rb);
  * @rb: the buffer
  *
  * Return: the number of messages ringbuf_mpsc_push() has evicted. Always 0
- * if the buffer was created with overwrite_on_full = false.
+ * if the buffer was created in RINGBUF_DROP_NEWEST mode.
  */
 size_t ringbuf_mpsc_dropped_count(const struct ringbuf_mpsc *rb);
 

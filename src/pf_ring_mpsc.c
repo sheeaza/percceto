@@ -27,7 +27,7 @@ int pf_ring_init(struct pf_ring *r, size_t want_bytes, bool overwrite)
      * division asked for. */
     size_t slots = want_bytes / PF_PAYLOAD_BYTES;
 
-    r->rb = ringbuf_mpsc_create(PF_PAYLOAD_BYTES, slots, overwrite);
+    r->rb = ringbuf_mpsc_create(PF_PAYLOAD_BYTES, slots, overwrite ? RINGBUF_DROP_OLDEST : RINGBUF_DROP_NEWEST);
     if (!r->rb) {
         /* create() reports allocation failure and invalid arguments
          * alike, without distinguishing them. slot_size is a nonzero

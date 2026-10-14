@@ -65,19 +65,21 @@ static size_t align_up(size_t v, size_t align)
  * ringbuf_mpsc_create - allocate a ring buffer
  * @slot_size: size of each slot in bytes
  * @min_capacity: lower bound on the slot count
- * @overwrite_on_full: evict the oldest slot instead of failing on full
+ * @mode: what a push does on a full buffer; RINGBUF_BLOCK is rejected
  *
  * See ringbuf_mpsc.h for the caller-visible contract. One allocation covers
- * the header, the slot data, the stamps, and (in overwrite mode) the
- * trailing lock array.
+ * the header, the slot data, the stamps, and (in RINGBUF_DROP_OLDEST mode)
+ * the trailing lock array.
  *
  * Return: the new buffer, or NULL on allocation failure or invalid
  * arguments.
  */
 struct ringbuf_mpsc *ringbuf_mpsc_create(size_t slot_size, size_t min_capacity,
-                                         bool overwrite_on_full)
+                                         enum ringbuf_mode mode)
 {
     if (slot_size == 0)
+        return NULL;
+    if (mode != RINGBUF_DROP_NEWEST && mode != RINGBUF_DROP_OLDEST)
         return NULL;
 
     size_t capacity = next_pow2(min_capacity);
@@ -103,7 +105,7 @@ struct ringbuf_mpsc *ringbuf_mpsc_create(size_t slot_size, size_t min_capacity,
         return NULL;
 
     size_t lock_offset = 0;
-    if (overwrite_on_full) {
+    if (mode == RINGBUF_DROP_OLDEST) {
         lock_offset = align_up(tail_bytes, _Alignof(atomic_int));
         if (lock_offset == 0)
             return NULL;
@@ -125,9 +127,9 @@ struct ringbuf_mpsc *ringbuf_mpsc_create(size_t slot_size, size_t min_capacity,
     rb->capacity = capacity;
     rb->mask = capacity - 1;
     rb->slot_size = slot_size;
-    rb->overwrite_on_full = overwrite_on_full;
+    rb->mode = mode;
     rb->stamp = (atomic_size_t *)(void *)(rb->tail + stamp_offset);
-    rb->slot_lock = overwrite_on_full ?
+    rb->slot_lock = mode == RINGBUF_DROP_OLDEST ?
                         (atomic_int *)(void *)(rb->tail + lock_offset) :
                         NULL;
     atomic_init(&rb->dropped_count, (size_t)0);
@@ -139,7 +141,7 @@ struct ringbuf_mpsc *ringbuf_mpsc_create(size_t slot_size, size_t min_capacity,
     for (size_t i = 0; i < capacity; i++)
         atomic_init(&rb->stamp[i], i);
 
-    for (size_t i = 0; overwrite_on_full && i < capacity; i++)
+    for (size_t i = 0; mode == RINGBUF_DROP_OLDEST && i < capacity; i++)
         atomic_init(&rb->slot_lock[i], 0);
 
     return rb;
@@ -187,18 +189,18 @@ static void advance_read_idx(struct ringbuf_mpsc *rb, size_t target)
 }
 
 /**
- * reserve_lossless - claim a ticket without publishing, no eviction
+ * reserve_drop_newest - claim a ticket without publishing, no eviction
  * @rb: the buffer
  * @rsv: handle to fill in, valid only on a true return
  *
- * The fully lock-free path, used when overwrite_on_full is false. Takes no
+ * The fully lock-free path, used in RINGBUF_DROP_NEWEST mode. Takes no
  * lock on either side: the slot a won ticket names is owned exclusively by
  * the winner until it publishes, so there is nothing to exclude.
  *
  * Return: true if a slot was claimed; false if the buffer is full.
  */
-static bool reserve_lossless(struct ringbuf_mpsc *rb,
-                             struct ringbuf_mpsc_rsv *rsv)
+static bool reserve_drop_newest(struct ringbuf_mpsc *rb,
+                                struct ringbuf_mpsc_rsv *rsv)
 {
     size_t w = atomic_load_explicit(&rb->write_idx, memory_order_relaxed);
 
@@ -247,7 +249,7 @@ static bool reserve_lossless(struct ringbuf_mpsc *rb,
  * @rb: the buffer
  * @rsv: handle to fill in, valid only on a true return
  *
- * Used when overwrite_on_full is true. Takes the target slot's lock before
+ * Used in RINGBUF_DROP_OLDEST mode. Takes the target slot's lock before
  * claiming the ticket -- see the comment inline, the order is load-bearing --
  * and releases it before returning, so no lock is ever held across the
  * caller's fill.
@@ -273,7 +275,7 @@ static bool reserve_overwrite(struct ringbuf_mpsc *rb,
         }
 
         if (diff == 0) {
-            /* Free slot, no eviction needed: same as the lossless path. */
+            /* Free slot, no eviction needed: same as the drop-newest path. */
             if (atomic_compare_exchange_weak_explicit(&rb->write_idx, &w, w + 1,
                                                       memory_order_relaxed,
                                                       memory_order_relaxed))
@@ -400,15 +402,15 @@ static bool reserve_overwrite(struct ringbuf_mpsc *rb,
  * two files: this one pays a CAS per claim and needs no caller lock; that one
  * keeps write_idx single-writer and requires one.
  *
- * Return: true if a slot was claimed; false if the buffer is full (lossless
+ * Return: true if a slot was claimed; false if the buffer is full (drop-newest
  * mode), if the slot it needs is reserved but unsubmitted (either mode), or
  * on transient contention with an in-flight pop (overwrite mode).
  */
 bool ringbuf_mpsc_reserve(struct ringbuf_mpsc *rb, struct ringbuf_mpsc_rsv *rsv)
 {
-    if (rb->overwrite_on_full)
+    if (rb->mode == RINGBUF_DROP_OLDEST)
         return reserve_overwrite(rb, rsv);
-    return reserve_lossless(rb, rsv);
+    return reserve_drop_newest(rb, rsv);
 }
 
 /**
@@ -453,7 +455,7 @@ void ringbuf_mpsc_submit(struct ringbuf_mpsc *rb,
  * ordering fix would get applied only once.
  *
  * Return: true if the message was stored; false if the buffer is full
- * (lossless mode), or on transient slot-lock contention with an in-flight
+ * (drop-newest mode), or on transient slot-lock contention with an in-flight
  * pop (overwrite mode).
  */
 bool ringbuf_mpsc_push(struct ringbuf_mpsc *rb, const void *data)
@@ -544,7 +546,7 @@ bool ringbuf_mpsc_pop(struct ringbuf_mpsc *rb, void *data)
 {
     size_t r = atomic_load_explicit(&rb->read_idx, memory_order_relaxed);
 
-    if (rb->overwrite_on_full)
+    if (rb->mode == RINGBUF_DROP_OLDEST)
         return pop_overwrite(rb, data, r);
 
     size_t idx = r & rb->mask;
@@ -596,7 +598,7 @@ size_t ringbuf_mpsc_slot_size(const struct ringbuf_mpsc *rb)
  * ringbuf_mpsc_dropped_count - messages evicted before they were read
  * @rb: the buffer
  *
- * Return: the eviction count; always 0 in lossless mode.
+ * Return: the eviction count; always 0 in drop-newest mode.
  */
 size_t ringbuf_mpsc_dropped_count(const struct ringbuf_mpsc *rb)
 {

@@ -433,11 +433,15 @@ static bool q_init(struct queue *q, const struct scenario *s)
     q->passes = s->passes ? s->passes : DEFAULT_PASSES;
 
     if (variant_is_mpsc(s->variant)) {
-        q->mpsc = ringbuf_mpsc_create(s->slot_size, s->capacity, s->overwrite);
+        q->mpsc = ringbuf_mpsc_create(s->slot_size, s->capacity,
+                                      s->overwrite ? RINGBUF_DROP_OLDEST :
+                                                     RINGBUF_DROP_NEWEST);
         return q->mpsc != NULL;
     }
 
-    q->zc = ringbuf_zcopy_create(s->slot_size, s->capacity, s->overwrite);
+    q->zc = ringbuf_zcopy_create(s->slot_size, s->capacity,
+                                 s->overwrite ? RINGBUF_DROP_OLDEST :
+                                                RINGBUF_DROP_NEWEST);
     if (!q->zc)
         return false;
     if (s->variant != VARIANT_ZCOPY_RAW_PUSH &&

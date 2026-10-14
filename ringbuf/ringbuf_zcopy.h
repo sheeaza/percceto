@@ -6,6 +6,8 @@
 #include <stdbool.h>
 #include <stddef.h>
 
+#include "ringbuf_common.h"
+
 /*
  * Ring buffer with a split push: reserve a slot, fill it in place, then submit
  * it. Single-producer / single-consumer by default, and multi-producer when
@@ -137,7 +139,7 @@
  * INTERNAL -- read them if it helps, but every WRITE belongs to the functions
  * here, which is where the memory ordering each field documents is actually
  * established. In particular the internal mutex is NOT the push mutex the
- * SEVERAL PRODUCERS rules ask for: it is unused in lossless mode and not even
+ * SEVERAL PRODUCERS rules ask for: it is unused in drop-newest mode and not even
  * initialized there, so supply your own. Nothing below changes behavior for a
  * caller who ignores it.
  */
@@ -147,7 +149,7 @@
  * @capacity: slot count, a power of two >= 2
  * @mask: @capacity - 1, for mapping a ticket to a slot
  * @slot_size: bytes per slot, as passed to ringbuf_zcopy_create()
- * @overwrite_on_full: the mode chosen at create time
+ * @mode: the mode chosen at create time
  * @stamp: per-slot publication state, @capacity entries, pointing into @tail
  * @dropped_count: messages evicted before they were read
  * @write_idx: next ticket to hand out; single-writer, see below
@@ -174,7 +176,7 @@ struct ringbuf_zcopy {
     size_t capacity;
     size_t mask;
     size_t slot_size;
-    bool overwrite_on_full;
+    enum ringbuf_mode mode;
 
     /* One stamp per slot: the publication state of slot i, and what replaces
      * write_idx as the readiness marker.
@@ -251,7 +253,7 @@ struct ringbuf_zcopy {
      * needs no CAS -- a plain store under this lock is already single-valued --
      * whereas ringbuf_mpsc.c needs advance_read_idx()'s store-max loop
      * precisely because it declined to serialize its producers. Unused, and
-     * not even initialized, in lossless mode.
+     * not even initialized, in drop-newest mode.
      *
      * Still atomic rather than a plain size_t, because the *_approx helpers
      * read it without locking.
@@ -293,7 +295,8 @@ struct ringbuf_rsv {
  * @slot_size: size of each slot in bytes; must be non-zero
  * @min_capacity: lower bound on the slot count, rounded up to the next
  *	power of two >= @min_capacity (minimum 2)
- * @overwrite_on_full: if true, a reserve on a full buffer evicts the oldest
+ * @mode: what a reserve does on a full buffer; see enum ringbuf_mode.
+ *	RINGBUF_BLOCK is not supported and is rejected.
  *	unread slot (counted in ringbuf_zcopy_dropped_count()) instead of
  *	failing. If false, a reserve on a full buffer fails.
  *
@@ -302,7 +305,7 @@ struct ringbuf_rsv {
  */
 struct ringbuf_zcopy *ringbuf_zcopy_create(size_t slot_size,
                                            size_t min_capacity,
-                                           bool overwrite_on_full);
+                                           enum ringbuf_mode mode);
 
 /**
  * ringbuf_zcopy_destroy - free a ring buffer
@@ -329,7 +332,7 @@ void ringbuf_zcopy_destroy(struct ringbuf_zcopy *rb);
  *
  * A false return has two causes, and neither is an error:
  *
- *   - The buffer is full of unread messages. Lossless mode only; in
+ *   - The buffer is full of unread messages. Drop-newest mode only; in
  *     overwrite mode this evicts instead, and may block briefly on the
  *     consumer rather than failing.
  *   - The slot is still held by an earlier reservation of yours that has
@@ -343,7 +346,7 @@ void ringbuf_zcopy_destroy(struct ringbuf_zcopy *rb);
  *     released -- is the correct response.
  *
  * Return: true if a slot was claimed and @rsv filled in; false if the
- * buffer is full (lossless mode) or the slot it needs is reserved but
+ * buffer is full (drop-newest mode) or the slot it needs is reserved but
  * unsubmitted (either mode).
  */
 bool ringbuf_zcopy_reserve(struct ringbuf_zcopy *rb, struct ringbuf_rsv *rsv);
@@ -385,7 +388,7 @@ void ringbuf_zcopy_submit(struct ringbuf_zcopy *rb,
  * cause of a false return from reserve() cannot arise, so in overwrite mode
  * this ALWAYS returns true.
  *
- * Return: true if the message was stored. In lossless mode, false if the
+ * Return: true if the message was stored. In drop-newest mode, false if the
  * buffer is full. In overwrite mode, always true: it evicts the oldest
  * unread slot and counts it in ringbuf_zcopy_dropped_count(), blocking
  * briefly if the consumer is mid-read of that exact slot.
@@ -435,7 +438,7 @@ size_t ringbuf_zcopy_slot_size(const struct ringbuf_zcopy *rb);
  * @rb: the buffer
  *
  * Return: the number of messages reserve() has evicted. Always 0 if the
- * buffer was created with overwrite_on_full = false.
+ * buffer was created with mode = RINGBUF_DROP_NEWEST.
  */
 size_t ringbuf_zcopy_dropped_count(const struct ringbuf_zcopy *rb);
 

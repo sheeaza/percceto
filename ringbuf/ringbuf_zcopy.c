@@ -67,7 +67,7 @@ static size_t align_up(size_t v, size_t align)
  * ringbuf_zcopy_create - allocate a ring buffer
  * @slot_size: size of each slot in bytes
  * @min_capacity: lower bound on the slot count
- * @overwrite_on_full: evict the oldest slot instead of failing on full
+ * @mode: what a reserve does on a full buffer; RINGBUF_BLOCK is rejected
  *
  * See ringbuf_zcopy.h for the caller-visible contract. One allocation covers
  * the header, the slot data and the stamps. The mutex is initialized only in
@@ -78,9 +78,11 @@ static size_t align_up(size_t v, size_t align)
  */
 struct ringbuf_zcopy *ringbuf_zcopy_create(size_t slot_size,
                                            size_t min_capacity,
-                                           bool overwrite_on_full)
+                                           enum ringbuf_mode mode)
 {
     if (slot_size == 0)
+        return NULL;
+    if (mode != RINGBUF_DROP_NEWEST && mode != RINGBUF_DROP_OLDEST)
         return NULL;
 
     size_t capacity = next_pow2(min_capacity);
@@ -117,7 +119,8 @@ struct ringbuf_zcopy *ringbuf_zcopy_create(size_t slot_size,
 
     /* Only overwrite mode has two writers to reconcile, so only it pays for
      * a mutex. ringbuf_zcopy_destroy mirrors this guard. */
-    if (overwrite_on_full && pthread_mutex_init(&rb->lock, NULL) != 0) {
+    if (mode == RINGBUF_DROP_OLDEST &&
+        pthread_mutex_init(&rb->lock, NULL) != 0) {
         free(rb);
         return NULL;
     }
@@ -125,7 +128,7 @@ struct ringbuf_zcopy *ringbuf_zcopy_create(size_t slot_size,
     rb->capacity = capacity;
     rb->mask = capacity - 1;
     rb->slot_size = slot_size;
-    rb->overwrite_on_full = overwrite_on_full;
+    rb->mode = mode;
     rb->stamp = (atomic_size_t *)(void *)(rb->tail + stamp_offset);
     atomic_init(&rb->dropped_count, (size_t)0);
     atomic_init(&rb->write_idx, (size_t)0);
@@ -152,7 +155,7 @@ void ringbuf_zcopy_destroy(struct ringbuf_zcopy *rb)
 {
     if (!rb)
         return;
-    if (rb->overwrite_on_full)
+    if (rb->mode == RINGBUF_DROP_OLDEST)
         pthread_mutex_destroy(&rb->lock);
     free(rb);
 }
@@ -189,7 +192,7 @@ void ringbuf_zcopy_destroy(struct ringbuf_zcopy *rb)
  * store to the next producer's relaxed load. Edge 2 and that one are the
  * caller's whole contribution, and neither can be supplied from in here.
  *
- * Return: true if a slot was claimed; false if the buffer is full (lossless
+ * Return: true if a slot was claimed; false if the buffer is full (drop-newest
  * mode) or the slot it needs is reserved but unsubmitted (either mode).
  */
 bool ringbuf_zcopy_reserve(struct ringbuf_zcopy *rb, struct ringbuf_rsv *rsv)
@@ -228,7 +231,7 @@ bool ringbuf_zcopy_reserve(struct ringbuf_zcopy *rb, struct ringbuf_rsv *rsv)
         }
 
         /* st == w - capacity + 1: full of an unread message. */
-        if (!rb->overwrite_on_full)
+        if (rb->mode != RINGBUF_DROP_OLDEST)
             return false; /* genuinely full */
 
         pthread_mutex_lock(&rb->lock);
@@ -330,7 +333,7 @@ void ringbuf_zcopy_submit(struct ringbuf_zcopy *rb,
  * including why this always succeeds in overwrite mode.
  *
  * Return: true if the message was stored; false only when the buffer is full
- * in lossless mode.
+ * in drop-newest mode.
  */
 bool ringbuf_zcopy_push(struct ringbuf_zcopy *rb, const void *data)
 {
@@ -351,7 +354,7 @@ bool ringbuf_zcopy_push(struct ringbuf_zcopy *rb, const void *data)
  * @r: the ticket the consumer is waiting for, i.e. the current read_idx
  *
  * The body shared by both of pop's modes, caller holding the lock in
- * overwrite mode and no lock in lossless mode. Does not touch read_idx; the
+ * overwrite mode and no lock in drop-newest mode. Does not touch read_idx; the
  * caller stores it with the ordering its mode needs.
  *
  * Return: true if a message was copied out; false if ticket @r is not
@@ -395,7 +398,7 @@ static bool take_submitted(struct ringbuf_zcopy *rb, void *data, size_t r)
  * Consumer side only, single-caller. See ringbuf_zcopy.h for the
  * caller-visible contract, including why false does not mean empty here.
  *
- * Lossless mode takes no lock; overwrite mode holds the mutex across the
+ * Drop-newest mode takes no lock; overwrite mode holds the mutex across the
  * whole operation and re-reads read_idx under it.
  *
  * Single-caller, but NOT for ringbuf_mutex.c's reason: there it is the plain
@@ -414,8 +417,8 @@ static bool take_submitted(struct ringbuf_zcopy *rb, void *data, size_t r)
  */
 bool ringbuf_zcopy_pop(struct ringbuf_zcopy *rb, void *data)
 {
-    if (!rb->overwrite_on_full) {
-        /* Lossless mode: read_idx has exactly one writer (us), and the
+    if (rb->mode != RINGBUF_DROP_OLDEST) {
+        /* Drop-newest mode: read_idx has exactly one writer (us), and the
          * producer never reads it -- fullness is the stamp's job -- so this
          * is the plain lock-free path. */
         size_t r = atomic_load_explicit(&rb->read_idx, memory_order_relaxed);
@@ -424,7 +427,7 @@ bool ringbuf_zcopy_pop(struct ringbuf_zcopy *rb, void *data)
             return false;
 
         /* Relaxed, and this is the one store where that differs from
-         * ringbuf_mutex.c's lossless pop. There the release is load-bearing:
+         * ringbuf_mutex.c's drop-newest pop. There the release is load-bearing:
          * its producer reads read_idx on the unlocked fast path to test
          * fullness, so this store is what tells it the slot is safe to
          * overwrite. Here the stamp took that job over -- the producer never
@@ -472,7 +475,7 @@ bool ringbuf_zcopy_pop(struct ringbuf_zcopy *rb, void *data)
         return false;
     }
 
-    /* Relaxed, unlike the lossless path's: in this mode the producer reads
+    /* Relaxed, unlike the drop-newest path's: in this mode the producer reads
      * and writes read_idx only under this same lock, so the unlock/lock edge
      * already orders us against it. Every non-relaxed ordering in this file
      * has an unlocked access on at least one end -- the stamp's, which submit
@@ -509,7 +512,7 @@ size_t ringbuf_zcopy_slot_size(const struct ringbuf_zcopy *rb)
  * ringbuf_zcopy_dropped_count - messages evicted before they were read
  * @rb: the buffer
  *
- * Return: the eviction count; always 0 in lossless mode.
+ * Return: the eviction count; always 0 in drop-newest mode.
  */
 size_t ringbuf_zcopy_dropped_count(const struct ringbuf_zcopy *rb)
 {

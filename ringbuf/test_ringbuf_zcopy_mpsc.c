@@ -526,7 +526,7 @@ static bool run_mp_on(struct ringbuf_zcopy *rb, void *(*producer_main)(void *),
 static bool run_mp_push_test(void)
 {
     struct ringbuf_zcopy *rb =
-        ringbuf_zcopy_create(sizeof(struct message), 4, true);
+        ringbuf_zcopy_create(sizeof(struct message), 4, RINGBUF_DROP_OLDEST);
     if (!rb) {
         fprintf(stderr, "mpsc_push: ringbuf_zcopy_create failed\n");
         return false;
@@ -547,7 +547,7 @@ static bool run_mp_push_test(void)
 static bool run_mp_parallel_fill_test(void)
 {
     struct ringbuf_zcopy *rb =
-        ringbuf_zcopy_create(sizeof(struct message), 16, false);
+        ringbuf_zcopy_create(sizeof(struct message), 16, RINGBUF_DROP_NEWEST);
     if (!rb) {
         fprintf(stderr, "mpsc_parallel_fill: ringbuf_zcopy_create failed\n");
         return false;
@@ -574,7 +574,7 @@ static bool run_mp_parallel_fill_test(void)
 static bool run_mp_parallel_fill_overwrite_test(void)
 {
     struct ringbuf_zcopy *rb =
-        ringbuf_zcopy_create(sizeof(struct message), 4, true);
+        ringbuf_zcopy_create(sizeof(struct message), 4, RINGBUF_DROP_OLDEST);
     if (!rb) {
         fprintf(stderr,
                 "mpsc_parallel_fill_overwrite: ringbuf_zcopy_create failed\n");
@@ -680,7 +680,7 @@ static void *peer_holder_main(void *arg)
 static bool run_peer_unblocks_reserve_test(void)
 {
     struct ringbuf_zcopy *rb =
-        ringbuf_zcopy_create(sizeof(struct message), 4, true);
+        ringbuf_zcopy_create(sizeof(struct message), 4, RINGBUF_DROP_OLDEST);
     if (!rb) {
         fprintf(stderr, "peer_unblocks_reserve: ringbuf_zcopy_create failed\n");
         return false;
@@ -817,7 +817,7 @@ join:
 static bool run_wrap_mp_parallel_fill_test(void)
 {
     struct ringbuf_zcopy *rb =
-        ringbuf_zcopy_create(sizeof(struct message), 4, true);
+        ringbuf_zcopy_create(sizeof(struct message), 4, RINGBUF_DROP_OLDEST);
     if (!rb) {
         fprintf(stderr,
                 "wrap_mpsc_parallel_fill: ringbuf_zcopy_create failed\n");

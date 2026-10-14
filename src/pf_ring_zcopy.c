@@ -23,7 +23,7 @@ int pf_ring_init(struct pf_ring *r, size_t want_bytes, bool overwrite)
 
     size_t slots = want_bytes / PF_PAYLOAD_BYTES;
 
-    r->rb = ringbuf_zcopy_create(PF_PAYLOAD_BYTES, slots, overwrite);
+    r->rb = ringbuf_zcopy_create(PF_PAYLOAD_BYTES, slots, overwrite ? RINGBUF_DROP_OLDEST : RINGBUF_DROP_NEWEST);
     if (!r->rb) {
         errno = ENOMEM;
         return -1;
