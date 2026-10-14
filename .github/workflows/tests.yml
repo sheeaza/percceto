@@ -77,14 +77,12 @@ jobs:
           nproc
 
       - name: Configure
-        # Warnings are errors here but not in the normal build: a local
-        # -Werror turns an unrelated toolchain quirk into a hard stop
-        # mid-task, whereas CI wants the opposite bias.
+        # Warnings are errors by default (-Werror in the root CMakeLists.txt),
+        # so nothing is passed here to set that.
         run: >
           cmake -B build
           -DCMAKE_BUILD_TYPE=RelWithDebInfo
           -DRINGBUF_BUILD_TSAN=ON
-          -DCMAKE_C_FLAGS=-Werror
 
       - name: Build
         run: cmake --build build -j
