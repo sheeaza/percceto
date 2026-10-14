@@ -1,25 +1,14 @@
 # Included from the root CMakeLists.txt, which owns project(), the build
 # type, compile_commands.json and the system include dirs for clangd.
 
-set(CMAKE_C_STANDARD 11)
-set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS OFF)
 
 option(RINGBUF_BUILD_TESTS "Build the ringbuf test binary" ON)
 option(RINGBUF_BUILD_TSAN "Also build a ThreadSanitizer test binary" OFF)
 option(RINGBUF_BUILD_BENCH "Also build the benchmark binary" OFF)
 
-find_package(Threads REQUIRED)
-
-if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
-    set(RINGBUF_WARNINGS -Wall -Wextra)
-else()
-    set(RINGBUF_WARNINGS)
-endif()
-
 add_library(ringbuf ringbuf.c ringbuf.h)
 target_include_directories(ringbuf PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-target_compile_options(ringbuf PRIVATE ${RINGBUF_WARNINGS})
 target_link_libraries(ringbuf PUBLIC Threads::Threads)
 
 # Mutex variant: same structure and same external SPSC contract, but
@@ -28,7 +17,6 @@ target_link_libraries(ringbuf PUBLIC Threads::Threads)
 # symbols, so both can be linked into one binary.
 add_library(ringbuf_mutex ringbuf_mutex.c ringbuf_mutex.h)
 target_include_directories(ringbuf_mutex PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-target_compile_options(ringbuf_mutex PRIVATE ${RINGBUF_WARNINGS})
 target_link_libraries(ringbuf_mutex PUBLIC Threads::Threads)
 
 # Multi-producer variant: lifts the single-producer restriction, which is a
@@ -38,7 +26,6 @@ target_link_libraries(ringbuf_mutex PUBLIC Threads::Threads)
 # gated on Linux.
 add_library(ringbuf_mpsc ringbuf_mpsc.c ringbuf_mpsc.h)
 target_include_directories(ringbuf_mpsc PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-target_compile_options(ringbuf_mpsc PRIVATE ${RINGBUF_WARNINGS})
 target_link_libraries(ringbuf_mpsc PUBLIC Threads::Threads)
 
 # Reserve/submit variant: ringbuf_mutex with push split in two, so the
@@ -48,7 +35,6 @@ target_link_libraries(ringbuf_mpsc PUBLIC Threads::Threads)
 # moves to a per-slot stamp. Plain C11 + POSIX, so not Linux-gated.
 add_library(ringbuf_zcopy ringbuf_zcopy.c ringbuf_zcopy.h)
 target_include_directories(ringbuf_zcopy PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-target_compile_options(ringbuf_zcopy PRIVATE ${RINGBUF_WARNINGS})
 target_link_libraries(ringbuf_zcopy PUBLIC Threads::Threads)
 
 # There is deliberately NO ringbuf_zcopy_mpsc library target. Several
@@ -74,7 +60,6 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
 
     add_library(ringbuf_vslot ringbuf_vslot.c ringbuf_vslot.h)
     target_include_directories(ringbuf_vslot PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-    target_compile_options(ringbuf_vslot PRIVATE ${RINGBUF_WARNINGS})
     target_link_libraries(ringbuf_vslot PUBLIC Threads::Threads)
 else()
     message(STATUS
@@ -83,8 +68,6 @@ else()
 endif()
 
 if(RINGBUF_BUILD_TESTS)
-    enable_testing()
-
     # Exposes ringbuf_test_seed_counters() so the test binary can exercise the
     # SIZE_MAX counter-overflow boundary. Test builds only, never shipped code.
     #
@@ -92,7 +75,6 @@ if(RINGBUF_BUILD_TESTS)
     # library sources themselves rather than linking the `ringbuf` target.
     add_executable(test_ringbuf ringbuf.c test_ringbuf.c)
     target_compile_definitions(test_ringbuf PRIVATE RINGBUF_TEST_HOOKS)
-    target_compile_options(test_ringbuf PRIVATE ${RINGBUF_WARNINGS})
     target_link_libraries(test_ringbuf PRIVATE Threads::Threads)
     add_test(NAME ringbuf COMMAND test_ringbuf)
 
@@ -100,7 +82,6 @@ if(RINGBUF_BUILD_TESTS)
     # not link the ringbuf_mutex target, or the four wrap tests vanish.
     add_executable(test_ringbuf_mutex ringbuf_mutex.c test_ringbuf_mutex.c)
     target_compile_definitions(test_ringbuf_mutex PRIVATE RINGBUF_TEST_HOOKS)
-    target_compile_options(test_ringbuf_mutex PRIVATE ${RINGBUF_WARNINGS})
     target_link_libraries(test_ringbuf_mutex PRIVATE Threads::Threads)
     add_test(NAME ringbuf_mutex COMMAND test_ringbuf_mutex)
 
@@ -108,7 +89,6 @@ if(RINGBUF_BUILD_TESTS)
     # the five counter-overflow tests vanish.
     add_executable(test_ringbuf_mpsc ringbuf_mpsc.c test_ringbuf_mpsc.c)
     target_compile_definitions(test_ringbuf_mpsc PRIVATE RINGBUF_TEST_HOOKS)
-    target_compile_options(test_ringbuf_mpsc PRIVATE ${RINGBUF_WARNINGS})
     target_link_libraries(test_ringbuf_mpsc PRIVATE Threads::Threads)
     add_test(NAME ringbuf_mpsc COMMAND test_ringbuf_mpsc)
 
@@ -116,7 +96,6 @@ if(RINGBUF_BUILD_TESTS)
     # directly, or the five counter-overflow tests vanish.
     add_executable(test_ringbuf_zcopy ringbuf_zcopy.c test_ringbuf_zcopy.c)
     target_compile_definitions(test_ringbuf_zcopy PRIVATE RINGBUF_TEST_HOOKS)
-    target_compile_options(test_ringbuf_zcopy PRIVATE ${RINGBUF_WARNINGS})
     target_link_libraries(test_ringbuf_zcopy PRIVATE Threads::Threads)
     add_test(NAME ringbuf_zcopy COMMAND test_ringbuf_zcopy)
 
@@ -130,7 +109,6 @@ if(RINGBUF_BUILD_TESTS)
         ringbuf_zcopy.c test_ringbuf_zcopy_mpsc.c)
     target_compile_definitions(test_ringbuf_zcopy_mpsc PRIVATE
         RINGBUF_TEST_HOOKS)
-    target_compile_options(test_ringbuf_zcopy_mpsc PRIVATE ${RINGBUF_WARNINGS})
     target_link_libraries(test_ringbuf_zcopy_mpsc PRIVATE Threads::Threads)
     add_test(NAME ringbuf_zcopy_mpsc COMMAND test_ringbuf_zcopy_mpsc)
 
@@ -138,7 +116,6 @@ if(RINGBUF_BUILD_TESTS)
     if(RINGBUF_HAVE_VAR)
         add_executable(test_ringbuf_vslot ringbuf_vslot.c test_ringbuf_vslot.c)
         target_compile_definitions(test_ringbuf_vslot PRIVATE RINGBUF_TEST_HOOKS)
-        target_compile_options(test_ringbuf_vslot PRIVATE ${RINGBUF_WARNINGS})
         target_link_libraries(test_ringbuf_vslot PRIVATE Threads::Threads)
         add_test(NAME ringbuf_vslot COMMAND test_ringbuf_vslot)
     endif()
@@ -155,7 +132,7 @@ if(RINGBUF_BUILD_TESTS)
         # -O1 keeps the sanitized build fast enough to run while preserving
         # readable reports; overrides whatever the build type would supply.
         target_compile_options(test_ringbuf_tsan PRIVATE
-            ${RINGBUF_WARNINGS} -O1 -g -fsanitize=thread)
+            -O1 -g -fsanitize=thread)
         target_link_options(test_ringbuf_tsan PRIVATE -fsanitize=thread)
         target_link_libraries(test_ringbuf_tsan PRIVATE Threads::Threads)
         add_test(NAME ringbuf_tsan COMMAND test_ringbuf_tsan)
@@ -167,7 +144,7 @@ if(RINGBUF_BUILD_TESTS)
         target_compile_definitions(test_ringbuf_mutex_tsan PRIVATE
             RINGBUF_TEST_HOOKS)
         target_compile_options(test_ringbuf_mutex_tsan PRIVATE
-            ${RINGBUF_WARNINGS} -O1 -g -fsanitize=thread)
+            -O1 -g -fsanitize=thread)
         target_link_options(test_ringbuf_mutex_tsan PRIVATE -fsanitize=thread)
         target_link_libraries(test_ringbuf_mutex_tsan PRIVATE
             Threads::Threads)
@@ -183,7 +160,7 @@ if(RINGBUF_BUILD_TESTS)
         target_compile_definitions(test_ringbuf_mpsc_tsan PRIVATE
             RINGBUF_TEST_HOOKS)
         target_compile_options(test_ringbuf_mpsc_tsan PRIVATE
-            ${RINGBUF_WARNINGS} -O1 -g -fsanitize=thread)
+            -O1 -g -fsanitize=thread)
         target_link_options(test_ringbuf_mpsc_tsan PRIVATE -fsanitize=thread)
         target_link_libraries(test_ringbuf_mpsc_tsan PRIVATE
             Threads::Threads)
@@ -201,7 +178,7 @@ if(RINGBUF_BUILD_TESTS)
         target_compile_definitions(test_ringbuf_zcopy_tsan PRIVATE
             RINGBUF_TEST_HOOKS)
         target_compile_options(test_ringbuf_zcopy_tsan PRIVATE
-            ${RINGBUF_WARNINGS} -O1 -g -fsanitize=thread)
+            -O1 -g -fsanitize=thread)
         target_link_options(test_ringbuf_zcopy_tsan PRIVATE -fsanitize=thread)
         target_link_libraries(test_ringbuf_zcopy_tsan PRIVATE
             Threads::Threads)
@@ -222,7 +199,7 @@ if(RINGBUF_BUILD_TESTS)
         target_compile_definitions(test_ringbuf_zcopy_mpsc_tsan PRIVATE
             RINGBUF_TEST_HOOKS)
         target_compile_options(test_ringbuf_zcopy_mpsc_tsan PRIVATE
-            ${RINGBUF_WARNINGS} -O1 -g -fsanitize=thread)
+            -O1 -g -fsanitize=thread)
         target_link_options(test_ringbuf_zcopy_mpsc_tsan PRIVATE
             -fsanitize=thread)
         target_link_libraries(test_ringbuf_zcopy_mpsc_tsan PRIVATE
@@ -243,7 +220,7 @@ if(RINGBUF_BUILD_TESTS)
             target_compile_definitions(test_ringbuf_vslot_tsan PRIVATE
                 RINGBUF_TEST_HOOKS)
             target_compile_options(test_ringbuf_vslot_tsan PRIVATE
-                ${RINGBUF_WARNINGS} -O1 -g -fsanitize=thread)
+                -O1 -g -fsanitize=thread)
             target_link_options(test_ringbuf_vslot_tsan PRIVATE
                 -fsanitize=thread)
             target_link_libraries(test_ringbuf_vslot_tsan PRIVATE
@@ -274,7 +251,7 @@ if(RINGBUF_BUILD_BENCH)
     endif()
 
     add_executable(bench_ringbuf bench_ringbuf.c ringbuf.c)
-    target_compile_options(bench_ringbuf PRIVATE ${RINGBUF_WARNINGS} -O2 -g)
+    target_compile_options(bench_ringbuf PRIVATE -O2 -g)
     target_link_libraries(bench_ringbuf PRIVATE Threads::Threads)
 
     # Head-to-head: the two real implementations against each other, with CPU
@@ -284,7 +261,7 @@ if(RINGBUF_BUILD_BENCH)
     add_executable(bench_ringbuf_vs_ringbuf_mutex
         bench_ringbuf_vs_ringbuf_mutex.c ringbuf.c ringbuf_mutex.c)
     target_compile_options(bench_ringbuf_vs_ringbuf_mutex PRIVATE
-        ${RINGBUF_WARNINGS} -O2 -g)
+        -O2 -g)
     target_link_libraries(bench_ringbuf_vs_ringbuf_mutex PRIVATE
         Threads::Threads)
 
@@ -295,7 +272,7 @@ if(RINGBUF_BUILD_BENCH)
     add_executable(bench_ringbuf_mpsc_vs_ringbuf_mutex
         bench_ringbuf_mpsc_vs_ringbuf_mutex.c ringbuf_mpsc.c ringbuf_mutex.c)
     target_compile_options(bench_ringbuf_mpsc_vs_ringbuf_mutex PRIVATE
-        ${RINGBUF_WARNINGS} -O2 -g)
+        -O2 -g)
     target_link_libraries(bench_ringbuf_mpsc_vs_ringbuf_mutex PRIVATE
         Threads::Threads)
 
@@ -309,7 +286,7 @@ if(RINGBUF_BUILD_BENCH)
     add_executable(bench_ringbuf_mpsc_vs_ringbuf_zcopy
         bench_ringbuf_mpsc_vs_ringbuf_zcopy.c ringbuf_mpsc.c ringbuf_zcopy.c)
     target_compile_options(bench_ringbuf_mpsc_vs_ringbuf_zcopy PRIVATE
-        ${RINGBUF_WARNINGS} -O2 -g)
+        -O2 -g)
     target_link_libraries(bench_ringbuf_mpsc_vs_ringbuf_zcopy PRIVATE
         Threads::Threads)
 endif()
