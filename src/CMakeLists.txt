@@ -17,10 +17,13 @@
 #   name      target suffix, empty for the default
 #   ring      the .c implementing pf_ring.h
 #   define    the selector pf_ring.h switches on, empty for the default
-#   extra     vendored sources the backend wraps
+#   extra     ringbuf library the backend wraps, empty for none
 function(pftrace_add_library name ring define extra)
   set(target pftrace${name})
-  add_library(${target} STATIC pb_writer.c pftrace.c ${ring} ${extra})
+  add_library(${target} STATIC pb_writer.c pftrace.c ${ring})
+  if(extra)
+    target_link_libraries(${target} PUBLIC ${extra})
+  endif()
 
   # include/ is PUBLIC (consumers need the API header); this directory is
   # PRIVATE, holding pf_ring.h, the backend it selects and pb_writer.h,
@@ -58,7 +61,7 @@ endfunction()
 pftrace_add_library("" pf_ring_mmap.c "" "")
 
 if(PFTRACE_BUILD_BENCH)
-  pftrace_add_library(_mpsc pf_ring_mpsc.c PF_RING_BACKEND_MPSC ringbuf_mpsc.c)
+  pftrace_add_library(_mpsc pf_ring_mpsc.c PF_RING_BACKEND_MPSC ringbuf_mpsc)
   pftrace_add_library(_zcopy pf_ring_zcopy.c PF_RING_BACKEND_ZCOPY
-                      ringbuf_zcopy.c)
+                      ringbuf_zcopy)
 endif()

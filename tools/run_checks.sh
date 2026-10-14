@@ -14,7 +14,7 @@ build=${BUILD_DIR:-build}
 cc=$(grep -m1 '^CMAKE_C_COMPILER:' "$build/CMakeCache.txt" 2>/dev/null | cut -d= -f2)
 cc=${cc:-cc}
 src=(src/pftrace.c src/pf_ring_mmap.c src/pb_writer.c)
-flags=(-std=c11 -Wall -Wextra -g -D_GNU_SOURCE -Iinclude -Isrc)
+flags=(-std=c11 -Wall -Wextra -g -D_GNU_SOURCE -Iinclude -Isrc -Iringbuf)
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
@@ -75,7 +75,7 @@ check "$([ "$n" -eq 0 ] && echo 0 || echo 1)" "library, TSan race-free"
 # libraries.
 for backend in mpsc zcopy; do
     define="PF_RING_BACKEND_$(tr '[:lower:]' '[:upper:]' <<<"$backend")"
-    bsrc=(src/pftrace.c "src/pf_ring_$backend.c" "src/ringbuf_$backend.c"
+    bsrc=(src/pftrace.c "src/pf_ring_$backend.c" "ringbuf/ringbuf_$backend.c"
           src/pb_writer.c)
 
     step "$backend backend under ASan/UBSan"
