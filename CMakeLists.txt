@@ -55,6 +55,10 @@ enable_testing()
 # RINGBUF_BUILD_TSAN; off makes configure and build faster.
 option(PFTRACE_BUILD_SANITIZED "Build ASan/UBSan and TSan variants" ON)
 
+# Ring-backend benchmarks and the per-backend tests that go with them. Off by
+# default: CI and ordinary builds skip them.
+option(PFTRACE_BUILD_BENCH "Build the ring-backend benchmarks and tests" OFF)
+
 # Each directory owns the targets built from its own sources. Build the
 # library first: everything downstream links it.
 add_subdirectory(src)
