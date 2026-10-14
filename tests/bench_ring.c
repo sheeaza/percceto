@@ -208,7 +208,6 @@ struct result {
     double ctxsw_per_k; /* voluntary + involuntary, every producer */
     uint64_t published;
     uint64_t dropped;
-    uint64_t resyncs;
     bool accounted; /* published + dropped == attempted */
 };
 
@@ -367,7 +366,6 @@ static struct result run_one(const struct scenario *s)
     r.ctxsw_per_k = (double)ctxsw / k;
     r.published = st.events;
     r.dropped = st.dropped;
-    r.resyncs = st.resyncs;
     r.accounted = st.events + st.dropped == attempted;
     return r;
 }
@@ -402,7 +400,7 @@ static void print_header(void)
  * @r: the result.
  *
  * The continuation line is printed only when there is something to say --
- * a drop, a resync, or a failed accounting invariant -- so a clean table
+ * a drop or a failed accounting invariant -- so a clean table
  * stays one line per row and anything unusual is impossible to miss.
  */
 static void print_row(const struct result *r)
@@ -412,10 +410,9 @@ static void print_row(const struct result *r)
            r->cpu_per_wall, r->drop_pct, r->ctxsw_per_k, r->finish_spread,
            r->bytes_per_event);
 
-    if (r->dropped || r->resyncs || !r->accounted) {
-        printf("  %-18s  published %" PRIu64 ", dropped %" PRIu64
-               ", resyncs %" PRIu64 "%s\n",
-               "", r->published, r->dropped, r->resyncs,
+    if (r->dropped || !r->accounted) {
+        printf("  %-18s  published %" PRIu64 ", dropped %" PRIu64 "%s\n",
+               "", r->published, r->dropped,
                r->accounted ? "" : "  !! published + dropped != attempted");
     }
 }

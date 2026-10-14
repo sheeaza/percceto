@@ -39,7 +39,7 @@ int main(void)
      * Sized so the whole run fits without wrapping: N events of
      * PF_REC_BYTES each, times the number of measured loops, with room to
      * spare. A ring that wraps mid-run would charge the loop for
-     * pf_ring_trim calls and report them as per-event cost -- which is
+     * eviction work and report it as per-event cost -- which is
      * exactly what made an earlier version of this benchmark appear to
      * show named events costing twice what they do. */
     const char *path = "bench.pftrace";

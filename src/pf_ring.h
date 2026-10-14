@@ -22,7 +22,7 @@
  * the thing being measured -- and the comparison would then be partly of
  * the dispatch mechanism rather than of the rings.
  *
- * WHAT A BACKEND MUST PROVIDE. The ten functions below, plus a definition
+ * WHAT A BACKEND MUST PROVIDE. The nine functions below, plus a definition
  * of struct pf_ring in its own header. Beyond that the contracts differ in
  * ways callers can observe, and pftrace.c is written to tolerate all of
  * them:
@@ -31,8 +31,7 @@
  *     backends refuse when the slot one lap back is reserved but not yet
  *     submitted, since a filler may still be writing those bytes. Callers
  *     must treat a null reservation as a drop in either mode.
- *   - pf_ring_trim may be a no-op, for a backend that retires each record
- *     as it evicts it. &pf_stats.resyncs is then structurally zero. *   - The producer may need a lock. ringbuf_zcopy requires the caller to
+ *   - The producer may need a lock. ringbuf_zcopy requires the caller to
  *     serialize every reserve, so that backend alone cannot honour the
  *     no-lock promise in pftrace.h. See pf_ring_zcopy.c.
  */
@@ -110,15 +109,11 @@ struct pf_rec_res {
  *      way it only ever
  *      moves forward, and pf_ring_read_commit() releases everything below
  *      it.
- * @prev: The @pos the most recent pf_ring_next() returned a record at. Recorded by the backend
- *      rather than recovered by the caller as `pos - 1`: how the cursor
- *      advances is the backend's business.
  * @end: One past the last record this walk will consider, so a walk
  *      terminates even while producers keep publishing.
  */
 struct pf_ring_reader {
     uint64_t pos;
-    uint64_t prev;
     uint64_t end;
 };
 
@@ -222,24 +217,6 @@ const uint8_t *pf_ring_next(struct pf_ring *r, struct pf_ring_reader *rd);
 void pf_ring_read_commit(struct pf_ring *r, struct pf_ring_reader *rd);
 
 /**
- * pf_ring_trim() - Drop the oldest records to keep a safety margin.
- * @r: Ring.
- * @retain_bytes: Most recent bytes worth keeping, in the same payload-byte
- *      unit pf_ring_capacity_bytes() reports, and rounded down to a whole
- *      number of records.
- *
- * For a backend whose reader starts from a position producers may have
- * lapped: without this the oldest retained record is one already
- * recycled, and a dump reads as empty. Moving the floor forward keeps a
- * margin between the newest producer and the oldest retained record, so a
- * dump is never racing a wrap.
- *
- * A no-op on a backend that retires each record as it evicts it, which
- * has no stale floor to advance.
- */
-void pf_ring_trim(struct pf_ring *r, size_t retain_bytes);
-
-/**
  * pf_ring_capacity_bytes() - Payload bytes the ring holds.
  * @r: Ring.
  *
@@ -264,13 +241,11 @@ size_t pf_ring_capacity_bytes(const struct pf_ring *r);
  *      records intentionally overwritten in snapshot mode: those are the
  *      mode working as intended, and &pf_stats.dropped is documented as
  *      meaning a gap in the output.
- * @resyncs: Times the reader lost its place and skipped ahead. Always 0
- *      on a backend whose reader cannot be lapped.
  *
  * Every pointer is required. Relaxed loads: these are counters, and no
  * caller orders anything against them.
  */
 void pf_ring_stats(const struct pf_ring *r, uint64_t *published,
-                   uint64_t *dropped, uint64_t *resyncs);
+                   uint64_t *dropped);
 
 #endif /* PF_RING_H */

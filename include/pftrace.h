@@ -81,22 +81,11 @@ struct pf_config {
  *      is too small. A library built against a slot-indexed ring backend
  *      can also drop in either mode, rarely, when a producer holds a slot
  *      long enough to exhaust another's retries.
- * @resyncs: Times the drain thread lost its place in the ring and skipped
- *      to the newest data. Only possible in %PF_MODE_SNAPSHOT, which has
- *      no backpressure: a producer can recycle a record while the reader
- *      is copying it out. Expected to be small and tolerable rather than
- *      zero -- each one costs part of the retained history, not the dump,
- *      so a snapshot still captures the window leading up to it. Growing
- *      steadily means the ring is too small for the event rate.
- *      Structurally zero on a backend whose reader copies each record out
- *      as it retires it, since nothing can then be recycled underneath
- *      it.
  */
 struct pf_stats {
     uint64_t events;
     uint64_t bytes_written;
     uint64_t dropped;
-    uint64_t resyncs;
 };
 
 /**

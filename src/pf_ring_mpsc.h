@@ -22,10 +22,6 @@
  *     nothing can lap a record the reader already holds -- but it costs a
  *     memcpy per event that an in-place reader would avoid. That trade is one of
  *     the things the benchmark measures.
- *   - trim has nothing to do. Eviction advances the library's
- *     own read index, so the snapshot window maintains itself and the
- *     reader's starting point is never a position already recycled.
- *     &pf_stats.resyncs is therefore structurally zero.
  *
  * The buffer is held by POINTER, not embedded: struct ringbuf_mpsc ends in
  * a flexible array member, and C11 6.7.2.1p3 forbids such a struct as a

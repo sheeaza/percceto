@@ -9,7 +9,7 @@
  *
  * Identical to pf_ring_mpsc.c except for the push mutex, which is the
  * whole substance of the comparison between them. Read that file first;
- * the retry policy, the reader's pop-and-count and the no-op trim
+ * the retry policy, the reader's pop-and-count
  * are the same there and documented more fully.
  */
 
@@ -123,7 +123,6 @@ void pf_ring_read_begin(struct pf_ring *r, struct pf_ring_reader *rd)
     uint64_t pub = atomic_load_explicit(&r->published, memory_order_relaxed);
     uint64_t con = atomic_load_explicit(&r->consumed, memory_order_relaxed);
     rd->pos = 0;
-    rd->prev = 0;
     rd->end = pub - con;
 }
 
@@ -144,7 +143,6 @@ const uint8_t *pf_ring_next(struct pf_ring *r, struct pf_ring_reader *rd)
         return NULL;
 
     atomic_fetch_add_explicit(&r->consumed, 1, memory_order_relaxed);
-    rd->prev = rd->pos;
     rd->pos++;
     return r->pop_buf;
 }
@@ -156,26 +154,17 @@ void pf_ring_read_commit(struct pf_ring *r, struct pf_ring_reader *rd)
     /* ringbuf_zcopy_pop frees each slot as it retires it. */
 }
 
-void pf_ring_trim(struct pf_ring *r, size_t retain_bytes)
-{
-    (void)r;
-    (void)retain_bytes;
-    /* Eviction advances the library's own read index -- see
-     * pf_ring_mpsc.c, where the same no-op is explained in full. */
-}
-
 size_t pf_ring_capacity_bytes(const struct pf_ring *r)
 {
     return r->cap_bytes;
 }
 
 void pf_ring_stats(const struct pf_ring *r, uint64_t *published,
-                   uint64_t *dropped, uint64_t *resyncs)
+                   uint64_t *dropped)
 {
     /* Casting away const to read atomics: these are counters, and reading
      * them does not modify the ring in any observable way. */
     struct pf_ring *m = (struct pf_ring *)r;
     *published = atomic_load_explicit(&m->published, memory_order_relaxed);
     *dropped = atomic_load_explicit(&m->dropped, memory_order_relaxed);
-    *resyncs = 0;
 }

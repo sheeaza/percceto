@@ -36,7 +36,7 @@
  *
  * Otherwise identical in shape to the ringbuf_mpsc backend: fixed slots,
  * a reserve that can fail in either mode, a reader that copies out, and
- * self-maintaining eviction that leaves trim with nothing to do. Read pf_ring_mpsc.h for the reasoning on all four; only the
+ * self-maintaining eviction. Read pf_ring_mpsc.h for the reasoning on all four; only the
  * synchronization differs.
  *
  * The buffer is held by POINTER, not embedded: struct ringbuf_zcopy ends

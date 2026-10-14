@@ -106,23 +106,11 @@ static void test_snapshot_window(void)
 
     struct pf_stats s;
     pf_trace_stats(t, &s);
-    printf("  events=%" PRIu64 " written=%" PRIu64 " dropped=%" PRIu64
-           " resyncs=%" PRIu64 "\n",
-           s.events, s.bytes_written, s.dropped, s.resyncs);
+    printf("  events=%" PRIu64 " written=%" PRIu64 " dropped=%" PRIu64 "\n",
+           s.events, s.bytes_written, s.dropped);
 
     CHECK(s.dropped == 0, "snapshot mode never drops (it overwrites)");
     CHECK(s.events == EVENTS * 2 + 2, "every event was published");
-
-    /* resyncs is reported, not asserted to be zero. A resync means a
-     * producer recycled the oldest record while the trim walk was reading
-     * it, which snapshot mode explicitly permits -- there is no
-     * backpressure, and record lengths are only discoverable forwards, so
-     * the walk has to start from the one record most likely to be
-     * overwritten. The cost is a fraction of the retained history, not the
-     * dump: the window checks below hold either way, which is what actually
-     * matters to someone debugging a stall. */
-    printf("  (resyncs are tolerated here; the window checks below are what "
-           "matter)\n");
 
     /* The whole point: the file is a bounded window, not the full stream. */
     CHECK(s.bytes_written > 0, "dump produced output");
@@ -200,15 +188,14 @@ static void test_continuous_gapless(void)
     pf_trace_stats(t, &s);
     uint64_t expected = (uint64_t)(EVENTS / 4) * 4 * 3; /* begin+counter+end */
     printf("  events=%" PRIu64 " (attempted %" PRIu64 ") written=%" PRIu64
-           " dropped=%" PRIu64 " (%.0f%%) resyncs=%" PRIu64 "\n",
+           " dropped=%" PRIu64 " (%.0f%%)\n",
            s.events, expected, s.bytes_written, s.dropped,
-           100.0 * (double)s.dropped / (double)expected, s.resyncs);
+           100.0 * (double)s.dropped / (double)expected);
 
     CHECK(s.events + s.dropped == expected,
           "every attempted event is either published or counted dropped: "
           "%" PRIu64 " + %" PRIu64 " != %" PRIu64,
           s.events, s.dropped, expected);
-    CHECK(s.resyncs == 0, "continuous mode never resyncs");
     /* The file must be far larger than the ring: proof it drained
      * repeatedly rather than holding a single window. */
     CHECK(s.bytes_written > cfg.ring_bytes,
@@ -263,8 +250,8 @@ static void test_continuous_paced(void)
     pf_trace_stats(t, &s);
     uint64_t expected = (uint64_t)rounds * 4;
     printf("  events=%" PRIu64 " (attempted %" PRIu64 ") written=%" PRIu64
-           " dropped=%" PRIu64 " resyncs=%" PRIu64 "\n",
-           s.events, expected, s.bytes_written, s.dropped, s.resyncs);
+           " dropped=%" PRIu64 "\n",
+           s.events, expected, s.bytes_written, s.dropped);
 
     CHECK(s.dropped == 0,
           "a realistic event rate must not drop anything (%" PRIu64 " lost)",

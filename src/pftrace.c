@@ -145,18 +145,6 @@ _Static_assert(offsetof(struct pf_rec, flags) == 28, "no padding before flags");
  * many packets instead of one syscall per event. */
 #define PF_OUT_FLUSH_THRESHOLD (128u * 1024u)
 
-/* Snapshot mode keeps this fraction of the ring as history, trimming the
- * rest. The remainder is headroom: the drain thread walks @tail forward so
- * the retained window stays bounded, and leaving a margin means the walk
- * covers a worthwhile span each time instead of reclaiming the handful of
- * bytes just produced and being re-triggered by the next event.
- *
- * Correctness does not depend on this running often enough. pf_ring_reserve
- * keeps @tail on a recoverable boundary itself, as part of the same atomic
- * step that moves @head; this only controls how much history a dump holds. */
-#define PF_SNAPSHOT_RETAIN_NUM 3
-#define PF_SNAPSHOT_RETAIN_DEN 4
-
 /* --- Interning table --------------------------------------------------
  * Fixed-capacity open-addressing hash table (name -> iid). Owned
  * exclusively by whichever thread is draining, serialized by
@@ -260,8 +248,6 @@ struct pf_trace {
     /* Continuous mode: ring occupancy at which a producer wakes the drain
      * thread, from cfg.watermark_pct. */
     size_t watermark_bytes;
-    /* Snapshot mode: how much history the drain thread's trim keeps. */
-    size_t retain_bytes;
 
     /* Serializes drains: a caller's pf_trace_dump() against the drain
      * thread, and against another caller's. Also covers the intern
@@ -608,10 +594,7 @@ static void *drain_thread_fn(void *arg)
             pthread_mutex_lock(&t->out_lock);
             (void)drain_locked(t); /* errno surfaces via pf_trace_dump */
             pthread_mutex_unlock(&t->out_lock);
-        } else {
-            pf_ring_trim(&t->ring, t->retain_bytes);
         }
-
         if (stopping)
             break;
     }
@@ -623,9 +606,8 @@ static void *drain_thread_fn(void *arg)
  * Continuous mode only. Snapshot mode needs no wake for correctness:
  * pf_ring_reserve keeps @tail on a recoverable boundary itself, as part of
  * the same atomic step that moves @head, so there is no window for a
- * producer to slip past a decision made out here. Its drain thread still
- * runs on the interval timer to keep the retained window from growing to
- * the whole ring, but nothing on the hot path has to prompt it.
+ * producer to slip past a decision made out here. Nothing on the hot path
+ * has to prompt it.
  *
  * The exchange on wake_pending means a burst of events past the watermark
  * costs one futex between drains, not one per event. */
@@ -824,7 +806,6 @@ struct pf_trace *pf_trace_open(const struct pf_config *cfg)
      * fraction of the ring than it claims to be. */
     size_t cap = pf_ring_capacity_bytes(&t->ring);
     t->watermark_bytes = cap / 100u * t->cfg.watermark_pct;
-    t->retain_bytes = cap / PF_SNAPSHOT_RETAIN_DEN * PF_SNAPSHOT_RETAIN_NUM;
 
     /* O_APPEND so every write lands at the end, which is what lets a
      * continuous trace stay readable while it is still being written. */
@@ -900,7 +881,7 @@ void pf_trace_stats(const struct pf_trace *t, struct pf_stats *out)
     /* Casting away const to read atomics: these are counters, and
      * reading them does not modify the trace in any observable way. */
     struct pf_trace *m = (struct pf_trace *)t;
-    pf_ring_stats(&m->ring, &out->events, &out->dropped, &out->resyncs);
+    pf_ring_stats(&m->ring, &out->events, &out->dropped);
     out->bytes_written =
         atomic_load_explicit(&m->bytes_written, memory_order_relaxed);
 }
