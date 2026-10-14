@@ -76,6 +76,19 @@ jobs:
           uname -m
           nproc
 
+      - name: Install perfetto for the trace checks
+        # tools/CMakeLists.txt adds the verify_trace tests only when
+        # `import perfetto` succeeds, and it checks at configure time, so this
+        # must run before Configure. Installed into a venv and put first on
+        # PATH, since Ubuntu's system Python refuses global pip installs
+        # (PEP 668). The import is checked here so a broken install fails the
+        # job rather than the tests being quietly skipped.
+        run: |
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install perfetto
+          "$RUNNER_TEMP/venv/bin/python" -c "import perfetto"
+          echo "$RUNNER_TEMP/venv/bin" >> "$GITHUB_PATH"
+
       - name: Configure
         # Warnings are errors by default (-Werror in the root CMakeLists.txt),
         # so nothing is passed here to set that.

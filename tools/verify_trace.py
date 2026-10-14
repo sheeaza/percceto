@@ -7,7 +7,7 @@ against Google's own generated protobuf runtime.
 
 Requires the `perfetto` Python package. Where that cannot be installed,
 tools/dump_trace.c performs the same structural checks against the raw
-wire format with no dependencies; the schema tests in tools/CMakeLists.txt run
+wire format with no dependencies; the verify_trace tests in tools/CMakeLists.txt run
 this one only when the module is importable.
 
 Checks are relative to what the file contains rather than hard-coded
@@ -31,6 +31,12 @@ def main():
         action="store_true",
         help="require slices to balance exactly; only true for a continuous "
         "trace read from its beginning, never for a snapshot window",
+    )
+    ap.add_argument(
+        "--allow-drops",
+        action="store_true",
+        help="skip the per-track balance check for a window that lost events "
+        "under load; the imbalance is still printed, and the other checks run",
     )
     args = ap.parse_args()
 
@@ -113,10 +119,12 @@ def main():
         assert begins == ends, f"slice begin/end counts must balance per track: {dict(begins)} vs {dict(ends)}"
     else:
         # A window can open mid-slice (an end whose begin was recycled) or
-        # close mid-slice, so allow a small imbalance per track.
-        for uuid in set(begins) | set(ends):
-            delta = abs(begins[uuid] - ends[uuid])
-            assert delta <= 2, f"track {uuid} imbalance of {delta} is too large for a window"
+        # close mid-slice, so allow a small imbalance per track. Dropped
+        # events can leave more than that, so --allow-drops skips the check.
+        if not args.allow_drops:
+            for uuid in set(begins) | set(ends):
+                delta = abs(begins[uuid] - ends[uuid])
+                assert delta <= 2, f"track {uuid} imbalance of {delta} is too large for a window"
         print(f"slice imbalance (expected for a window): {total_begins - total_ends}")
 
     # Interning must actually deduplicate: far more slice events than
