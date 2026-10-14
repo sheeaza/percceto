@@ -41,7 +41,7 @@ find_package(Threads REQUIRED)
 # are now declared in subdirectories. Without this CMake mirrors the source
 # tree (build/tests/test_stress, build/tools/dump_trace), which splits the
 # build files -- the point of the subdirectories -- but also moves every
-# binary, breaking existing invocations and tools/run_checks.sh for no gain.
+# binary, breaking existing invocations for no gain.
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
@@ -49,6 +49,11 @@ set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 # Must precede add_subdirectory(tests), or the add_test() calls there have
 # no test harness to register against.
 enable_testing()
+
+# Sanitized builds of the library and its stress tests, ASan/UBSan and TSan
+# each, named with an _asan or _tsan suffix. On by default, like
+# RINGBUF_BUILD_TSAN; off makes configure and build faster.
+option(PFTRACE_BUILD_SANITIZED "Build ASan/UBSan and TSan variants" ON)
 
 # Each directory owns the targets built from its own sources. Build the
 # library first: everything downstream links it.

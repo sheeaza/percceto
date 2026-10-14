@@ -66,3 +66,48 @@ if(PFTRACE_BUILD_BENCH)
   pftrace_add_library(_zcopy pf_ring_zcopy.c PF_RING_BACKEND_ZCOPY
                       ringbuf_zcopy)
 endif()
+
+# Sanitized copies of the library, one per backend and sanitizer, for the
+# stress tests in tests/ to link. Unlike the bench variants these change
+# what gets compiled, so the whole library is instrumented -- including the
+# ringbuf source each ring wraps, compiled in directly rather than linked,
+# so its own accesses are checked too.
+#
+# The flags are PUBLIC, so a test linking the library is instrumented and
+# links the sanitizer runtime with no further setup.
+#
+#   name      target suffix, e.g. _mpsc_asan
+#   ring      the .c implementing pf_ring.h
+#   ringbuf   the ringbuf .c that ring wraps
+#   define    the selector pf_ring.h switches on, empty for the default
+#   sanitizer the -fsanitize= value
+function(pftrace_add_sanitized name ring ringbuf define sanitizer)
+  set(target pftrace${name})
+  add_library(${target} STATIC pb_writer.c pftrace.c ${ring} ${ringbuf})
+  target_include_directories(${target}
+    PUBLIC ${PROJECT_SOURCE_DIR}/include
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${PROJECT_SOURCE_DIR}/ringbuf
+  )
+  target_link_libraries(${target} PUBLIC Threads::Threads)
+  target_compile_definitions(${target} PRIVATE _DEFAULT_SOURCE)
+  if(define)
+    target_compile_definitions(${target} PUBLIC ${define})
+  endif()
+
+  # -O1 keeps reports readable. -fno-sanitize-recover makes UBSan abort on
+  # its first report instead of printing it and carrying on.
+  target_compile_options(${target} PUBLIC
+    -O1 -g -fsanitize=${sanitizer} -fno-sanitize-recover=all)
+  target_link_options(${target} PUBLIC -fsanitize=${sanitizer})
+endfunction()
+
+if(PFTRACE_BUILD_SANITIZED)
+  pftrace_add_sanitized(_mpsc_asan pf_ring_mpsc.c ../ringbuf/ringbuf_mpsc.c
+                        "" address,undefined)
+  pftrace_add_sanitized(_zcopy_asan pf_ring_zcopy.c ../ringbuf/ringbuf_zcopy.c
+                        PF_RING_BACKEND_ZCOPY address,undefined)
+  pftrace_add_sanitized(_mpsc_tsan pf_ring_mpsc.c ../ringbuf/ringbuf_mpsc.c
+                        "" thread)
+  pftrace_add_sanitized(_zcopy_tsan pf_ring_zcopy.c ../ringbuf/ringbuf_zcopy.c
+                        PF_RING_BACKEND_ZCOPY thread)
+endif()

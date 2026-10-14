@@ -6,7 +6,7 @@
 # Built once per backend when the benchmarks are on: these two use the
 # public API only, so they are the correctness gate for an alternative ring
 # -- each writes its traces to its own paths, so the variants can run
-# concurrently under ctest. The traces tools/run_checks.sh validates come
+# concurrently under ctest. The traces the dump_trace tests validate come
 # from the default build's test_stress.
 add_executable(test_stress test_stress.c)
 target_link_libraries(test_stress PRIVATE pftrace Threads::Threads)
@@ -25,7 +25,10 @@ add_executable(bench bench.c)
 target_link_libraries(bench PRIVATE pftrace Threads::Threads)
 
 
-add_test(NAME stress COMMAND test_stress)
+# Writes the stress_*.pftrace files the dump_trace tests read, so it runs in
+# the build root, where they look for them.
+add_test(NAME stress COMMAND test_stress WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+set_tests_properties(stress PROPERTIES FIXTURES_SETUP stress_traces)
 add_test(NAME noalloc COMMAND test_noalloc)
 
 if(PFTRACE_BUILD_BENCH)
@@ -71,6 +74,26 @@ if(PFTRACE_BUILD_BENCH)
       PRIVATE pftrace_${target_backend} Threads::Threads
     )
     target_compile_options(bench_ring_${target_backend} PRIVATE -O2 -g)
+  endforeach()
+endif()
+
+# The stress test under each sanitizer, against each backend's sanitized
+# library. The library's PUBLIC flags instrument this file too, so the
+# sanitizer sees the test's own accesses, not only the library's.
+if(PFTRACE_BUILD_SANITIZED)
+  foreach(backend mpsc zcopy)
+    foreach(sanitizer asan tsan)
+      add_executable(test_stress_${backend}_${sanitizer} test_stress.c)
+      target_link_libraries(test_stress_${backend}_${sanitizer}
+        PRIVATE pftrace_${backend}_${sanitizer} Threads::Threads
+      )
+      target_compile_definitions(test_stress_${backend}_${sanitizer} PRIVATE
+        _GNU_SOURCE PF_TRACE_PREFIX="stress_${backend}_${sanitizer}_"
+      )
+      add_test(NAME stress_${backend}_${sanitizer}
+        COMMAND test_stress_${backend}_${sanitizer}
+      )
+    endforeach()
   endforeach()
 endif()
 

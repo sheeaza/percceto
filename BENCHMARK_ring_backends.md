@@ -66,7 +66,7 @@ measurements, not pass/fail checks — and always `-O2 -g` regardless of
 Correctness first; none of this is worth reading if the suite is red:
 
 ```bash
-bash tools/run_checks.sh     # 14 gates
+cd build && ctest
 ```
 
 ## Method

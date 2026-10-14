@@ -28,7 +28,7 @@
  * ctest without the variants overwriting one another's traces.
  *
  * The default build leaves it empty, which keeps the filenames the ones
- * tools/run_checks.sh and tools/check_schema.sh validate by name. */
+ * the dump_trace tests and tools/check_schema.sh validate by name. */
 #ifndef PF_TRACE_PREFIX
 #define PF_TRACE_PREFIX ""
 #endif

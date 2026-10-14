@@ -7,8 +7,8 @@ against Google's own generated protobuf runtime.
 
 Requires the `perfetto` Python package. Where that cannot be installed,
 tools/dump_trace.c performs the same structural checks against the raw
-wire format with no dependencies; tools/run_checks.sh runs this one only
-when the module is importable.
+wire format with no dependencies; the schema tests in tools/CMakeLists.txt run
+this one only when the module is importable.
 
 Checks are relative to what the file contains rather than hard-coded
 counts, because a ring-buffered trace's size depends on the mode: a
