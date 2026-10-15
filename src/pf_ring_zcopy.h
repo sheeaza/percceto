@@ -49,8 +49,8 @@ struct pf_ring {
 
     /* Read back from ringbuf_zcopy_capacity() at init rather than computed
      * from the requested size, which the library rounds up. Cached here so
-     * pf_ring_capacity_bytes costs no pointer hop. */
-    size_t cap_bytes;
+     * pf_ring_capacity_slots costs no pointer hop. */
+    size_t cap_slots;
 
     bool overwrite;
 

@@ -133,7 +133,7 @@ struct pf_ring_reader {
  * @want_bytes: Requested capacity for payloads, with a floor of
  *      %PF_RING_MIN_BYTES. Backends round it up -- to a power of two
  *      number of slots in all three -- so the result is a lower bound.
- *      Read the real figure back with pf_ring_capacity_bytes().
+ *      Read the real figure back with pf_ring_capacity_slots().
  * @overwrite: Overwrite unconsumed records rather than dropping new ones.
  *
  * Performs the ring's one allocation. Nothing on the hot path allocates
@@ -217,21 +217,22 @@ const uint8_t *pf_ring_next(struct pf_ring *r, struct pf_ring_reader *rd);
 void pf_ring_read_commit(struct pf_ring *r, struct pf_ring_reader *rd);
 
 /**
- * pf_ring_capacity_bytes() - Payload bytes the ring holds.
+ * pf_ring_capacity_slots() - Slots the ring holds.
  * @r: Ring.
  *
  * The rounded-up capacity, which is what pf_ring_init()'s @want_bytes was
  * a lower bound on. Callers sizing a fraction of the ring -- a watermark,
  * a retained window -- must use this rather than what they asked for.
  *
- * PAYLOAD bytes in every backend, excluding whatever each keeps for its
- * own bookkeeping, so the figure counts the same thing everywhere: the
- * same @want_bytes buys the same event count on both. The ringbuf backends
- * hold their per-slot stamps outside the slot array and so allocate this
- * plus an array of counters. *
- * Return: The capacity in bytes.
+ * Each slot is PF_PAYLOAD_BYTES, and the count excludes whatever each
+ * backend keeps for its own bookkeeping, so the figure means the same
+ * thing everywhere: the same @want_bytes buys the same slot count on every
+ * backend. The ringbuf backends hold their per-slot stamps outside the
+ * slot array and so allocate more than this.
+ *
+ * Return: The capacity in slots.
  */
-size_t pf_ring_capacity_bytes(const struct pf_ring *r);
+size_t pf_ring_capacity_slots(const struct pf_ring *r);
 
 /**
  * pf_ring_stats() - Read the ring's counters.

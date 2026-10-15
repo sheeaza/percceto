@@ -700,8 +700,8 @@ void pf_slice_end(struct pf_trace *t, uint64_t track_uuid)
 void pf_counter_set_int(struct pf_trace *t, uint64_t counter_track_uuid,
                         int64_t value)
 {
-    emit_event(t, TYPE_COUNTER, counter_track_uuid, NULL, true,
-               (uint64_t)value, false);
+    emit_event(t, TYPE_COUNTER, counter_track_uuid, NULL, true, (uint64_t)value,
+               false);
 }
 
 void pf_counter_set_double(struct pf_trace *t, uint64_t counter_track_uuid,
@@ -807,7 +807,7 @@ struct pf_trace *pf_trace_open(const struct pf_config *cfg)
      * up to a power of two, a page multiple or a whole number of slots,
      * and a watermark derived from the request would be a different
      * fraction of the ring than it claims to be. */
-    size_t slots = pf_ring_capacity_bytes(&t->ring) / PF_PAYLOAD_BYTES;
+    size_t slots = pf_ring_capacity_slots(&t->ring);
     t->watermark_slots = slots * t->cfg.watermark_pct / 100u;
 
     /* O_APPEND so every write lands at the end, which is what lets a

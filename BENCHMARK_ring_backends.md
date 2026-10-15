@@ -328,7 +328,7 @@ only one that still shows, at ~1.7× the CPU.
    under saturation, which is a load a tracer should not be under.
 
 7. **The seam was worth building regardless of the verdict.** Four accessors
-   (`capacity_bytes`, `occupancy_bytes`, `stats`, `reader_may_be_lapped`)
+   (`capacity_slots`, `occupancy_slots`, `stats`, `reader_may_be_lapped`)
    replaced every direct field read, three backends implement one interface,
    and `ctest` went from 7 tests to 11 because `test_stress` and `test_noalloc`
    use the public API only and so are a correctness gate for any ring. The cost
