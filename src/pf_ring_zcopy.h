@@ -94,24 +94,21 @@ struct pf_ring {
 };
 
 /**
- * pf_ring_occupancy_bytes() - Bytes reserved but not yet released.
+ * pf_ring_occupancy_slots() - Slots reserved but not yet released.
  * @r: Ring.
- * @need: Bytes the caller is about to reserve, included in the result so
- *      a watermark test sees the occupancy its own event will produce.
  *
  * Inline, for the reason given in pf_ring_mpsc.h: maybe_wake_drain calls
  * it on every event. Takes no lock -- it reads this wrapper's own
  * counters, not the library's indices, so it needs none.
  *
- * Return: Occupancy in bytes, counting @need.
+ * Return: Occupancy in slots.
  */
-static inline uint64_t pf_ring_occupancy_bytes(const struct pf_ring *r,
-                                               uint32_t need)
+static inline uint64_t pf_ring_occupancy_slots(const struct pf_ring *r)
 {
     struct pf_ring *m = (struct pf_ring *)r;
     uint64_t pub = atomic_load_explicit(&m->published, memory_order_relaxed);
     uint64_t con = atomic_load_explicit(&m->consumed, memory_order_relaxed);
-    return (pub - con) * PF_PAYLOAD_BYTES + need;
+    return pub - con;
 }
 
 #endif /* PF_RING_ZCOPY_H */

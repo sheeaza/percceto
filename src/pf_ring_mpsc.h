@@ -44,7 +44,7 @@ struct pf_ring {
      * maybe_wake_drain needs it per event, and deriving it from the
      * library's internals would mean reading write_idx and read_idx
      * through @rb on every event. Two counters here are cheaper and let
-     * pf_ring_occupancy_bytes inline to arithmetic on this struct.
+     * pf_ring_occupancy_slots inline to arithmetic on this struct.
      *
      * @dropped counts only reserves this backend REFUSED after exhausting
      * its retries -- never the records overwrite mode intentionally
@@ -71,10 +71,8 @@ struct pf_ring {
 };
 
 /**
- * pf_ring_occupancy_bytes() - Bytes reserved but not yet released.
+ * pf_ring_occupancy_slots() - Slots reserved but not yet released.
  * @r: Ring.
- * @need: Bytes the caller is about to reserve, included in the result so
- *      a watermark test sees the occupancy its own event will produce.
  *
  * Inline, and the only accessor that is: pftrace.c's maybe_wake_drain
  * calls it on every event, so a function call here would show up in the
@@ -85,15 +83,14 @@ struct pf_ring {
  * two monotonic counters rather than a comparison, so it stays correct
  * across the point where they wrap.
  *
- * Return: Occupancy in bytes, counting @need.
+ * Return: Occupancy in slots.
  */
-static inline uint64_t pf_ring_occupancy_bytes(const struct pf_ring *r,
-                                               uint32_t need)
+static inline uint64_t pf_ring_occupancy_slots(const struct pf_ring *r)
 {
     struct pf_ring *m = (struct pf_ring *)r;
     uint64_t pub = atomic_load_explicit(&m->published, memory_order_relaxed);
     uint64_t con = atomic_load_explicit(&m->consumed, memory_order_relaxed);
-    return (pub - con) * PF_PAYLOAD_BYTES + need;
+    return pub - con;
 }
 
 #endif /* PF_RING_MPSC_H */

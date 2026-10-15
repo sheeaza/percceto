@@ -247,9 +247,9 @@ struct pf_trace {
     struct pf_config cfg;
     struct pf_ring ring;
 
-    /* Continuous mode: ring occupancy at which a producer wakes the drain
-     * thread, from cfg.watermark_pct. */
-    size_t watermark_bytes;
+    /* Continuous mode: ring occupancy, in slots, at which a producer wakes
+     * the drain thread, from cfg.watermark_pct. */
+    size_t watermark_slots;
 
     /* Serializes drains: a caller's pf_trace_dump() against the drain
      * thread, and against another caller's. Also covers the intern
@@ -613,12 +613,13 @@ static void *drain_thread_fn(void *arg)
  *
  * The exchange on wake_pending means a burst of events past the watermark
  * costs one futex between drains, not one per event. */
-static void maybe_wake_drain(struct pf_trace *t, uint32_t need)
+static void maybe_wake_drain(struct pf_trace *t)
 {
     if (t->cfg.mode != PF_MODE_CONTINUOUS)
         return;
 
-    if (pf_ring_occupancy_bytes(&t->ring, need) < t->watermark_bytes)
+    uint64_t occupied = pf_ring_occupancy_slots(&t->ring);
+    if (occupied < t->watermark_slots)
         return;
 
     if (atomic_exchange_explicit(&t->wake_pending, 1, memory_order_acq_rel) !=
@@ -676,7 +677,7 @@ static void emit_event(struct pf_trace *t, uint32_t type, uint64_t track_uuid,
                (value_is_double ? RF_VALUE_IS_DOUBLE : 0u);
 
     pf_ring_submit(&t->ring, res);
-    maybe_wake_drain(t, PF_PAYLOAD_BYTES);
+    maybe_wake_drain(t);
 }
 
 void pf_slice_begin_impl(struct pf_trace *t, uint64_t track_uuid,
@@ -806,8 +807,8 @@ struct pf_trace *pf_trace_open(const struct pf_config *cfg)
      * up to a power of two, a page multiple or a whole number of slots,
      * and a watermark derived from the request would be a different
      * fraction of the ring than it claims to be. */
-    size_t cap = pf_ring_capacity_bytes(&t->ring);
-    t->watermark_bytes = cap / 100u * t->cfg.watermark_pct;
+    size_t slots = pf_ring_capacity_bytes(&t->ring) / PF_PAYLOAD_BYTES;
+    t->watermark_slots = slots * t->cfg.watermark_pct / 100u;
 
     /* O_APPEND so every write lands at the end, which is what lets a
      * continuous trace stay readable while it is still being written. */
