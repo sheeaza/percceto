@@ -203,8 +203,8 @@ and releases the lock:
 ```
 slot:      0 1 2 3
 stamp:     4 2 3 4
-write_idx: 5
-read_idx:  1
+write_idx:   5
+read_idx:    1
 ```
 
 ### What the stamp CAS can see
@@ -275,8 +275,8 @@ producer evicts ticket 0, claims ticket 4, and submits it:
 ```
 slot:      0 1 2 3
 stamp:     5 2 3 4
-write_idx: 5
-read_idx:  1
+write_idx:   5
+read_idx:    1
 ```
 
 Pop takes the lock, sees `stamp = 5` instead of `pos + 1 = 1`, and returns
@@ -306,8 +306,8 @@ which evicts ticket 5 from slot 1 and advances `read_idx` to 6:
 ```
 slot:      0 1 2 3
 stamp:     8 9 7 8
-write_idx: 10
-read_idx:  6
+write_idx:     10
+read_idx:      6
 ```
 
 If the consumer's store of 5 landed now, a plain store would move `read_idx`
