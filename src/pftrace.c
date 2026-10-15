@@ -114,8 +114,10 @@ struct pf_rec {
     uint32_t flags; /* see RF_* */
 };
 
-#define RF_HAS_VALUE 0x1u
-#define RF_VALUE_IS_DOUBLE 0x2u
+enum pf_rec_flag {
+    RF_HAS_VALUE = 0x1u,
+    RF_VALUE_IS_DOUBLE = 0x2u
+};
 
 /* The layout is the on-ring wire format, so pin it. The size is pinned
  * against the payload every backend carries, which is what the ring's
