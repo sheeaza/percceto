@@ -95,22 +95,44 @@ keep the logic correct across that wrap.
 
 ## Why a `seq < pos` result means genuinely full
 
-Example: capacity 4, tickets 0 to 3 all published and unread, so
-`write_idx = 4`. A producer reads `pos = 4`. Slot 0 holds `seq = 1`, which is
-less than 4, so reserve refuses. Nothing is lost: ticket 0 is still unread.
+Example: all tickets 0 to 3 are published and unread.
+
+```
+slot:      0 1 2 3
+stamp:     1 2 3 4
+write_idx: 4
+read_idx:  0
+```
+
+A producer reads `pos = 4`. Slot 0 holds `stamp = 1`, which is less than 4, so
+reserve refuses. Nothing is lost: ticket 0 is still unread.
 
 ---
 
 ## What `seq < pos` can mean
 
-Same example: `pos = 4`, slot 0 holds `seq = 1` or `seq = 0`.
+Same state as above, with `pos = 4`. Slot 0 can hold either of two values:
 
-- `seq = 1`: ticket 0 is published but not yet popped.
-- `seq = 0`: ticket 0 is claimed but not yet submitted.
+Published, not yet popped (ticket 0 is in the slot):
 
-Both refuse, and the producer does not need to tell them apart. In drop-newest
-mode reserve can refuse even when the consumer is idle, if a filler has not
-submitted.
+```
+slot:      0 1 2 3
+stamp:     1 2 3 4
+write_idx: 4
+read_idx:  0
+```
+
+Claimed, not yet submitted (ticket 0 was reserved but the filler has not
+submitted):
+
+```
+slot:      0 1 2 3
+stamp:     0 2 3 4
+write_idx: 4
+read_idx:  0
+```
+
+Both refuse. The producer does not need to tell them apart.
 
 ---
 
@@ -164,10 +186,26 @@ the ticket is left with no slot filled behind it. The consumer waits on that
 ticket forever and the ring wedges. Taking the lock on a tentative `pos` is
 safe, because the `write_idx` CAS still checks that `pos` is current.
 
-Example: capacity 4, tickets 0 to 3 published and unread, `write_idx = 4`,
-`read_idx = 0`. A producer reads `pos = 4`, slot 0 holds `seq = 1`. It takes the
-lock, swaps the stamp from `1` to `4` (ticket 0 is dropped, `dropped_count`
-goes to 1), moves `read_idx` to 1, claims ticket 4, and releases the lock.
+Example: tickets 0 to 3 are published, and a producer at `pos = 4` evicts the
+oldest.
+
+```
+slot:      0 1 2 3
+stamp:     1 2 3 4
+write_idx: 4
+read_idx:  0
+```
+
+The producer takes the lock on slot 0, swaps its stamp from `1` to `4` (ticket 0
+is dropped, `dropped_count` goes to 1), moves `read_idx` to 1, claims ticket 4,
+and releases the lock:
+
+```
+slot:      0 1 2 3
+stamp:     4 2 3 4
+write_idx: 5
+read_idx:  1
+```
 
 ### What the stamp CAS can see
 
@@ -227,10 +265,22 @@ advance_read_idx(pos + 1)
 slot_lock[idx].store(0, release)
 ```
 
-The `read_idx` re-read under the lock is needed. Example: pop reads `pos = 0`
-and waits for the lock. Meanwhile a producer evicts ticket 0, moves `read_idx`
-to 1, and refills slot 0 with ticket 4. Without the re-read, pop would take
-ticket 4's payload and count it as ticket 0.
+The consumer's stamp check already rejects a stale `pos`. Eviction always moves
+the stamp off `pos + 1`, and nothing moves it back for that lap. So the
+`read_idx` re-read under the lock is an early exit, not a requirement.
+
+Example: pop reads `pos = 0` and waits for the lock on slot 0. Meanwhile a
+producer evicts ticket 0, claims ticket 4, and submits it:
+
+```
+slot:      0 1 2 3
+stamp:     5 2 3 4
+write_idx: 5
+read_idx:  1
+```
+
+Pop takes the lock, sees `stamp = 5` instead of `pos + 1 = 1`, and returns
+false.
 
 ---
 
@@ -245,10 +295,23 @@ advance_read_idx(target):
 ```
 
 `read_idx` has two writers in drop-oldest mode: the consumer when it receives a
-message, and an evicting producer when it drops one. Both can retire the same
-message. Example: ticket 5 is evicted, and the consumer then tries to receive it
-and loses. Both try to set `read_idx = 6`. With a plain `fetch_add`, `read_idx`
-would end at 7 and skip ticket 6. The CAS loop only moves it forward, so the second
-writer does nothing.
+message, and an evicting producer when it drops one. The slot lock serializes
+two writers on the same slot, but these two write on different slots, so their
+stores can arrive out of order.
+
+Example: the consumer has received ticket 4 but not yet called
+`advance_read_idx(5)`. A producer takes ticket 8 into slot 0, then ticket 9,
+which evicts ticket 5 from slot 1 and advances `read_idx` to 6:
+
+```
+slot:      0 1 2 3
+stamp:     8 9 7 8
+write_idx: 10
+read_idx:  6
+```
+
+If the consumer's store of 5 landed now, a plain store would move `read_idx`
+back to 5, a message that was already dropped. The CAS loop only moves it
+forward, so the late store does nothing.
 
 ---
