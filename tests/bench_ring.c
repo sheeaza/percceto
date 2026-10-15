@@ -1,4 +1,4 @@
-/* The three ring backends, measured through pftrace's own hot path.
+/* The two ring backends, measured through pftrace's own hot path.
  *
  * WHAT THIS IS FOR. src/pf_ring.h selects one of two rings at compile
  * time: ringbuf_mpsc or ringbuf_zcopy. Both
@@ -72,7 +72,7 @@
 #include "pftrace.h"
 
 /* Which backend this binary was linked against. Only for labelling: the
- * code below is identical in all three, since it goes through the public
+ * code below is identical in both, since it goes through the public
  * API. Mirrors the selector pf_ring.h switches on. */
 #if defined(PF_RING_BACKEND_ZCOPY)
 #define BACKEND_NAME "ringbuf_zcopy+mu"
@@ -575,7 +575,7 @@ int main(void)
     printf("column of a row describes the same run. Consumer pinned to cpu"
            " %d, producers\n",
            CONSUMER_CPU);
-    printf("over the remaining %d. Run all three binaries and compare"
+    printf("over the remaining %d. Run both binaries and compare"
            " tables.\n",
            g_ncpu - 1);
     printf("\n");
