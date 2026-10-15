@@ -54,7 +54,7 @@ void pf_ring_destroy(struct pf_ring *r)
     r->rb = NULL;
 }
 
-struct pf_rec_res pf_ring_reserve(struct pf_ring *r)
+bool pf_ring_reserve(struct pf_ring *r, struct pf_rec_res *res)
 {
     struct ringbuf_mpsc_rsv rsv;
 
@@ -73,8 +73,9 @@ struct pf_rec_res pf_ring_reserve(struct pf_ring *r)
         if (ringbuf_mpsc_reserve(r->rb, &rsv)) {
             /* Publication is submit's job; count it there, so @published
              * never leads what a reader could see. */
-            return (struct pf_rec_res){ .rec = rsv.data,
+            *res = (struct pf_rec_res){ .rec = rsv.data,
                                         .tag = (uint64_t)rsv.ticket };
+            return true;
         }
 
         atomic_fetch_add_explicit(&r->retries, 1, memory_order_relaxed);
@@ -86,16 +87,16 @@ struct pf_rec_res pf_ring_reserve(struct pf_ring *r)
     }
 
     atomic_fetch_add_explicit(&r->dropped, 1, memory_order_relaxed);
-    return (struct pf_rec_res){ .rec = NULL };
+    return false;
 }
 
-void pf_ring_submit(struct pf_ring *r, struct pf_rec_res res)
+void pf_ring_submit(struct pf_ring *r, const struct pf_rec_res *res)
 {
     /* The ticket identifies the slot; the library's release store on its
      * stamp is what publishes the fill. Reconstructed rather than carried
      * as a struct, since pf_rec_res is two words by design. */
-    struct ringbuf_mpsc_rsv rsv = { .data = res.rec,
-                                    .ticket = (size_t)res.tag };
+    struct ringbuf_mpsc_rsv rsv = { .data = res->rec,
+                                    .ticket = (size_t)res->tag };
     ringbuf_mpsc_submit(r->rb, &rsv);
     atomic_fetch_add_explicit(&r->published, 1, memory_order_relaxed);
 }

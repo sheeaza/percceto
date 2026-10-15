@@ -82,7 +82,7 @@ _Static_assert(PF_PAYLOAD_BYTES % PF_REC_ALIGN == 0,
 
 /**
  * struct pf_rec_res - A reservation held between reserve and submit.
- * @rec: Where to write the payload, or %NULL if it was dropped.
+ * @rec: Where to write the payload.
  * @tag: Opaque to the caller; how the backend identifies the slot.
  *
  * @rec points at %PF_PAYLOAD_BYTES writable bytes, past whatever header
@@ -153,6 +153,7 @@ void pf_ring_destroy(struct pf_ring *r);
 /**
  * pf_ring_reserve() - Reserve space for one record.
  * @r: Ring.
+ * @res: Filled in on a true return; valid until submitted.
  *
  * Reserves %PF_PAYLOAD_BYTES, owned exclusively by the caller, who may
  * then fill them concurrently with other producers filling theirs. Every
@@ -164,16 +165,17 @@ void pf_ring_destroy(struct pf_ring *r);
  * backend's wrapper does so internally, so this signature holds
  * regardless.
  *
- * Return: The reservation, whose @rec is %NULL if the record was dropped.
- * A dropped reservation must not be submitted. The ringbuf backends can
- * refuse in either mode -- see the contract notes at the top of this file.
+ * Return: true if a record was reserved and @res filled in; false if the
+ * record was dropped, in which case @res is left untouched and must not be
+ * submitted. The ringbuf backends can refuse in either mode -- see the
+ * contract notes at the top of this file.
  */
-struct pf_rec_res pf_ring_reserve(struct pf_ring *r);
+bool pf_ring_reserve(struct pf_ring *r, struct pf_rec_res *res);
 
 /**
  * pf_ring_submit() - Make a filled record visible to the reader.
  * @r: Ring.
- * @res: Reservation from pf_ring_reserve(), whose @rec is not %NULL.
+ * @res: Reservation from a successful pf_ring_reserve().
  *
  * Release-stores the backend's readiness marker, so a reader that
  * acquire-loads it sees the fully written payload. Never blocks and takes
@@ -181,7 +183,7 @@ struct pf_rec_res pf_ring_reserve(struct pf_ring *r);
  * a producer refused by a peer's unsubmitted slot must be able to make
  * progress without waiting on that peer's lock.
  */
-void pf_ring_submit(struct pf_ring *r, struct pf_rec_res res);
+void pf_ring_submit(struct pf_ring *r, const struct pf_rec_res *res);
 
 /**
  * pf_ring_read_begin() - Start a walk at the oldest unconsumed record.

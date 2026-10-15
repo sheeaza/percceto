@@ -660,8 +660,8 @@ static void emit_event(struct pf_trace *t, uint32_t type, uint64_t track_uuid,
      * by timestamp. */
     uint64_t ts = now_ns();
 
-    struct pf_rec_res res = pf_ring_reserve(&t->ring);
-    if (!res.rec)
+    struct pf_rec_res res;
+    if (!pf_ring_reserve(&t->ring, &res))
         return; /* no space, or a peer mid-fill; counted as dropped */
 
     struct pf_rec *r = (struct pf_rec *)res.rec;
@@ -676,7 +676,7 @@ static void emit_event(struct pf_trace *t, uint32_t type, uint64_t track_uuid,
     r->flags = (has_value ? RF_HAS_VALUE : 0u) |
                (value_is_double ? RF_VALUE_IS_DOUBLE : 0u);
 
-    pf_ring_submit(&t->ring, res);
+    pf_ring_submit(&t->ring, &res);
     maybe_wake_drain(t);
 }
 

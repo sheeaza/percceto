@@ -56,7 +56,7 @@ void pf_ring_destroy(struct pf_ring *r)
     r->rb = NULL;
 }
 
-struct pf_rec_res pf_ring_reserve(struct pf_ring *r)
+bool pf_ring_reserve(struct pf_ring *r, struct pf_rec_res *res)
 {
     struct ringbuf_rsv rsv;
 
@@ -72,9 +72,11 @@ struct pf_rec_res pf_ring_reserve(struct pf_ring *r)
         bool got = ringbuf_zcopy_reserve(r->rb, &rsv);
         pthread_mutex_unlock(&r->push_lock);
 
-        if (got)
-            return (struct pf_rec_res){ .rec = rsv.data,
+        if (got) {
+            *res = (struct pf_rec_res){ .rec = rsv.data,
                                         .tag = (uint64_t)rsv.ticket };
+            return true;
+        }
 
         /* Retrying with the lock RELEASED, which is required rather than
          * tidy. A refusal usually means the slot one lap back is held by a
@@ -95,16 +97,16 @@ struct pf_rec_res pf_ring_reserve(struct pf_ring *r)
     }
 
     atomic_fetch_add_explicit(&r->dropped, 1, memory_order_relaxed);
-    return (struct pf_rec_res){ .rec = NULL };
+    return false;
 }
 
-void pf_ring_submit(struct pf_ring *r, struct pf_rec_res res)
+void pf_ring_submit(struct pf_ring *r, const struct pf_rec_res *res)
 {
     /* No lock, deliberately: see the retry comment in pf_ring_reserve.
      * submit touches only the slot's own stamp, so concurrent submits of
      * distinct reservations are safe, and a producer blocked on reserve
      * needs this one to complete without waiting for the mutex. */
-    struct ringbuf_rsv rsv = { .data = res.rec, .ticket = (size_t)res.tag };
+    struct ringbuf_rsv rsv = { .data = res->rec, .ticket = (size_t)res->tag };
     ringbuf_zcopy_submit(r->rb, &rsv);
     atomic_fetch_add_explicit(&r->published, 1, memory_order_relaxed);
 }
