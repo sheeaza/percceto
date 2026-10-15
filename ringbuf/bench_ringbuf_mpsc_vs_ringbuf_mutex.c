@@ -120,7 +120,11 @@
  * the external mutex by difference; using it with more than one producer
  * would be undefined behavior, not a slow result.
  */
-enum variant { VARIANT_MPSC, VARIANT_MUTEX_MU, VARIANT_MUTEX_RAW };
+enum variant {
+    VARIANT_MPSC,
+    VARIANT_MUTEX_MU,
+    VARIANT_MUTEX_RAW
+};
 
 /**
  * variant_name - printable name of an implementation

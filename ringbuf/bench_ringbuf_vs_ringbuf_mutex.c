@@ -74,7 +74,10 @@
 #define PACE_SPINS 200u
 #define PACE_BACKOFF_NS 50000u
 
-enum variant { VARIANT_LOCKFREE, VARIANT_MUTEX };
+enum variant {
+    VARIANT_LOCKFREE,
+    VARIANT_MUTEX
+};
 
 /**
  * variant_name - printable name of an implementation

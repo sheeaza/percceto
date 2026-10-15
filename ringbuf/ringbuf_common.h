@@ -10,6 +10,10 @@
  * @RINGBUF_BLOCK: a push waits until a slot is free. Unused for now: the
  *	variants' create functions reject it and return NULL.
  */
-enum ringbuf_mode { RINGBUF_DROP_NEWEST, RINGBUF_DROP_OLDEST, RINGBUF_BLOCK };
+enum ringbuf_mode {
+    RINGBUF_DROP_NEWEST,
+    RINGBUF_DROP_OLDEST,
+    RINGBUF_BLOCK
+};
 
 #endif /* RINGBUF_COMMON_H */
