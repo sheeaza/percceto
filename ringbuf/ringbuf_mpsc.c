@@ -568,7 +568,7 @@ bool ringbuf_mpsc_pop(struct ringbuf_mpsc *rb, void *data)
      * this is the classic way to get a torn message on a weak model. */
     atomic_store_explicit(&rb->stamp[idx], r + rb->capacity,
                           memory_order_release);
-    atomic_store_explicit(&rb->read_idx, r + 1, memory_order_release);
+    atomic_store_explicit(&rb->read_idx, r + 1, memory_order_relaxed);
     return true;
 }
 
