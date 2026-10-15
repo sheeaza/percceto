@@ -405,14 +405,13 @@ static void print_header(void)
  */
 static void print_row(const struct result *r)
 {
-    printf("  %-18s %9.2f %9.1f %8.2f %8.2f %8.1f %7.2f %8.1f\n",
-           BACKEND_NAME, r->events_per_sec / 1e6, r->cpu_ns_per_event,
-           r->cpu_per_wall, r->drop_pct, r->ctxsw_per_k, r->finish_spread,
-           r->bytes_per_event);
+    printf("  %-18s %9.2f %9.1f %8.2f %8.2f %8.1f %7.2f %8.1f\n", BACKEND_NAME,
+           r->events_per_sec / 1e6, r->cpu_ns_per_event, r->cpu_per_wall,
+           r->drop_pct, r->ctxsw_per_k, r->finish_spread, r->bytes_per_event);
 
     if (r->dropped || !r->accounted) {
-        printf("  %-18s  published %" PRIu64 ", dropped %" PRIu64 "%s\n",
-               "", r->published, r->dropped,
+        printf("  %-18s  published %" PRIu64 ", dropped %" PRIu64 "%s\n", "",
+               r->published, r->dropped,
                r->accounted ? "" : "  !! published + dropped != attempted");
     }
 }

@@ -56,9 +56,9 @@ static void report(const char *label, struct pf_trace *t)
 {
     struct pf_stats s;
     pf_trace_stats(t, &s);
-    printf("  %s: %llu events, %llu bytes written, %llu dropped\n",
-           label, (unsigned long long)s.events,
-           (unsigned long long)s.bytes_written, (unsigned long long)s.dropped);
+    printf("  %s: %llu events, %llu bytes written, %llu dropped\n", label,
+           (unsigned long long)s.events, (unsigned long long)s.bytes_written,
+           (unsigned long long)s.dropped);
 }
 
 /* Snapshot mode: events accumulate in RAM and are overwritten as the ring

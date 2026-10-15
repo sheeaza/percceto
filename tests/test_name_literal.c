@@ -22,7 +22,9 @@
 void probe(struct pf_trace *t, uint64_t trk)
 {
     pf_slice_begin(t, trk, "plain");
-    pf_slice_begin(t, trk, "adja" "cent");
+    pf_slice_begin(t, trk,
+                   "adja"
+                   "cent");
     pf_slice_begin(t, trk, NAME_FROM_MACRO);
     pf_instant_event(t, trk, "marker");
 }

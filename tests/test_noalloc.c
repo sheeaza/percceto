@@ -80,8 +80,7 @@ static void check_mode(const char *label, enum pf_mode mode, bool dump)
     printf("%s:\n", label);
 
     char path[64];
-    snprintf(path, sizeof(path), PF_TRACE_PREFIX "noalloc_%s.pftrace",
-             label);
+    snprintf(path, sizeof(path), PF_TRACE_PREFIX "noalloc_%s.pftrace", label);
     unlink(path);
 
     struct pf_config cfg;
