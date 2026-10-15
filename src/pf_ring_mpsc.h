@@ -45,15 +45,18 @@ struct pf_ring {
      * output, and an eviction in snapshot mode is the mode working as
      * intended. ringbuf_mpsc_dropped_count() holds the eviction tally if
      * a caller wants it; nothing in pftrace reads it. */
-    _Atomic uint64_t published;
-    _Atomic uint64_t dropped;
+    /* Each on its own cache line. published is written by every producer
+     * per event and consumed by the drain thread per record, so sharing a
+     * line makes each side invalidate the other on every event. */
+    _Alignas(64) _Atomic uint64_t published;
+    _Alignas(64) _Atomic uint64_t dropped;
     /* Written by the draining thread only, under pf_trace.out_lock. */
-    _Atomic uint64_t consumed;
+    _Alignas(64) _Atomic uint64_t consumed;
 
     /* Reserve attempts that were refused and retried. Diagnostic: the
      * figure the benchmark reports to show what the slot-indexed model
      * costs under contention. */
-    _Atomic uint64_t retries;
+    _Alignas(64) _Atomic uint64_t retries;
 
     /* Where pf_ring_next retires a record to. Owned by the draining
      * thread, which pf_trace.out_lock serializes, so one buffer suffices
