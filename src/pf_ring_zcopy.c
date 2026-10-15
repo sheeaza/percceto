@@ -40,8 +40,6 @@ int pf_ring_init(struct pf_ring *r, size_t want_bytes, bool overwrite)
         return -1;
     }
 
-    r->cap_slots = ringbuf_zcopy_capacity(r->rb);
-    r->overwrite = overwrite;
     atomic_init(&r->published, 0);
     atomic_init(&r->dropped, 0);
     atomic_init(&r->consumed, 0);
@@ -56,7 +54,6 @@ void pf_ring_destroy(struct pf_ring *r)
     pthread_mutex_destroy(&r->push_lock);
     ringbuf_zcopy_destroy(r->rb);
     r->rb = NULL;
-    r->cap_slots = 0;
 }
 
 struct pf_rec_res pf_ring_reserve(struct pf_ring *r)
@@ -150,7 +147,7 @@ void pf_ring_read_commit(struct pf_ring *r, struct pf_ring_reader *rd)
 
 size_t pf_ring_capacity_slots(const struct pf_ring *r)
 {
-    return r->cap_slots;
+    return ringbuf_zcopy_capacity(r->rb);
 }
 
 void pf_ring_stats(const struct pf_ring *r, uint64_t *published,

@@ -47,13 +47,6 @@
 struct pf_ring {
     struct ringbuf_zcopy *rb;
 
-    /* Read back from ringbuf_zcopy_capacity() at init rather than computed
-     * from the requested size, which the library rounds up. Cached here so
-     * pf_ring_capacity_slots costs no pointer hop. */
-    size_t cap_slots;
-
-    bool overwrite;
-
     /* pftrace's counters, not the library's -- see pf_ring_mpsc.h, where
      * the same three serve the same purposes. @dropped counts refused
      * reserves only, never the records overwrite mode intentionally
