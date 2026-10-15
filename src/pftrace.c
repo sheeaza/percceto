@@ -797,11 +797,11 @@ struct pf_trace *pf_trace_open(const struct pf_config *cfg)
 
     t->tracks = calloc(t->cfg.max_tracks, sizeof(*t->tracks));
     if (!t->tracks)
-        goto fail;
+        goto free_trace;
 
     if (pf_ring_init(&t->ring, t->cfg.ring_bytes,
                      t->cfg.mode == PF_MODE_SNAPSHOT) != 0)
-        goto fail;
+        goto free_tracks;
 
     /* The rounded-up capacity, not what was asked for: backends round
      * up to a power of two, a page multiple or a whole number of slots,
@@ -814,7 +814,7 @@ struct pf_trace *pf_trace_open(const struct pf_config *cfg)
      * continuous trace stay readable while it is still being written. */
     t->fd = open(t->cfg.path, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0644);
     if (t->fd < 0)
-        goto fail;
+        goto destroy_ring;
 
     pb_buf_init(&t->out);
     pb_buf_init(&t->scratch_a);
@@ -836,30 +836,29 @@ struct pf_trace *pf_trace_open(const struct pf_config *cfg)
     atomic_init(&t->wake_pending, 0);
     atomic_init(&t->bytes_written, 0);
 
-    if (pthread_create(&t->drain_thread, NULL, drain_thread_fn, t) != 0) {
-        pthread_cond_destroy(&t->drain_cv);
-        pthread_mutex_destroy(&t->drain_lock);
-        pthread_mutex_destroy(&t->track_lock);
-        pthread_mutex_destroy(&t->out_lock);
-        goto fail;
-    }
+    if (pthread_create(&t->drain_thread, NULL, drain_thread_fn, t) != 0)
+        goto destroy_sync;
     t->drain_thread_started = true;
     return t;
 
-fail: {
-    int saved = errno;
-    if (t->fd >= 0)
-        close(t->fd);
-    pb_buf_free(&t->out);
-    pb_buf_free(&t->scratch_a);
-    pb_buf_free(&t->scratch_b);
+destroy_sync:
+    pthread_cond_destroy(&t->drain_cv);
+    pthread_mutex_destroy(&t->drain_lock);
+    pthread_mutex_destroy(&t->track_lock);
+    pthread_mutex_destroy(&t->out_lock);
+    pb_buf_free(&t->scratch_entry);
     pb_buf_free(&t->scratch_c);
+    pb_buf_free(&t->scratch_b);
+    pb_buf_free(&t->scratch_a);
+    pb_buf_free(&t->out);
+    close(t->fd);
+destroy_ring:
     pf_ring_destroy(&t->ring);
+free_tracks:
     free(t->tracks);
+free_trace:
     free(t);
-    errno = saved;
     return NULL;
-}
 }
 
 int pf_trace_dump(struct pf_trace *t)
