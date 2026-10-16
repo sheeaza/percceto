@@ -495,8 +495,9 @@ static struct result run_one(unsigned producers, bool overwrite, bool locked)
 
     r.store_per_sec = msgs * 1e9 / (double)wall;
     r.recv_per_sec = (double)cons.received * 1e9 / (double)wall;
-    r.cpu_ns_per_rx = cons.received ?
-        (double)(prod_cpu + cons.cpu_ns) / (double)cons.received : 0.0;
+    r.cpu_ns_per_rx = cons.received ? (double)(prod_cpu + cons.cpu_ns) /
+                                          (double)cons.received :
+                                      0.0;
     r.cpu_per_wall = (double)(prod_cpu + cons.cpu_ns) / (double)wall;
     r.push_retries_per_k = (double)prod_retries / k;
     r.pop_retries_per_k = (double)cons.retries / k;
@@ -554,10 +555,10 @@ static void print_header(bool overwrite)
  */
 static void print_row(const char *label, const struct result *r, bool overwrite)
 {
-    printf("  %9s %9.2f %9.2f %9.1f %8.2f %9.1f %8.1f %8.2f %7.2f",
-           label, r->store_per_sec / 1e6, r->recv_per_sec / 1e6,
-           r->cpu_ns_per_rx, r->cpu_per_wall, r->push_retries_per_k,
-           r->pop_retries_per_k, r->ctxsw_per_k, r->finish_spread);
+    printf("  %9s %9.2f %9.2f %9.1f %8.2f %9.1f %8.1f %8.2f %7.2f", label,
+           r->store_per_sec / 1e6, r->recv_per_sec / 1e6, r->cpu_ns_per_rx,
+           r->cpu_per_wall, r->push_retries_per_k, r->pop_retries_per_k,
+           r->ctxsw_per_k, r->finish_spread);
     if (overwrite)
         printf(" %9.2f %10" PRIu64, r->drop_pct, r->received);
     printf("%s\n", r->accounted ? "" : "  !! received + dropped != pushed");
@@ -595,8 +596,8 @@ int main(void)
         for (size_t p = 0; p < n; p++) {
             char label[16];
             snprintf(label, sizeof label, "%u", prod_counts[p]);
-            struct result r = bench_one(prod_counts[p], overwrite,
-                                        prod_counts[p] > 1);
+            struct result r =
+                bench_one(prod_counts[p], overwrite, prod_counts[p] > 1);
             print_row(label, &r, overwrite);
         }
         if (!overwrite) {
