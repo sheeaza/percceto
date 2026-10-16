@@ -1,0 +1,53 @@
+# pre-commit hooks for local commits. The hooks call tools already on PATH
+# (no remote repos are fetched), so install the tools once per machine:
+#
+#   pipx install pre-commit
+#   pipx install pre-commit-hooks
+#   pipx install clang-format==21.1.8
+#
+# Then, per clone:
+#   pre-commit install
+#
+# Every `git commit` runs the hooks on the staged files. To run them over the
+# whole tree: `pre-commit run --all-files`.
+#
+# CI (.github/workflows/tests.yml) runs the same clang-format and typedef
+# checks, so a commit that passes here will not fail the format job.
+
+repos:
+  - repo: local
+    hooks:
+      - id: trailing-whitespace
+        name: trailing whitespace
+        entry: trailing-whitespace-fixer
+        language: system
+        types: [text]
+
+      - id: end-of-file-fixer
+        name: end of file
+        entry: end-of-file-fixer
+        language: system
+        types: [text]
+
+      - id: check-added-large-files
+        name: check added large files
+        entry: check-added-large-files
+        language: system
+
+      # Pinned to 21.1.8 via pipx so it matches the old mirror pin. Writes fixes
+      # in place (-i), and --Werror makes a remaining diff a failure.
+      - id: clang-format
+        name: clang-format
+        entry: clang-format -i --Werror
+        language: system
+        types_or: [c]
+
+      # Mirrors the struct-typedef check in the CI `format` job. It is a
+      # style rule clang-format cannot express (see ringbuf/CLAUDE.md).
+      - id: no-struct-typedef
+        name: no struct typedefs in ringbuf/
+        description: structs are never typedef'd; only stdlib _t names are used
+        entry: '^\s*typedef\s+struct|^\}\s*[A-Za-z_][A-Za-z0-9_]*_t\s*;'
+        language: pygrep
+        files: ^ringbuf/.*\.[ch]$
+        types: [text]
