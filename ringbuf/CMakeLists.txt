@@ -290,4 +290,13 @@ if(RINGBUF_BUILD_BENCH)
         -O2 -g)
     target_link_libraries(bench_ringbuf_mpsc_vs_ringbuf_zcopy PRIVATE
         Threads::Threads)
+
+    # ringbuf_zcopy+mu alone, swept by producer count from 4 past the online
+    # CPU count, at a fixed 40B slot and capacity. Only the caller-serialized
+    # arrangement is measured here; the comparison with ringbuf_mpsc is in
+    # bench_ringbuf_mpsc_vs_ringbuf_zcopy.
+    add_executable(bench_ringbuf_zcopy_sweep
+        bench_ringbuf_zcopy_sweep.c ringbuf_zcopy.c)
+    target_compile_options(bench_ringbuf_zcopy_sweep PRIVATE -O2 -g)
+    target_link_libraries(bench_ringbuf_zcopy_sweep PRIVATE Threads::Threads)
 endif()
