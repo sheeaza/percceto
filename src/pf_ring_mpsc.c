@@ -15,26 +15,27 @@
  * the rest of this file is.
  */
 
-int pf_ring_init(struct pf_ring *r, size_t want_bytes, bool overwrite)
+int pf_ring_init(struct pf_ring *r, size_t slot_size, size_t min_cap,
+                 bool overwrite)
 {
     memset(r, 0, sizeof(*r));
 
-    if (want_bytes < PF_RING_MIN_BYTES)
-        want_bytes = PF_RING_MIN_BYTES;
+    if (slot_size == 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (min_cap < PF_RING_MIN_SLOTS)
+        min_cap = PF_RING_MIN_SLOTS;
 
     /* Slots, not bytes: the library's unit. It rounds the count up to a
-     * power of two, so the capacity read back below is >= what the
-     * division asked for. */
-    size_t slots = want_bytes / PF_PAYLOAD_BYTES;
-
-    r->rb = ringbuf_mpsc_create(PF_PAYLOAD_BYTES, slots,
+     * power of two, so the capacity read back is >= what was asked for. */
+    r->rb = ringbuf_mpsc_create(slot_size, min_cap,
                                 overwrite ? RINGBUF_DROP_OLDEST :
                                             RINGBUF_DROP_NEWEST);
     if (!r->rb) {
         /* create() reports allocation failure and invalid arguments
-         * alike, without distinguishing them. slot_size is a nonzero
-         * constant and the capacity is floored well above the minimum, so
-         * what is left is the allocation. */
+         * alike, without distinguishing them. slot_size and min_cap were
+         * checked above, so what is left is the allocation. */
         errno = ENOMEM;
         return -1;
     }

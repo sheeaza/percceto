@@ -14,16 +14,19 @@
  * are the same there and documented more fully.
  */
 
-int pf_ring_init(struct pf_ring *r, size_t want_bytes, bool overwrite)
+int pf_ring_init(struct pf_ring *r, size_t slot_size, size_t min_cap,
+                 bool overwrite)
 {
     memset(r, 0, sizeof(*r));
 
-    if (want_bytes < PF_RING_MIN_BYTES)
-        want_bytes = PF_RING_MIN_BYTES;
+    if (slot_size == 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (min_cap < PF_RING_MIN_SLOTS)
+        min_cap = PF_RING_MIN_SLOTS;
 
-    size_t slots = want_bytes / PF_PAYLOAD_BYTES;
-
-    r->rb = ringbuf_zcopy_create(PF_PAYLOAD_BYTES, slots,
+    r->rb = ringbuf_zcopy_create(slot_size, min_cap,
                                  overwrite ? RINGBUF_DROP_OLDEST :
                                              RINGBUF_DROP_NEWEST);
     if (!r->rb) {

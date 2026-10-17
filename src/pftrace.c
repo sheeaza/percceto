@@ -424,7 +424,8 @@ struct pf_trace *pf_trace_open(const struct pf_config *cfg)
     if (!t->tracks)
         goto free_trace;
 
-    if (pf_ring_init(&t->ring, t->cfg.ring_bytes,
+    if (pf_ring_init(&t->ring, PF_PAYLOAD_BYTES,
+                     t->cfg.ring_bytes / PF_PAYLOAD_BYTES,
                      t->cfg.mode == PF_MODE_SNAPSHOT) != 0)
         goto free_tracks;
 

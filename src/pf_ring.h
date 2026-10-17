@@ -52,7 +52,9 @@
 _Static_assert(PF_PAYLOAD_BYTES % PF_REC_ALIGN == 0,
                "the payload keeps every field 8-byte aligned");
 
-#define PF_RING_MIN_BYTES (64u * 1024u)
+/* The smallest ring, in slots. 2048 slots is the 64 KiB floor the byte-based
+ * interface had at the 32-byte payload. */
+#define PF_RING_MIN_SLOTS 2048u
 
 /* How hard pf_ring_reserve() retries a refused claim before counting a
  * drop, and how often it yields while doing so.
@@ -130,8 +132,10 @@ struct pf_ring_reader {
 /**
  * pf_ring_init() - Create the ring.
  * @r: Ring to initialize.
- * @want_bytes: Requested capacity for payloads, with a floor of
- *      %PF_RING_MIN_BYTES. Backends round it up -- to a power of two
+ * @slot_size: Bytes per slot. Must be nonzero. pftrace passes
+ *      %PF_PAYLOAD_BYTES.
+ * @min_cap: Requested capacity in slots, with a floor of
+ *      %PF_RING_MIN_SLOTS. Backends round it up -- to a power of two
  *      number of slots in all three -- so the result is a lower bound.
  *      Read the real figure back with pf_ring_capacity_slots().
  * @overwrite: Overwrite unconsumed records rather than dropping new ones.
@@ -141,7 +145,8 @@ struct pf_ring_reader {
  *
  * Return: 0 on success, -1 with errno set on failure.
  */
-int pf_ring_init(struct pf_ring *r, size_t want_bytes, bool overwrite);
+int pf_ring_init(struct pf_ring *r, size_t slot_size, size_t min_cap,
+                 bool overwrite);
 
 /**
  * pf_ring_destroy() - Release the ring.
@@ -222,13 +227,13 @@ void pf_ring_read_commit(struct pf_ring *r, struct pf_ring_reader *rd);
  * pf_ring_capacity_slots() - Slots the ring holds.
  * @r: Ring.
  *
- * The rounded-up capacity, which is what pf_ring_init()'s @want_bytes was
+ * The rounded-up capacity, which is what pf_ring_init()'s @min_cap was
  * a lower bound on. Callers sizing a fraction of the ring -- a watermark,
  * a retained window -- must use this rather than what they asked for.
  *
  * Each slot is PF_PAYLOAD_BYTES, and the count excludes whatever each
  * backend keeps for its own bookkeeping, so the figure means the same
- * thing everywhere: the same @want_bytes buys the same slot count on every
+ * thing everywhere: the same @min_cap buys the same slot count on every
  * backend. The ringbuf backends hold their per-slot stamps outside the
  * slot array and so allocate more than this.
  *
