@@ -69,13 +69,6 @@ void intern_table_reset(struct intern_table *tab)
     tab->next_iid = 1;
 }
 
-uint64_t now_ns(void)
-{
-    struct timespec ts;
-    clock_gettime(CLOCK_BOOTTIME, &ts);
-    return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
-}
-
 /* Grow a buffer to `n` bytes of capacity up front, then empty it, so the
  * steady state never reallocates. pb_buf_reset keeps the capacity. */
 static void pb_buf_warm(struct pb_buf *b, size_t n)

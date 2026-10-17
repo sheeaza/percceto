@@ -6,6 +6,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <time.h>
 
 #include "pb_writer.h"
 #include "pf_ring.h"
@@ -202,7 +203,13 @@ struct pf_trace {
 
 /* --- Shared helpers, defined in pftrace.c ------------------------------ */
 
-uint64_t now_ns(void);
+static inline uint64_t now_ns(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_BOOTTIME, &ts);
+    return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+}
+
 int out_flush(struct pf_trace *t);
 bool intern_lookup_or_insert(struct intern_table *tab, const char *key,
                              uint64_t *iid_out, bool *is_new_out);
