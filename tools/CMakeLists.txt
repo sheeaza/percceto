@@ -77,4 +77,16 @@ if(PYTHON3 AND have_perfetto EQUAL 0)
     raw_roundtrip_continuous.converted.pftrace
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
   set_tests_properties(dump_raw_roundtrip PROPERTIES DEPENDS pfraw2pb_convert)
+
+  add_test(NAME pfraw2pb_convert_snapshot COMMAND ${PYTHON3}
+    ${PROJECT_SOURCE_DIR}/tools/pfraw2pb.py raw_roundtrip_snapshot.pfraw
+    -o raw_roundtrip_snapshot.converted.pftrace
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+  set_tests_properties(pfraw2pb_convert_snapshot PROPERTIES FIXTURES_REQUIRED raw_traces)
+
+  add_test(NAME dump_raw_roundtrip_snapshot COMMAND dump_trace
+    raw_roundtrip_snapshot.converted.pftrace
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+  set_tests_properties(dump_raw_roundtrip_snapshot PROPERTIES
+    DEPENDS pfraw2pb_convert_snapshot)
 endif()
