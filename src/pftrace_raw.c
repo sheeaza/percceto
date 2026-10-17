@@ -108,8 +108,11 @@ static void raw_queue_tracks(struct pf_trace *t)
     unsigned count = t->track_count;
     pthread_mutex_unlock(&t->track_lock);
 
-    for (unsigned i = t->tracks_emitted; i < count; i++)
-        raw_put_track(&t->raw.tracks, &t->tracks[i]);
+    for (unsigned i = 0; i < count; i++) {
+        struct track_def td;
+        if (track_emit_due(t, i, t->tracks_emitted, &td))
+            raw_put_track(&t->raw.tracks, &td);
+    }
     t->tracks_emitted = count;
 }
 

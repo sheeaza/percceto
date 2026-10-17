@@ -148,12 +148,15 @@ static int emit_track_header(struct pf_trace *t, bool restart)
     if (restart)
         intern_table_reset(&t->name_table);
 
-    for (unsigned i = first; i < count; i++) {
+    for (unsigned i = 0; i < count; i++) {
+        struct track_def td;
+        if (!track_emit_due(t, i, first, &td))
+            continue;
         /* The flag belongs on the first packet of the restarted
          * sequence; later packets in the same dump must not repeat it. */
         uint32_t flags =
             (restart && i == first) ? SEQ_INCREMENTAL_STATE_CLEARED : 0u;
-        if (emit_track(t, &t->tracks[i], flags) != 0)
+        if (emit_track(t, &td, flags) != 0)
             return -1;
     }
 

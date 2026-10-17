@@ -1,3 +1,5 @@
+#define _GNU_SOURCE
+
 #include <errno.h>
 #include <fcntl.h>
 #include <pthread.h>
@@ -331,6 +333,14 @@ void pf_counter_set_double(struct pf_trace *t, uint64_t counter_track_uuid,
 
 /* --- Tracks ------------------------------------------------------------ */
 
+static void set_track_name(struct track_def *td, const char *name)
+{
+    size_t n = strnlen(name, PF_TRACK_NAME_MAX - 1);
+    memcpy(td->name, name, n);
+    td->name[n] = '\0';
+    td->has_name = true;
+}
+
 static uint64_t track_add(struct pf_trace *t, enum track_kind kind,
                           uint64_t parent_uuid, int32_t pid, int32_t tid,
                           const char *name, enum pf_unit unit)
@@ -348,15 +358,41 @@ static uint64_t track_add(struct pf_trace *t, enum track_kind kind,
     td->pid = pid;
     td->tid = tid;
     td->unit = unit;
-    if (name) {
-        size_t n = strnlen(name, PF_TRACK_NAME_MAX - 1);
-        memcpy(td->name, name, n);
-        td->name[n] = '\0';
-        td->has_name = true;
-    }
+    if (name)
+        set_track_name(td, name);
     uint64_t uuid = td->uuid;
     pthread_mutex_unlock(&t->track_lock);
     return uuid;
+}
+
+/* Renames the track @uuid. The new name is picked up by the next drain,
+ * which re-emits the descriptor. No-op for an unknown uuid. */
+static void track_rename(struct pf_trace *t, uint64_t uuid, const char *name)
+{
+    pthread_mutex_lock(&t->track_lock);
+    for (unsigned i = 0; i < t->track_count; i++) {
+        struct track_def *td = &t->tracks[i];
+        if (td->uuid != uuid)
+            continue;
+        set_track_name(td, name);
+        td->name_version++;
+        break;
+    }
+    pthread_mutex_unlock(&t->track_lock);
+}
+
+bool track_emit_due(struct pf_trace *t, unsigned i, unsigned first,
+                    struct track_def *out)
+{
+    pthread_mutex_lock(&t->track_lock);
+    struct track_def *td = &t->tracks[i];
+    bool due = i >= first || td->name_version != td->emitted_version;
+    if (due) {
+        *out = *td;
+        td->emitted_version = td->name_version;
+    }
+    pthread_mutex_unlock(&t->track_lock);
+    return due;
 }
 
 uint64_t pf_track_process(struct pf_trace *t, int32_t pid, const char *name)
@@ -375,6 +411,99 @@ uint64_t pf_track_counter(struct pf_trace *t, uint64_t parent_uuid,
                           const char *name, enum pf_unit unit)
 {
     return track_add(t, TRACK_COUNTER, parent_uuid, 0, 0, name, unit);
+}
+
+/* --- Simple API -------------------------------------------------------
+ * The trace is the process default, set by pf_trace_open() and cleared by
+ * pf_trace_close(). It is expected to be created once by the main thread
+ * and live for the whole process, so it is never swapped while threads
+ * use it. Each thread caches the uuid of its own track in a single TLS
+ * slot. The hot path is one pointer load, one TLS read and a flag check.
+ * Syscalls (gettid, getpid) run once per thread, on first use.
+ *
+ * Renames are kept in the slot, so a name set before registration applies
+ * at registration, and one set after re-emits the descriptor. */
+
+static struct pf_trace *g_default_trace;
+
+struct thread_slot {
+    bool registered;
+    uint64_t uuid;
+    bool has_name;
+    char name[PF_TRACK_NAME_MAX];
+};
+
+static __thread struct thread_slot tl_slot;
+
+static struct pf_trace *default_trace(void)
+{
+    return g_default_trace;
+}
+
+/* Cache miss: register this thread's track on @t. Name precedence: the
+ * name set by pf_thread_name(), then the OS thread name, then "thread-<tid>". */
+static uint64_t thread_track_register(struct pf_trace *t)
+{
+    char os_name[PF_TRACK_NAME_MAX];
+    char fallback[32];
+    const char *name = tl_slot.has_name ? tl_slot.name : NULL;
+    int32_t tid = (int32_t)gettid();
+
+    if (!name &&
+        pthread_getname_np(pthread_self(), os_name, sizeof(os_name)) == 0 &&
+        os_name[0])
+        name = os_name;
+    if (!name) {
+        snprintf(fallback, sizeof(fallback), "thread-%d", tid);
+        name = fallback;
+    }
+
+    tl_slot.uuid = track_add(t, TRACK_THREAD, 0, (int32_t)getpid(), tid, name,
+                             PF_UNIT_UNSPECIFIED);
+    tl_slot.registered = true;
+    return tl_slot.uuid;
+}
+
+static uint64_t thread_track(struct pf_trace *t)
+{
+    if (tl_slot.registered)
+        return tl_slot.uuid;
+    return thread_track_register(t);
+}
+
+void pf_slice_begin_sp_impl(const char *name)
+{
+    struct pf_trace *t = default_trace();
+    if (t)
+        pf_slice_begin_impl(t, thread_track(t), name);
+}
+
+void pf_slice_end_sp(void)
+{
+    struct pf_trace *t = default_trace();
+    if (t)
+        pf_slice_end(t, thread_track(t));
+}
+
+void pf_instant_event_sp_impl(const char *name)
+{
+    struct pf_trace *t = default_trace();
+    if (t)
+        pf_instant_event_impl(t, thread_track(t), name);
+}
+
+void pf_thread_name(const char *name)
+{
+    if (!name)
+        return;
+    size_t n = strnlen(name, PF_TRACK_NAME_MAX - 1);
+    memcpy(tl_slot.name, name, n);
+    tl_slot.name[n] = '\0';
+    tl_slot.has_name = true;
+
+    struct pf_trace *t = default_trace();
+    if (t && tl_slot.registered)
+        track_rename(t, tl_slot.uuid, tl_slot.name);
 }
 
 /* --- Lifecycle --------------------------------------------------------- */
@@ -454,6 +583,7 @@ struct pf_trace *pf_trace_open(const struct pf_config *cfg)
     if (pthread_create(&t->drain_thread, NULL, drain_thread_fn, t) != 0)
         goto destroy_sync;
     t->drain_thread_started = true;
+    g_default_trace = t;
     return t;
 
 destroy_sync:
@@ -503,6 +633,11 @@ void pf_trace_close(struct pf_trace *t)
 {
     if (!t)
         return;
+
+    /* Before the drain stops, so no simple-API call reaches a trace that
+     * is being torn down. */
+    if (g_default_trace == t)
+        g_default_trace = NULL;
 
     if (t->drain_thread_started) {
         pthread_mutex_lock(&t->drain_lock);

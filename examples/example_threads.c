@@ -26,7 +26,6 @@ struct shared {
 struct worker {
     struct shared *sh;
     int id;
-    uint64_t track;
 };
 
 static void *worker_main(void *arg)
@@ -35,25 +34,22 @@ static void *worker_main(void *arg)
     struct shared *sh = w->sh;
     char name[16];
     snprintf(name, sizeof(name), "worker-%d", w->id);
-
-    /* gettid() is called on the worker itself, so the track records the
-     * tid the kernel actually assigned to this thread. */
-    w->track = pf_track_thread(sh->t, sh->proc, sh->pid, gettid(), name);
+    pf_thread_name(name);
 
     for (int i = 0; i < ROUNDS_PER_WORKER; i++) {
-        pf_slice_begin(sh->t, w->track, "job");
+        pf_slice_begin_sp("job");
 
-        pf_slice_begin(sh->t, w->track, "load");
+        pf_slice_begin_sp("load");
         usleep(300 + w->id * 100);
-        pf_slice_end(sh->t, w->track);
+        pf_slice_end_sp();
 
-        pf_slice_begin(sh->t, w->track, "process");
+        pf_slice_begin_sp("process");
         usleep(300);
         if (i % 3 == 0)
-            pf_instant_event(sh->t, w->track, "checkpoint");
-        pf_slice_end(sh->t, w->track);
+            pf_instant_event_sp("checkpoint");
+        pf_slice_end_sp();
 
-        pf_slice_end(sh->t, w->track); /* job */
+        pf_slice_end_sp(); /* job */
 
         atomic_fetch_add(&sh->jobs_done, 1);
     }

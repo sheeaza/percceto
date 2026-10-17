@@ -136,6 +136,11 @@ struct track_def {
     enum pf_unit unit;
     bool has_name;
     char name[PF_TRACK_NAME_MAX];
+    /* Bumped on every rename. A track is re-emitted when its name_version
+     * differs from emitted_version, which is how a rename reaches the
+     * output after the descriptor has already been written. */
+    uint32_t name_version;
+    uint32_t emitted_version;
 };
 
 /* --- Trace context ---------------------------------------------------- */
@@ -214,6 +219,13 @@ int out_flush(struct pf_trace *t);
 bool intern_lookup_or_insert(struct intern_table *tab, const char *key,
                              uint64_t *iid_out, bool *is_new_out);
 void intern_table_reset(struct intern_table *tab);
+
+/* Copies track @i into @out if its descriptor is due: it was registered at
+ * or after index @first, or it was renamed since it was last emitted. On
+ * return true, the copy is marked emitted. Takes track_lock, so the caller
+ * must not hold it. Caller holds out_lock. */
+bool track_emit_due(struct pf_trace *t, unsigned i, unsigned first,
+                    struct track_def *out);
 
 /* --- The two output formats ------------------------------------------- */
 

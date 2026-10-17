@@ -326,6 +326,70 @@ PF_API void pf_counter_set_int(struct pf_trace *t, uint64_t counter_track_uuid,
 PF_API void pf_counter_set_double(struct pf_trace *t,
                                   uint64_t counter_track_uuid, double value);
 
+/* --- Simple API ---------------------------------------------------------
+ *
+ * The calls below take no trace and no track. They act on the calling
+ * thread's own track, on the process default trace:
+ *
+ *   - The default is the trace pf_trace_open() returned. It is meant to be
+ *     opened once, by the main thread, and to live for the whole process.
+ *     pf_trace_close() clears it.
+ *   - A thread's track is created on its first _sp call. The library calls
+ *     gettid() and getpid() at that point and registers a thread track with
+ *     them.
+ *   - The uuid is cached in thread-local storage. Once cached, a call costs
+ *     a pointer load, a thread-local read and a flag check. No syscall.
+ *   - Track names: pf_thread_name() sets it. If the track does not exist
+ *     yet, the name applies at creation. If it does, the track is renamed
+ *     and its descriptor re-emitted under the same uuid. Without a call,
+ *     the name is the OS thread name, or "thread-<tid>".
+ *
+ * Use the explicit API (pf_track_thread() and the calls that take a track)
+ * when a thread needs to write to a trace other than the default, or when
+ * the track must be created up front.
+ */
+
+/**
+ * pf_slice_begin_sp() - Begin a slice on the calling thread's track.
+ * @name: Slice name. Must be a string literal -- see PF_NAME_LITERAL().
+ */
+#define pf_slice_begin_sp(name) pf_slice_begin_sp_impl(PF_NAME_LITERAL(name))
+
+/**
+ * pf_slice_begin_sp_impl() - pf_slice_begin_sp() without the literal check.
+ * @name: Slice name, or %NULL. Borrowed, not copied; see
+ *      pf_slice_begin_impl() for the lifetime requirement.
+ */
+PF_API void pf_slice_begin_sp_impl(const char *name);
+
+/**
+ * pf_slice_end_sp() - End the calling thread's most recently begun slice.
+ */
+PF_API void pf_slice_end_sp(void);
+
+/**
+ * pf_instant_event_sp() - Record a marker on the calling thread's track.
+ * @name: Marker name. Must be a string literal -- see PF_NAME_LITERAL().
+ */
+#define pf_instant_event_sp(name) \
+    pf_instant_event_sp_impl(PF_NAME_LITERAL(name))
+
+/**
+ * pf_instant_event_sp_impl() - pf_instant_event_sp() without the literal
+ *      check.
+ * @name: Marker name, or %NULL. Borrowed, not copied.
+ */
+PF_API void pf_instant_event_sp_impl(const char *name);
+
+/**
+ * pf_thread_name() - Name the calling thread's track.
+ * @name: Thread name. Copied, so it may be a computed string.
+ *
+ * May be called before the thread's first _sp call, or at any time after.
+ * A rename after registration is picked up by the next flush.
+ */
+PF_API void pf_thread_name(const char *name);
+
 #ifdef __cplusplus
 }
 #endif
