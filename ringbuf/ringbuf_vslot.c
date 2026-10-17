@@ -8,6 +8,7 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
+#include "ringbuf_common.h"
 #include "ringbuf_vslot.h"
 
 /* Bytes of length header in front of every message body. */
@@ -95,55 +96,6 @@ struct ringbuf_vslot {
      * read_idx fully synchronized. */
     size_t cached_write;
 };
-
-/**
- * add_checked - add two sizes, detecting overflow
- * @a: first addend
- * @b: second addend
- *
- * Return: @a + @b, or 0 on overflow. 0 is never a legitimate total at any
- * call site here, so callers treat it as failure.
- */
-static size_t add_checked(size_t a, size_t b)
-{
-    if (a > SIZE_MAX - b)
-        return 0;
-    return a + b;
-}
-
-/**
- * align_up - round up to an alignment boundary
- * @v: value to round
- * @align: alignment, which must be a power of two
- *
- * Return: @v rounded up to a multiple of @align, or 0 on overflow.
- */
-static size_t align_up(size_t v, size_t align)
-{
-    size_t sum = add_checked(v, align - 1);
-    if (sum == 0)
-        return 0;
-    return sum & ~(align - 1);
-}
-
-/**
- * next_pow2 - round up to a power of two
- * @v: value to round
- *
- * Return: the smallest power of two >= @v, or 0 if that would overflow.
- * Unlike ringbuf.c's version there is no floor of 2: callers here have
- * already raised @v to at least a page.
- */
-static size_t next_pow2(size_t v)
-{
-    size_t p = 1;
-    while (p < v) {
-        if (p > SIZE_MAX / 2)
-            return 0;
-        p <<= 1;
-    }
-    return p;
-}
 
 /**
  * record_len - total ring footprint of a message body

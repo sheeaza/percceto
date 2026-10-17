@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "ringbuf.h"
+#include "ringbuf_common.h"
 
 struct ringbuf {
     size_t capacity;
@@ -57,53 +58,6 @@ struct ringbuf {
 };
 
 /**
- * next_pow2 - round up to a power of two
- * @v: value to round
- *
- * Return: the smallest power of two >= @v, but never less than 2 -- the
- * mask-based slot indexing needs both properties.
- */
-static size_t next_pow2(size_t v)
-{
-    if (v < 2)
-        return 2;
-    size_t p = 1;
-    while (p < v)
-        p <<= 1;
-    return p;
-}
-
-/**
- * add_checked - add two sizes, detecting overflow
- * @a: first addend
- * @b: second addend
- *
- * Return: @a + @b, or 0 on overflow. 0 is never a legitimate total here
- * (the header alone is non-empty), so callers treat it as failure.
- */
-static size_t add_checked(size_t a, size_t b)
-{
-    if (a > SIZE_MAX - b)
-        return 0;
-    return a + b;
-}
-
-/**
- * align_up - round up to an alignment boundary
- * @v: value to round
- * @align: alignment, which must be a power of two
- *
- * Return: @v rounded up to a multiple of @align, or 0 on overflow.
- */
-static size_t align_up(size_t v, size_t align)
-{
-    size_t sum = add_checked(v, align - 1);
-    if (sum == 0)
-        return 0;
-    return sum & ~(align - 1);
-}
-
-/**
  * ringbuf_create - allocate a ring buffer
  * @slot_size: size of each slot in bytes
  * @min_capacity: lower bound on the slot count
@@ -122,6 +76,8 @@ struct ringbuf *ringbuf_create(size_t slot_size, size_t min_capacity,
         return NULL;
 
     size_t capacity = next_pow2(min_capacity);
+    if (capacity == 0)
+        return NULL;
 
     /* One allocation: header, then capacity*slot_size bytes of slots, then
      * the optional lock array. Every step is overflow-checked because
