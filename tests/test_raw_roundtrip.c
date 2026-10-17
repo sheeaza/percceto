@@ -12,10 +12,12 @@
  */
 
 #include <errno.h>
+#include <pthread.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/types.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -61,7 +63,7 @@ struct rev {
 };
 
 struct rtrack {
-    uint64_t uuid;
+    uint64_t uuid, parent;
     uint32_t kind, unit;
     int32_t pid, tid;
     char name[NAME_MAX_LEN + 1];
@@ -102,12 +104,18 @@ static const struct rname *find_name(const struct parsed *p, uint64_t ptr)
     return NULL;
 }
 
-static const struct rtrack *find_track(const struct parsed *p, uint64_t uuid)
+static size_t find_track_index(const struct parsed *p, uint64_t uuid)
 {
     for (size_t i = 0; i < p->ntrk; i++)
         if (p->trk[i].uuid == uuid)
-            return &p->trk[i];
-    return NULL;
+            return i;
+    return p->ntrk;
+}
+
+static const struct rtrack *find_track(const struct parsed *p, uint64_t uuid)
+{
+    size_t i = find_track_index(p, uuid);
+    return i < p->ntrk ? &p->trk[i] : NULL;
 }
 
 /* Returns 0 on a well-formed file, possibly with a torn tail, -1 on a
@@ -188,20 +196,33 @@ static int parse_raw(const char *path, struct parsed *p)
                 goto out;
             for (size_t q = 0; q < len; q += 104) {
                 const uint8_t *e = body + q;
-                uint64_t uuid = rd64(e);
+                struct rtrack nt;
+                nt.uuid = rd64(e);
+                nt.parent = rd64(e + 8);
+                nt.kind = rd32(e + 16);
+                nt.pid = (int32_t)rd32(e + 20);
+                nt.tid = (int32_t)rd32(e + 24);
+                nt.unit = rd32(e + 28);
                 uint32_t nl = rd32(e + 36);
-                if (nl > NAME_MAX_LEN || p->ntrk == MAX_TRACKS)
+                if (nl > NAME_MAX_LEN)
                     goto out;
-                if (find_track(p, uuid))
-                    goto out;
-                struct rtrack *tr = &p->trk[p->ntrk++];
-                tr->uuid = uuid;
-                tr->kind = rd32(e + 16);
-                tr->pid = (int32_t)rd32(e + 20);
-                tr->tid = (int32_t)rd32(e + 24);
-                tr->unit = rd32(e + 28);
-                memcpy(tr->name, e + 40, nl);
-                tr->name[nl] = '\0';
+                memcpy(nt.name, e + 40, nl);
+                nt.name[nl] = '\0';
+
+                size_t at = find_track_index(p, nt.uuid);
+                if (at == p->ntrk) {
+                    if (p->ntrk == MAX_TRACKS)
+                        goto out;
+                    p->trk[p->ntrk++] = nt;
+                } else {
+                    /* A rename: everything but the name must match. */
+                    const struct rtrack *have = &p->trk[at];
+                    if (have->parent != nt.parent || have->kind != nt.kind ||
+                        have->pid != nt.pid || have->tid != nt.tid ||
+                        have->unit != nt.unit)
+                        goto out;
+                    p->trk[at] = nt;
+                }
             }
         } else if (kind == CHUNK_EVENTS) {
             if (len % REC_BYTES != 0)
@@ -410,6 +431,159 @@ static void refuses_existing(const char *path)
         pf_trace_close(t);
 }
 
+/* --- Simple API -------------------------------------------------------- */
+
+#define SIMPLE_THREADS 4
+#define SIMPLE_ROUNDS 10
+
+struct simple_arg {
+    int id;
+    pid_t tid;
+};
+
+static void *simple_worker(void *arg)
+{
+    struct simple_arg *a = arg;
+    char name[16];
+    snprintf(name, sizeof(name), "worker-%d", a->id);
+    pf_thread_name(name);
+    a->tid = gettid();
+
+    for (int i = 0; i < SIMPLE_ROUNDS; i++) {
+        pf_slice_begin_sp("job");
+        pf_instant_event_sp("tick");
+        pf_slice_end_sp();
+    }
+    return NULL;
+}
+
+static const struct rtrack *find_thread_track(const struct parsed *p, pid_t tid)
+{
+    for (size_t i = 0; i < p->ntrk; i++)
+        if (p->trk[i].kind == 1 && p->trk[i].tid == (int32_t)tid)
+            return &p->trk[i];
+    return NULL;
+}
+
+/* Each thread's first _sp call registers its own track, and the name set by
+ * pf_thread_name() before that call is what the track carries. Every event
+ * a thread emits must sit on its own track and nothing else's. */
+static void simple_threads(const char *path)
+{
+    unlink(path);
+    struct pf_config cfg;
+    pf_config_init(&cfg);
+    cfg.path = path;
+    cfg.format = PF_FORMAT_RAW;
+    cfg.mode = PF_MODE_SNAPSHOT;
+
+    struct pf_trace *t = pf_trace_open(&cfg);
+    if (!t) {
+        CHECK(false, "simple threads: open failed: %s", strerror(errno));
+        return;
+    }
+
+    pthread_t th[SIMPLE_THREADS];
+    struct simple_arg args[SIMPLE_THREADS];
+    for (int i = 0; i < SIMPLE_THREADS; i++) {
+        args[i] = (struct simple_arg){ .id = i };
+        CHECK(pthread_create(&th[i], NULL, simple_worker, &args[i]) == 0,
+              "simple threads: pthread_create %d", i);
+    }
+    for (int i = 0; i < SIMPLE_THREADS; i++)
+        pthread_join(th[i], NULL);
+    pf_trace_close(t);
+
+    struct parsed p;
+    if (parse_raw(path, &p) != 0) {
+        CHECK(false, "simple threads: reader rejected the file");
+        return;
+    }
+    CHECK(p.torn_bytes == 0, "simple threads: %zu torn bytes", p.torn_bytes);
+    CHECK(p.ntrk == SIMPLE_THREADS, "simple threads: tracks %zu, want %d",
+          p.ntrk, SIMPLE_THREADS);
+
+    for (int i = 0; i < SIMPLE_THREADS; i++) {
+        char want[16];
+        snprintf(want, sizeof(want), "worker-%d", i);
+        const struct rtrack *tr = find_thread_track(&p, args[i].tid);
+        if (!tr) {
+            CHECK(false, "simple threads: no track for worker %d", i);
+            continue;
+        }
+        CHECK(strcmp(tr->name, want) == 0,
+              "simple threads: track for %s is named '%s'", want, tr->name);
+
+        size_t begins = 0, ticks = 0, ends = 0;
+        for (size_t k = 0; k < p.nev; k++) {
+            const struct rev *e = &p.ev[k];
+            if (e->track != tr->uuid)
+                continue;
+            if (e->type == TYPE_SLICE_BEGIN)
+                begins++;
+            else if (e->type == TYPE_INSTANT)
+                ticks++;
+            else if (e->type == TYPE_SLICE_END)
+                ends++;
+        }
+        CHECK(begins == SIMPLE_ROUNDS && ticks == SIMPLE_ROUNDS &&
+                  ends == SIMPLE_ROUNDS,
+              "simple threads: %s has %zu/%zu/%zu begin/tick/end, want %d each",
+              want, begins, ticks, ends, SIMPLE_ROUNDS);
+    }
+
+    free(p.ev);
+}
+
+/* A name set after the track exists must reach the file. The track is
+ * re-declared under the same uuid, so the reader must accept the file and
+ * show the new name on the track the events went to. */
+static void simple_rename(const char *path)
+{
+    unlink(path);
+    struct pf_config cfg;
+    pf_config_init(&cfg);
+    cfg.path = path;
+    cfg.format = PF_FORMAT_RAW;
+    cfg.mode = PF_MODE_CONTINUOUS;
+
+    struct pf_trace *t = pf_trace_open(&cfg);
+    if (!t) {
+        CHECK(false, "simple rename: open failed: %s", strerror(errno));
+        return;
+    }
+
+    /* The flush makes the first declaration reach the file before the
+     * rename, which is the case that needs the track re-declared. */
+    pf_slice_begin_sp("before");
+    pf_slice_end_sp();
+    CHECK(pf_trace_flush(t) == 0, "simple rename: flush failed");
+    pf_thread_name("renamed");
+    pf_slice_begin_sp("after");
+    pf_slice_end_sp();
+    pf_trace_close(t);
+
+    struct parsed p;
+    if (parse_raw(path, &p) != 0) {
+        CHECK(false, "simple rename: reader rejected the file");
+        return;
+    }
+    const struct rtrack *tr = find_thread_track(&p, gettid());
+    if (!tr) {
+        CHECK(false, "simple rename: no thread track for this thread");
+    } else {
+        CHECK(strcmp(tr->name, "renamed") == 0,
+              "simple rename: track named '%s', want 'renamed'", tr->name);
+        size_t on_track = 0;
+        for (size_t k = 0; k < p.nev; k++)
+            if (p.ev[k].track == tr->uuid)
+                on_track++;
+        CHECK(on_track == 4, "simple rename: %zu events on track, want 4",
+              on_track);
+    }
+    free(p.ev);
+}
+
 int main(void)
 {
     /* Continuous: the drain writes several event chunks, since 5000
@@ -423,6 +597,9 @@ int main(void)
 
     torn_tail("raw_roundtrip_torn.pfraw", 2000);
     refuses_existing("raw_roundtrip_continuous.pfraw");
+
+    simple_threads("raw_roundtrip_simple_threads.pfraw");
+    simple_rename("raw_roundtrip_simple_rename.pfraw");
 
     if (failures) {
         fprintf(stderr, "%d check(s) failed\n", failures);

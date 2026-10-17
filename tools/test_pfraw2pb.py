@@ -169,6 +169,27 @@ class ConvertTest(unittest.TestCase):
         _, stats, _ = convert_bytes(data)
         self.assertEqual(stats["names"], 1)
 
+    def test_track_rename_is_accepted_and_redeclared(self):
+        data = raw_file(
+            self.thread_tracks(),
+            (pb.CHUNK_TRACKS, track_entry(1, 0, pb.TRACK_THREAD, 42, 7, 0,
+                                          "renamed")),
+            (pb.CHUNK_EVENTS, event(1, 1, 0, RAW_SLICE_END)))
+        packets, stats, _ = convert_bytes(data)
+        descs = [p.track_descriptor for p in packets
+                 if p.HasField("track_descriptor")]
+        self.assertEqual([d.thread.thread_name for d in descs],
+                         ["main", "renamed"])
+        self.assertEqual(stats["tracks"], 2)
+
+    def test_track_redefinition_with_different_fields_is_rejected(self):
+        data = raw_file(
+            self.thread_tracks(),
+            (pb.CHUNK_TRACKS, track_entry(1, 0, pb.TRACK_COUNTER, 42, 7, 0,
+                                          "main")))
+        with self.assertRaisesRegex(pb.RawFormatError, "redefined"):
+            convert_bytes(data)
+
     def test_bad_magic_is_rejected(self):
         data = b"NOTRAW00" + raw_file()[8:]
         with self.assertRaisesRegex(pb.RawFormatError, "bad magic"):

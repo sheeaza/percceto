@@ -144,16 +144,20 @@ so far. A value of `0` means the event has no name. The reader decodes
 The reader may assume these rules hold. If an event references an unknown
 name pointer or track uuid, the reader reports an error.
 
-## Definitions are immutable
+## Definitions
 
-Names are immutable, and so are track descriptors. The reader keeps the
-first definition it sees for a given key:
+Names are immutable. A track's name may change, and nothing else about a
+track may.
 
 - For a name pointer, the first NAMES entry wins.
-- For a track uuid, the first TRACKS entry wins.
+- For a track uuid, the first TRACKS entry defines the track. A later TRACKS
+  entry with the same uuid renames it: the name and `has_name` are replaced
+  by the new entry's values, in file order. Its `kind`, `parent_uuid`, `pid`,
+  `tid` and `unit` must equal the first entry's. A later entry that differs
+  in any of those is reported as an error.
 
-A later duplicate with the same key is ignored if it matches the first, and
-reported as an error if it differs.
+A rename is written as a TRACKS entry, so it is covered by the same chunk
+rules as the first definition.
 
 ## Torn tails
 

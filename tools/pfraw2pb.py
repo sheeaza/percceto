@@ -57,6 +57,10 @@ TRACK_PROCESS = 0
 TRACK_THREAD = 1
 TRACK_COUNTER = 2
 
+# Fields a later TRACKS entry for the same uuid must not change; its name is
+# the only thing a rename may replace.
+TRACK_IDENTITY = ("kind", "uuid", "parent", "pid", "tid", "unit")
+
 SEQ_INCREMENTAL_STATE_CLEARED = 1
 SEQ_NEEDS_INCREMENTAL_STATE = 2
 
@@ -174,14 +178,18 @@ class Converter:
         for off in range(0, len(payload), TRACK_SIZE):
             (uuid, parent, kind, pid, tid, unit, has_name, name_len,
              raw_name) = TRACK_ENTRY.unpack_from(payload, off)
-            if uuid in self._tracks:
-                raise RawFormatError(f"track {uuid} defined twice")
             if name_len > 64:
                 raise RawFormatError("track name longer than 64 bytes")
             name = raw_name[:name_len].decode("utf-8", errors="replace")
             track = {"kind": kind, "uuid": uuid, "parent": parent, "pid": pid,
                      "tid": tid, "unit": unit, "has_name": bool(has_name),
                      "name": name}
+            prev = self._tracks.get(uuid)
+            if prev is not None:
+                # A rename: only the name may change.
+                if any(prev[k] != track[k] for k in TRACK_IDENTITY):
+                    raise RawFormatError(
+                        f"track {uuid} redefined with different fields")
             self._tracks[uuid] = track
             self._packet(batch).track_descriptor.CopyFrom(
                 self._track_descriptor(track))
