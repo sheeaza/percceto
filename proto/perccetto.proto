@@ -1,0 +1,113 @@
+// Trimmed subset of Perfetto's trace protobuf schema, holding only the
+// messages and fields pftrace emits.
+//
+// Field numbers, names and types are copied from google/perfetto on main
+// (fetched 2026-10-17). Each message says where it came from. Everything
+// omitted is left out only to keep the file small: a field we never write
+// has no effect on the others, and a trace this file produces is valid
+// Perfetto input.
+//
+// Generate src/perccetto.pb.{c,h} with (from the repo root):
+//   nanopb_generator -D src -I proto proto/perccetto.proto
+// The string callbacks and bounded arrays are configured in perccetto.options.
+
+syntax = "proto2";
+
+package perccetto;
+
+// Upstream: protos/perfetto/trace/trace.proto
+message Trace {
+  repeated TracePacket packet = 1;
+}
+
+// Upstream: protos/perfetto/trace/trace_packet.proto
+message TracePacket {
+  optional uint64 timestamp = 8;
+
+  oneof data {
+    TrackEvent track_event = 11;
+    TrackDescriptor track_descriptor = 60;
+  }
+
+  optional uint32 trusted_packet_sequence_id = 10;
+  optional InternedData interned_data = 12;
+
+  enum SequenceFlags {
+    SEQ_UNSPECIFIED = 0;
+    SEQ_INCREMENTAL_STATE_CLEARED = 1;
+    SEQ_NEEDS_INCREMENTAL_STATE = 2;
+  }
+  optional uint32 sequence_flags = 13;
+}
+
+// Upstream: protos/perfetto/trace/interned_data/interned_data.proto
+message InternedData {
+  repeated EventName event_names = 2;
+}
+
+// Upstream: protos/perfetto/trace/track_event/track_event.proto
+message TrackEvent {
+  enum Type {
+    TYPE_UNSPECIFIED = 0;
+    TYPE_SLICE_BEGIN = 1;
+    TYPE_SLICE_END = 2;
+    TYPE_INSTANT = 3;
+    TYPE_COUNTER = 4;
+  }
+
+  optional Type type = 9;
+  optional uint64 track_uuid = 11;
+
+  // Interned name reference, or inline name when the name was not interned.
+  optional uint64 name_iid = 10;
+  optional string name = 23;
+
+  oneof counter_value_field {
+    int64 counter_value = 30;
+    double double_counter_value = 44;
+  }
+}
+
+// Upstream: protos/perfetto/trace/track_event/track_event.proto (EventName)
+message EventName {
+  optional uint64 iid = 1;
+  optional string name = 2;
+}
+
+// Upstream: protos/perfetto/trace/track_event/track_descriptor.proto
+message TrackDescriptor {
+  optional uint64 uuid = 1;
+  optional uint64 parent_uuid = 5;
+
+  // Upstream puts name in a oneof with static_name and atrace_name. Only
+  // name is kept here; the wire format for it is unchanged.
+  optional string name = 2;
+
+  optional ProcessDescriptor process = 3;
+  optional ThreadDescriptor thread = 4;
+  optional CounterDescriptor counter = 8;
+}
+
+// Upstream: protos/perfetto/trace/track_event/process_descriptor.proto
+message ProcessDescriptor {
+  optional int32 pid = 1;
+  optional string process_name = 6;
+}
+
+// Upstream: protos/perfetto/trace/track_event/thread_descriptor.proto
+message ThreadDescriptor {
+  optional int32 pid = 1;
+  optional int64 tid = 2;
+  optional string thread_name = 5;
+}
+
+// Upstream: protos/perfetto/trace/track_event/counter_descriptor.proto
+message CounterDescriptor {
+  enum Unit {
+    UNIT_UNSPECIFIED = 0;
+    UNIT_TIME_NS = 1;
+    UNIT_COUNT = 2;
+    UNIT_SIZE_BYTES = 3;
+  }
+  optional Unit unit = 3;
+}

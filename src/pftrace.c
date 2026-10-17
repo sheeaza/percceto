@@ -10,63 +10,29 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "nanopb/pb_encode.h"
 #include "pb_writer.h"
+#include "perccetto.pb.h"
 #include "pf_ring.h"
 #include "pftrace.h"
 
-/* --- Confirmed Perfetto wire-format field numbers -------------------
- * Pulled directly from the compiled perfetto_trace_pb2 DESCRIPTOR (the
- * official schema), not from memory. See plan doc for the full table. */
+/* Field numbers and message layout come from perccetto.pb.h, generated from
+ * proto/perccetto.proto. That file records where each definition is taken
+ * from in Perfetto's schema.
+ *
+ * Trace.packet is the one field this file frames by hand: the trace is a
+ * stream of packets, and each is written as field 1, length-delimited. */
+#define TRACE_PACKET_TAG ((1u << 3) | 2u)
 
-/* Trace */
-#define FN_TRACE_PACKET 1
+#define SEQ_INCREMENTAL_STATE_CLEARED \
+    perccetto_TracePacket_SequenceFlags_SEQ_INCREMENTAL_STATE_CLEARED
+#define SEQ_NEEDS_INCREMENTAL_STATE \
+    perccetto_TracePacket_SequenceFlags_SEQ_NEEDS_INCREMENTAL_STATE
 
-/* TracePacket */
-#define FN_PACKET_TIMESTAMP 8
-#define FN_PACKET_TRUSTED_SEQ_ID 10
-#define FN_PACKET_TRACK_EVENT 11
-#define FN_PACKET_INTERNED_DATA 12
-#define FN_PACKET_SEQUENCE_FLAGS 13
-#define FN_PACKET_TRACK_DESCRIPTOR 60
-
-#define SEQ_INCREMENTAL_STATE_CLEARED 1u
-#define SEQ_NEEDS_INCREMENTAL_STATE 2u
-
-/* TrackEvent */
-#define FN_EVENT_TYPE 9
-#define FN_EVENT_NAME_IID 10
-#define FN_EVENT_TRACK_UUID 11
-#define FN_EVENT_COUNTER_VALUE 30
-#define FN_EVENT_NAME_STR 23
-#define FN_EVENT_DOUBLE_COUNTER_VALUE 44
-
-#define TYPE_SLICE_BEGIN 1
-#define TYPE_SLICE_END 2
-#define TYPE_INSTANT 3
-#define TYPE_COUNTER 4
-
-/* TrackDescriptor */
-#define FN_TRACK_UUID 1
-#define FN_TRACK_NAME 2
-#define FN_TRACK_PROCESS 3
-#define FN_TRACK_THREAD 4
-#define FN_TRACK_PARENT_UUID 5
-#define FN_TRACK_COUNTER 8
-
-/* ThreadDescriptor / ProcessDescriptor */
-#define FN_THREAD_PID 1
-#define FN_THREAD_TID 2
-#define FN_THREAD_NAME 5
-#define FN_PROCESS_PID 1
-#define FN_PROCESS_NAME 6
-
-/* CounterDescriptor */
-#define FN_COUNTER_UNIT 3
-
-/* InternedData / EventName */
-#define FN_INTERNED_EVENT_NAMES 2
-#define FN_IID 1
-#define FN_NAME_STR 2
+#define TYPE_SLICE_BEGIN perccetto_TrackEvent_Type_TYPE_SLICE_BEGIN
+#define TYPE_SLICE_END perccetto_TrackEvent_Type_TYPE_SLICE_END
+#define TYPE_INSTANT perccetto_TrackEvent_Type_TYPE_INSTANT
+#define TYPE_COUNTER perccetto_TrackEvent_Type_TYPE_COUNTER
 
 /* --- Ring record layout -------------------------------------------------
  * The payload one event occupies in the ring, written by the owning
@@ -276,12 +242,6 @@ struct pf_trace {
 
     /* Reused across dumps so steady-state draining allocates nothing. */
     struct pb_buf out;
-    struct pb_buf scratch_a;
-    struct pb_buf scratch_b;
-    struct pb_buf scratch_c;
-    /* Holds one InternedData entry while it is built, before being
-     * embedded into scratch_a. Separate so the two never alias. */
-    struct pb_buf scratch_entry;
     struct intern_table name_table;
     bool header_written;
 
@@ -337,26 +297,50 @@ static int out_flush(struct pf_trace *t)
     return 0;
 }
 
-/* Frames `packet` as one entry of the (implicit, streamed) Trace.packet
- * repeated field and stages it for writing. */
-static int stage_packet(struct pf_trace *t, const struct pb_buf *packet)
+/* nanopb string callback. The arg is the borrowed name pointer, read here on
+ * the drain thread and encoded in place, so nothing is copied. */
+static bool encode_name(pb_ostream_t *stream, const pb_field_t *field,
+                        void *const *arg)
 {
-    pb_put_tag(&t->out, FN_TRACE_PACKET, 2);
-    pb_put_varint(&t->out, packet->len);
-    pb_put_bytes(&t->out, packet->data, packet->len);
+    const char *name = *arg;
+    if (!pb_encode_tag_for_field(stream, field))
+        return false;
+    return pb_encode_string(stream, (const pb_byte_t *)name, strlen(name));
+}
+
+static void set_name(pb_callback_t *cb, const char *name)
+{
+    cb->funcs.encode = encode_name;
+    cb->arg = (void *)name;
+}
+
+/* Frames @packet as one entry of the Trace.packet repeated field and stages
+ * it for writing. nanopb reports the exact encoded size first, so the packet
+ * is written straight into the output buffer with no intermediate copy. A
+ * failed encode rolls the buffer back, so a partial packet is never left
+ * behind. */
+static int stage_packet(struct pf_trace *t, const perccetto_TracePacket *packet)
+{
+    size_t size;
+    if (!pb_get_encoded_size(&size, perccetto_TracePacket_fields, packet))
+        return -1;
+
+    size_t mark = t->out.len;
+    pb_put_varint(&t->out, TRACE_PACKET_TAG);
+    pb_put_varint(&t->out, size);
+    pb_buf_reserve(&t->out, size);
+
+    pb_ostream_t stream =
+        pb_ostream_from_buffer(t->out.data + t->out.len, size);
+    if (!pb_encode(&stream, perccetto_TracePacket_fields, packet)) {
+        t->out.len = mark;
+        return -1;
+    }
+    t->out.len += size;
+
     if (t->out.len >= PF_OUT_FLUSH_THRESHOLD)
         return out_flush(t);
     return 0;
-}
-
-static void add_interned_entry(struct pb_buf *interned, uint32_t field_no,
-                               uint64_t iid, const char *name, size_t len,
-                               struct pb_buf *entry)
-{
-    pb_buf_reset(entry);
-    pb_put_varint_field(entry, FN_IID, iid);
-    pb_put_string_field(entry, FN_NAME_STR, name, len);
-    pb_put_submessage_field(interned, field_no, entry);
 }
 
 /* --- Track descriptor emission ----------------------------------------- */
@@ -364,51 +348,55 @@ static void add_interned_entry(struct pb_buf *interned, uint32_t field_no,
 static int emit_track(struct pf_trace *t, const struct track_def *td,
                       uint32_t extra_flags)
 {
-    struct pb_buf *inner = &t->scratch_a;
-    struct pb_buf *desc = &t->scratch_b;
-    struct pb_buf *packet = &t->scratch_c;
-
-    pb_buf_reset(inner);
-    pb_buf_reset(desc);
-    pb_buf_reset(packet);
-
-    pb_put_varint_field(desc, FN_TRACK_UUID, td->uuid);
-    if (td->parent_uuid)
-        pb_put_varint_field(desc, FN_TRACK_PARENT_UUID, td->parent_uuid);
+    perccetto_TrackDescriptor desc = perccetto_TrackDescriptor_init_zero;
+    desc.has_uuid = true;
+    desc.uuid = td->uuid;
+    if (td->parent_uuid) {
+        desc.has_parent_uuid = true;
+        desc.parent_uuid = td->parent_uuid;
+    }
 
     switch (td->kind) {
     case TRACK_PROCESS:
-        pb_put_varint_field(inner, FN_PROCESS_PID, (uint64_t)(uint32_t)td->pid);
+        desc.has_process = true;
+        desc.process.has_pid = true;
+        desc.process.pid = td->pid;
         if (td->has_name)
-            pb_put_string_field(inner, FN_PROCESS_NAME, td->name,
-                                strlen(td->name));
-        pb_put_submessage_field(desc, FN_TRACK_PROCESS, inner);
+            set_name(&desc.process.process_name, td->name);
         break;
     case TRACK_THREAD:
-        pb_put_varint_field(inner, FN_THREAD_PID, (uint64_t)(uint32_t)td->pid);
-        pb_put_varint_field(inner, FN_THREAD_TID, (uint64_t)(uint32_t)td->tid);
+        desc.has_thread = true;
+        desc.thread.has_pid = true;
+        desc.thread.pid = td->pid;
+        desc.thread.has_tid = true;
+        desc.thread.tid = td->tid;
         if (td->has_name)
-            pb_put_string_field(inner, FN_THREAD_NAME, td->name,
-                                strlen(td->name));
-        pb_put_submessage_field(desc, FN_TRACK_THREAD, inner);
+            set_name(&desc.thread.thread_name, td->name);
         break;
     case TRACK_COUNTER:
-        if (td->unit != PF_UNIT_UNSPECIFIED)
-            pb_put_varint_field(inner, FN_COUNTER_UNIT, (uint64_t)td->unit);
+        desc.has_counter = true;
+        if (td->unit != PF_UNIT_UNSPECIFIED) {
+            desc.counter.has_unit = true;
+            desc.counter.unit = (perccetto_CounterDescriptor_Unit)td->unit;
+        }
         if (td->has_name)
-            pb_put_string_field(desc, FN_TRACK_NAME, td->name,
-                                strlen(td->name));
-        pb_put_submessage_field(desc, FN_TRACK_COUNTER, inner);
+            set_name(&desc.name, td->name);
         break;
     }
 
-    pb_put_varint_field(packet, FN_PACKET_TIMESTAMP, now_ns());
-    pb_put_varint_field(packet, FN_PACKET_TRUSTED_SEQ_ID, 1);
-    if (extra_flags)
-        pb_put_varint_field(packet, FN_PACKET_SEQUENCE_FLAGS, extra_flags);
-    pb_put_submessage_field(packet, FN_PACKET_TRACK_DESCRIPTOR, desc);
+    perccetto_TracePacket packet = perccetto_TracePacket_init_zero;
+    packet.has_timestamp = true;
+    packet.timestamp = now_ns();
+    packet.has_trusted_packet_sequence_id = true;
+    packet.trusted_packet_sequence_id = 1;
+    if (extra_flags) {
+        packet.has_sequence_flags = true;
+        packet.sequence_flags = extra_flags;
+    }
+    packet.which_data = perccetto_TracePacket_track_descriptor_tag;
+    packet.data.track_descriptor = desc;
 
-    return stage_packet(t, packet);
+    return stage_packet(t, &packet);
 }
 
 /* Emits whatever track descriptors the output file still needs.
@@ -442,12 +430,14 @@ static int emit_track_header(struct pf_trace *t, bool restart)
     /* A restart with no tracks at all still has to clear state, or the
      * reader keeps stale interning from the previous window. */
     if (restart && count == 0) {
-        pb_buf_reset(&t->scratch_c);
-        pb_put_varint_field(&t->scratch_c, FN_PACKET_TIMESTAMP, now_ns());
-        pb_put_varint_field(&t->scratch_c, FN_PACKET_TRUSTED_SEQ_ID, 1);
-        pb_put_varint_field(&t->scratch_c, FN_PACKET_SEQUENCE_FLAGS,
-                            SEQ_INCREMENTAL_STATE_CLEARED);
-        if (stage_packet(t, &t->scratch_c) != 0)
+        perccetto_TracePacket marker = perccetto_TracePacket_init_zero;
+        marker.has_timestamp = true;
+        marker.timestamp = now_ns();
+        marker.has_trusted_packet_sequence_id = true;
+        marker.trusted_packet_sequence_id = 1;
+        marker.has_sequence_flags = true;
+        marker.sequence_flags = SEQ_INCREMENTAL_STATE_CLEARED;
+        if (stage_packet(t, &marker) != 0)
             return -1;
     }
 
@@ -473,15 +463,8 @@ static int emit_record(struct pf_trace *t, const uint8_t *rec)
     const char *name = has_value ? NULL : r->u.name;
     size_t nlen = name ? strlen(name) : 0;
 
-    struct pb_buf *interned = &t->scratch_a;
-    struct pb_buf *ev = &t->scratch_b;
-    struct pb_buf *packet = &t->scratch_c;
-    struct pb_buf *entry = &t->scratch_entry;
-    pb_buf_reset(interned);
-    pb_buf_reset(ev);
-    pb_buf_reset(packet);
-
     bool have_interned = false;
+    perccetto_InternedData interned = perccetto_InternedData_init_zero;
     uint64_t name_iid = 0;
     bool name_interned = false;
     if (nlen) {
@@ -489,37 +472,56 @@ static int emit_record(struct pf_trace *t, const uint8_t *rec)
         name_interned =
             intern_lookup_or_insert(&t->name_table, name, &name_iid, &is_new);
         if (name_interned && is_new) {
-            add_interned_entry(interned, FN_INTERNED_EVENT_NAMES, name_iid,
-                               name, nlen, entry);
+            perccetto_EventName *entry = &interned.event_names[0];
+            entry->has_iid = true;
+            entry->iid = name_iid;
+            set_name(&entry->name, name);
+            interned.event_names_count = 1;
             have_interned = true;
         }
     }
 
-    pb_put_varint_field(ev, FN_EVENT_TYPE, type);
-    pb_put_varint_field(ev, FN_EVENT_TRACK_UUID, track_uuid);
+    perccetto_TrackEvent event = perccetto_TrackEvent_init_zero;
+    event.has_type = true;
+    event.type = (perccetto_TrackEvent_Type)type;
+    event.has_track_uuid = true;
+    event.track_uuid = track_uuid;
     if (nlen) {
-        if (name_interned)
-            pb_put_varint_field(ev, FN_EVENT_NAME_IID, name_iid);
-        else
-            pb_put_string_field(ev, FN_EVENT_NAME_STR, name, nlen);
+        if (name_interned) {
+            event.has_name_iid = true;
+            event.name_iid = name_iid;
+        } else {
+            set_name(&event.name, name);
+        }
     }
     if (has_value) {
-        if (flags & RF_VALUE_IS_DOUBLE)
-            pb_put_fixed64_field(ev, FN_EVENT_DOUBLE_COUNTER_VALUE, raw_value);
-        else
-            pb_put_varint_field(ev, FN_EVENT_COUNTER_VALUE, raw_value);
+        if (flags & RF_VALUE_IS_DOUBLE) {
+            event.which_counter_value_field =
+                perccetto_TrackEvent_double_counter_value_tag;
+            memcpy(&event.counter_value_field.double_counter_value, &raw_value,
+                   sizeof(raw_value));
+        } else {
+            event.which_counter_value_field =
+                perccetto_TrackEvent_counter_value_tag;
+            event.counter_value_field.counter_value = (int64_t)raw_value;
+        }
     }
 
-    pb_put_varint_field(packet, FN_PACKET_TIMESTAMP, ts);
-    pb_put_varint_field(packet, FN_PACKET_TRUSTED_SEQ_ID, 1);
-    pb_put_varint_field(packet, FN_PACKET_SEQUENCE_FLAGS,
-                        SEQ_NEEDS_INCREMENTAL_STATE);
-    if (have_interned)
-        pb_put_submessage_field(packet, FN_PACKET_INTERNED_DATA, interned);
-    pb_put_submessage_field(packet, FN_PACKET_TRACK_EVENT, ev);
+    perccetto_TracePacket packet = perccetto_TracePacket_init_zero;
+    packet.has_timestamp = true;
+    packet.timestamp = ts;
+    packet.has_trusted_packet_sequence_id = true;
+    packet.trusted_packet_sequence_id = 1;
+    packet.has_sequence_flags = true;
+    packet.sequence_flags = SEQ_NEEDS_INCREMENTAL_STATE;
+    if (have_interned) {
+        packet.has_interned_data = true;
+        packet.interned_data = interned;
+    }
+    packet.which_data = perccetto_TracePacket_track_event_tag;
+    packet.data.track_event = event;
 
-    int rc = stage_packet(t, packet);
-    return rc;
+    return stage_packet(t, &packet);
 }
 
 /* Drains the ring to the output file. Caller holds out_lock. */
@@ -817,15 +819,7 @@ struct pf_trace *pf_trace_open(const struct pf_config *cfg)
         goto destroy_ring;
 
     pb_buf_init(&t->out);
-    pb_buf_init(&t->scratch_a);
-    pb_buf_init(&t->scratch_b);
-    pb_buf_init(&t->scratch_c);
-    pb_buf_init(&t->scratch_entry);
     pb_buf_warm(&t->out, PF_OUT_FLUSH_THRESHOLD + PF_PACKET_WARM + 1024);
-    pb_buf_warm(&t->scratch_a, PF_PACKET_WARM + 256);
-    pb_buf_warm(&t->scratch_b, PF_PACKET_WARM + 256);
-    pb_buf_warm(&t->scratch_c, PF_PACKET_WARM + 512);
-    pb_buf_warm(&t->scratch_entry, PF_NAME_WARM + 64);
 
     intern_table_reset(&t->name_table);
 
@@ -846,10 +840,6 @@ destroy_sync:
     pthread_mutex_destroy(&t->drain_lock);
     pthread_mutex_destroy(&t->track_lock);
     pthread_mutex_destroy(&t->out_lock);
-    pb_buf_free(&t->scratch_entry);
-    pb_buf_free(&t->scratch_c);
-    pb_buf_free(&t->scratch_b);
-    pb_buf_free(&t->scratch_a);
     pb_buf_free(&t->out);
     close(t->fd);
 destroy_ring:
@@ -910,10 +900,6 @@ void pf_trace_close(struct pf_trace *t)
     if (t->fd >= 0)
         close(t->fd);
     pb_buf_free(&t->out);
-    pb_buf_free(&t->scratch_a);
-    pb_buf_free(&t->scratch_b);
-    pb_buf_free(&t->scratch_c);
-    pb_buf_free(&t->scratch_entry);
     pf_ring_destroy(&t->ring);
     free(t->tracks);
 

@@ -1,0 +1,6 @@
+perccetto.EventName.name type:FT_CALLBACK
+perccetto.TrackEvent.name type:FT_CALLBACK
+perccetto.TrackDescriptor.name type:FT_CALLBACK
+perccetto.ProcessDescriptor.process_name type:FT_CALLBACK
+perccetto.ThreadDescriptor.thread_name type:FT_CALLBACK
+perccetto.InternedData.event_names max_count:1 type:FT_STATIC

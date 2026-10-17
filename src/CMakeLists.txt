@@ -12,6 +12,12 @@
 # Sources are listed relative to this directory, so the paths stay correct
 # if the directory is ever vendored into another project.
 
+# Sources common to every variant of the library. perccetto.pb.c is generated
+# from proto/perccetto.proto; nanopb/ holds the vendored encoder it uses. See
+# src/VENDOR.md.
+set(PFTRACE_COMMON_SOURCES
+  pb_writer.c pftrace.c perccetto.pb.c nanopb/pb_common.c nanopb/pb_encode.c)
+
 # One function body per backend, parameterized so a fourth is a one-liner.
 #
 #   name      target suffix, empty for the default
@@ -20,17 +26,18 @@
 #   extra     ringbuf library the backend wraps, empty for none
 function(pftrace_add_library name ring define extra)
   set(target pftrace${name})
-  add_library(${target} STATIC pb_writer.c pftrace.c ${ring})
+  add_library(${target} STATIC ${PFTRACE_COMMON_SOURCES} ${ring})
   if(extra)
     target_link_libraries(${target} PUBLIC ${extra})
   endif()
 
   # include/ is PUBLIC (consumers need the API header); this directory is
   # PRIVATE, holding pf_ring.h, the backend it selects and pb_writer.h,
-  # which are implementation details.
+  # which are implementation details. nanopb/ is PRIVATE too: the generated
+  # perccetto.pb.h includes <pb.h> from it.
   target_include_directories(${target}
     PUBLIC ${PROJECT_SOURCE_DIR}/include
-    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/nanopb
   )
   target_link_libraries(${target} PUBLIC Threads::Threads)
 
@@ -83,10 +90,11 @@ endif()
 #   sanitizer the -fsanitize= value
 function(pftrace_add_sanitized name ring ringbuf define sanitizer)
   set(target pftrace${name})
-  add_library(${target} STATIC pb_writer.c pftrace.c ${ring} ${ringbuf})
+  add_library(${target} STATIC ${PFTRACE_COMMON_SOURCES} ${ring} ${ringbuf})
   target_include_directories(${target}
     PUBLIC ${PROJECT_SOURCE_DIR}/include
-    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${PROJECT_SOURCE_DIR}/ringbuf
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/nanopb
+      ${PROJECT_SOURCE_DIR}/ringbuf
   )
   target_link_libraries(${target} PUBLIC Threads::Threads)
   target_compile_definitions(${target} PRIVATE _DEFAULT_SOURCE)
