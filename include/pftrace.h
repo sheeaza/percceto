@@ -41,6 +41,20 @@ enum pf_mode {
 };
 
 /**
+ * enum pf_format - What the output file contains.
+ * @PF_FORMAT_PROTOBUF: Perfetto protobuf, encoded by the drain thread. The
+ *      file opens directly in the Perfetto UI.
+ * @PF_FORMAT_RAW: Fixed-size ring records plus name and track sidecars,
+ *      copied with little encoding work. Converted to protobuf offline by
+ *      the reader described in docs/raw_format.md. Requires a new or empty
+ *      output file, and a little-endian host.
+ */
+enum pf_format {
+    PF_FORMAT_PROTOBUF = 0,
+    PF_FORMAT_RAW = 1,
+};
+
+/**
  * struct pf_config - Trace parameters, fixed for the life of the trace.
  * @path: Output file path. Required. Opened with O_APPEND, so an
  *      existing file is extended rather than truncated.
@@ -50,6 +64,8 @@ enum pf_mode {
  *      used. 0 selects 8 MiB. This is the only sizeable allocation the
  *      library makes, and it happens once, at open.
  * @mode: Snapshot or continuous; see &enum pf_mode.
+ * @format: Protobuf or raw output; see &enum pf_format. Fixed for the
+ *      life of the trace, so a file never mixes the two.
  * @watermark_pct: Ring fill percentage that triggers an automatic drain,
  *      1-99. 0 selects 75. Ignored unless @mode is %PF_MODE_CONTINUOUS.
  * @drain_interval_ms: Upper bound on how long a buffered event waits
@@ -63,6 +79,7 @@ struct pf_config {
     const char *path;
     size_t ring_bytes;
     enum pf_mode mode;
+    enum pf_format format;
     unsigned watermark_pct;
     unsigned drain_interval_ms;
     unsigned max_tracks;
@@ -107,7 +124,9 @@ PF_API void pf_config_init(struct pf_config *cfg);
  * event functions neither allocate nor block on I/O.
  *
  * Return: A new trace context, or %NULL on failure, with errno set.
- * %EINVAL means @cfg or its path is %NULL, or @watermark_pct exceeds 99.
+ * %EINVAL means @cfg or its path is %NULL, or @watermark_pct exceeds 99,
+ * or @format is %PF_FORMAT_RAW on a big-endian host. %EEXIST means
+ * @format is %PF_FORMAT_RAW and the file already has contents.
  */
 PF_API struct pf_trace *pf_trace_open(const struct pf_config *cfg);
 

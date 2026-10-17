@@ -57,3 +57,24 @@ if(PYTHON3 AND have_perfetto EQUAL 0)
 else()
   message(STATUS "perfetto Python package not found: verify_trace tests not added")
 endif()
+
+# The raw-to-protobuf converter. Its unit tests need only the standard
+# library, so they run wherever python3 does. The end-to-end test converts
+# the raw file the raw_roundtrip test writes, and checks the result with
+# dump_trace, which validates the wire format without any library.
+if(PYTHON3 AND have_perfetto EQUAL 0)
+  add_test(NAME pfraw2pb_unit COMMAND ${PYTHON3} -m unittest discover
+    -s ${PROJECT_SOURCE_DIR}/tools -p test_pfraw2pb.py
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+
+  add_test(NAME pfraw2pb_convert COMMAND ${PYTHON3}
+    ${PROJECT_SOURCE_DIR}/tools/pfraw2pb.py raw_roundtrip_continuous.pfraw
+    -o raw_roundtrip_continuous.converted.pftrace
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+  set_tests_properties(pfraw2pb_convert PROPERTIES FIXTURES_REQUIRED raw_traces)
+
+  add_test(NAME dump_raw_roundtrip COMMAND dump_trace
+    raw_roundtrip_continuous.converted.pftrace
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+  set_tests_properties(dump_raw_roundtrip PROPERTIES DEPENDS pfraw2pb_convert)
+endif()

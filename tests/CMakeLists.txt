@@ -124,3 +124,16 @@ set_tests_properties(name_literal_variable name_literal_stack_buffer
                      name_literal_empty
   PROPERTIES WILL_FAIL TRUE
 )
+
+# Round trip for the raw format: writes it, reads it back with a reader
+# written from docs/raw_format.md, and compares every event. Its reader
+# shares no code with the writer, so this checks the spec, not just that the
+# two agree.
+add_executable(test_raw_roundtrip test_raw_roundtrip.c)
+target_link_libraries(test_raw_roundtrip PRIVATE pftrace Threads::Threads)
+target_compile_definitions(test_raw_roundtrip PRIVATE _GNU_SOURCE)
+# Writes the raw_roundtrip_*.pfraw files the converter tests read, so it runs
+# in the build root, where they look for them.
+add_test(NAME raw_roundtrip COMMAND test_raw_roundtrip
+  WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+set_tests_properties(raw_roundtrip PROPERTIES FIXTURES_SETUP raw_traces)
