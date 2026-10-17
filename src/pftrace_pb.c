@@ -82,9 +82,9 @@ static void add_interned_entry(struct pb_buf *interned, uint32_t field_no,
 static int emit_track(struct pf_trace *t, const struct track_def *td,
                       uint32_t extra_flags)
 {
-    struct pb_buf *inner = &t->scratch_a;
-    struct pb_buf *desc = &t->scratch_b;
-    struct pb_buf *packet = &t->scratch_c;
+    struct pb_buf *inner = &t->pb.scratch_a;
+    struct pb_buf *desc = &t->pb.scratch_b;
+    struct pb_buf *packet = &t->pb.scratch_c;
 
     pb_buf_reset(inner);
     pb_buf_reset(desc);
@@ -160,12 +160,12 @@ static int emit_track_header(struct pf_trace *t, bool restart)
     /* A restart with no tracks at all still has to clear state, or the
      * reader keeps stale interning from the previous window. */
     if (restart && count == 0) {
-        pb_buf_reset(&t->scratch_c);
-        pb_put_varint_field(&t->scratch_c, FN_PACKET_TIMESTAMP, now_ns());
-        pb_put_varint_field(&t->scratch_c, FN_PACKET_TRUSTED_SEQ_ID, 1);
-        pb_put_varint_field(&t->scratch_c, FN_PACKET_SEQUENCE_FLAGS,
+        pb_buf_reset(&t->pb.scratch_c);
+        pb_put_varint_field(&t->pb.scratch_c, FN_PACKET_TIMESTAMP, now_ns());
+        pb_put_varint_field(&t->pb.scratch_c, FN_PACKET_TRUSTED_SEQ_ID, 1);
+        pb_put_varint_field(&t->pb.scratch_c, FN_PACKET_SEQUENCE_FLAGS,
                             SEQ_INCREMENTAL_STATE_CLEARED);
-        if (stage_packet(t, &t->scratch_c) != 0)
+        if (stage_packet(t, &t->pb.scratch_c) != 0)
             return -1;
     }
 
@@ -191,10 +191,10 @@ static int emit_record(struct pf_trace *t, const uint8_t *rec)
     const char *name = has_value ? NULL : r->u.name;
     size_t nlen = name ? strlen(name) : 0;
 
-    struct pb_buf *interned = &t->scratch_a;
-    struct pb_buf *ev = &t->scratch_b;
-    struct pb_buf *packet = &t->scratch_c;
-    struct pb_buf *entry = &t->scratch_entry;
+    struct pb_buf *interned = &t->pb.scratch_a;
+    struct pb_buf *ev = &t->pb.scratch_b;
+    struct pb_buf *packet = &t->pb.scratch_c;
+    struct pb_buf *entry = &t->pb.scratch_entry;
     pb_buf_reset(interned);
     pb_buf_reset(ev);
     pb_buf_reset(packet);

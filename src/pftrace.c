@@ -87,6 +87,49 @@ static void pb_buf_warm(struct pb_buf *b, size_t n)
     pb_buf_reset(b);
 }
 
+/* Allocates the staging buffers the trace's format uses. The other format's
+ * buffers stay empty, so a trace allocates only what it writes. */
+static void staging_init(struct pf_trace *t)
+{
+    pb_buf_init(&t->out);
+    pb_buf_warm(&t->out, PF_OUT_FLUSH_THRESHOLD + PF_PACKET_WARM + 1024);
+
+    if (t->cfg.format == PF_FORMAT_RAW) {
+        pb_buf_init(&t->raw.names);
+        pb_buf_init(&t->raw.tracks);
+        pb_buf_init(&t->raw.events);
+        pb_buf_warm(&t->raw.names, PF_NAME_WARM + 64);
+        pb_buf_warm(&t->raw.tracks, 1024);
+        pb_buf_warm(&t->raw.events, PF_OUT_FLUSH_THRESHOLD + PF_PAYLOAD_BYTES);
+    } else {
+        pb_buf_init(&t->pb.scratch_a);
+        pb_buf_init(&t->pb.scratch_b);
+        pb_buf_init(&t->pb.scratch_c);
+        pb_buf_init(&t->pb.scratch_entry);
+        pb_buf_warm(&t->pb.scratch_a, PF_PACKET_WARM + 256);
+        pb_buf_warm(&t->pb.scratch_b, PF_PACKET_WARM + 256);
+        pb_buf_warm(&t->pb.scratch_c, PF_PACKET_WARM + 512);
+        pb_buf_warm(&t->pb.scratch_entry, PF_NAME_WARM + 64);
+    }
+}
+
+/* Frees what staging_init allocated. Safe on a trace that failed midway,
+ * since pb_buf_free accepts a buffer that was never filled. */
+static void staging_free(struct pf_trace *t)
+{
+    pb_buf_free(&t->out);
+    if (t->cfg.format == PF_FORMAT_RAW) {
+        pb_buf_free(&t->raw.names);
+        pb_buf_free(&t->raw.tracks);
+        pb_buf_free(&t->raw.events);
+    } else {
+        pb_buf_free(&t->pb.scratch_a);
+        pb_buf_free(&t->pb.scratch_b);
+        pb_buf_free(&t->pb.scratch_c);
+        pb_buf_free(&t->pb.scratch_entry);
+    }
+}
+
 /* --- Output ------------------------------------------------------------ */
 
 /* Write every byte, retrying short writes and EINTR. O_APPEND keeps
@@ -398,22 +441,7 @@ struct pf_trace *pf_trace_open(const struct pf_config *cfg)
     if (t->fd < 0)
         goto destroy_ring;
 
-    pb_buf_init(&t->out);
-    pb_buf_init(&t->scratch_a);
-    pb_buf_init(&t->scratch_b);
-    pb_buf_init(&t->scratch_c);
-    pb_buf_init(&t->scratch_entry);
-    pb_buf_init(&t->raw_names);
-    pb_buf_init(&t->raw_tracks);
-    pb_buf_init(&t->raw_events);
-    pb_buf_warm(&t->out, PF_OUT_FLUSH_THRESHOLD + PF_PACKET_WARM + 1024);
-    pb_buf_warm(&t->scratch_a, PF_PACKET_WARM + 256);
-    pb_buf_warm(&t->scratch_b, PF_PACKET_WARM + 256);
-    pb_buf_warm(&t->scratch_c, PF_PACKET_WARM + 512);
-    pb_buf_warm(&t->scratch_entry, PF_NAME_WARM + 64);
-    pb_buf_warm(&t->raw_names, PF_NAME_WARM + 64);
-    pb_buf_warm(&t->raw_tracks, 1024);
-    pb_buf_warm(&t->raw_events, PF_OUT_FLUSH_THRESHOLD + PF_PAYLOAD_BYTES);
+    staging_init(t);
 
     intern_table_reset(&t->name_table);
 
@@ -439,14 +467,7 @@ destroy_sync:
     pthread_mutex_destroy(&t->drain_lock);
     pthread_mutex_destroy(&t->track_lock);
     pthread_mutex_destroy(&t->out_lock);
-    pb_buf_free(&t->raw_events);
-    pb_buf_free(&t->raw_tracks);
-    pb_buf_free(&t->raw_names);
-    pb_buf_free(&t->scratch_entry);
-    pb_buf_free(&t->scratch_c);
-    pb_buf_free(&t->scratch_b);
-    pb_buf_free(&t->scratch_a);
-    pb_buf_free(&t->out);
+    staging_free(t);
     close(t->fd);
 destroy_ring:
     pf_ring_destroy(&t->ring);
@@ -505,14 +526,7 @@ void pf_trace_close(struct pf_trace *t)
 
     if (t->fd >= 0)
         close(t->fd);
-    pb_buf_free(&t->out);
-    pb_buf_free(&t->scratch_a);
-    pb_buf_free(&t->scratch_b);
-    pb_buf_free(&t->scratch_c);
-    pb_buf_free(&t->scratch_entry);
-    pb_buf_free(&t->raw_names);
-    pb_buf_free(&t->raw_tracks);
-    pb_buf_free(&t->raw_events);
+    staging_free(t);
     pf_ring_destroy(&t->ring);
     free(t->tracks);
 

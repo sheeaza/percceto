@@ -171,23 +171,31 @@ struct pf_trace {
     _Atomic unsigned wake_pending;
     bool stop;
 
-    /* Reused across dumps so steady-state draining allocates nothing. */
+    /* Reused across dumps so steady-state draining allocates nothing. The
+     * output buffer is shared by both formats. */
     struct pb_buf out;
-    struct pb_buf scratch_a;
-    struct pb_buf scratch_b;
-    struct pb_buf scratch_c;
-    /* Holds one InternedData entry while it is built, before being
-     * embedded into scratch_a. Separate so the two never alias. */
-    struct pb_buf scratch_entry;
     struct intern_table name_table;
     bool header_written;
 
-    /* Raw format: one staging buffer per chunk kind. Each is emitted as a
-     * chunk, in the order names/tracks then events, before the events
-     * that reference them. */
-    struct pb_buf raw_names;
-    struct pb_buf raw_tracks;
-    struct pb_buf raw_events;
+    /* Staging for the protobuf path. Only allocated when the trace's format
+     * is protobuf. */
+    struct {
+        struct pb_buf scratch_a;
+        struct pb_buf scratch_b;
+        struct pb_buf scratch_c;
+        /* Holds one InternedData entry while it is built, before being
+         * embedded into scratch_a. Separate so the two never alias. */
+        struct pb_buf scratch_entry;
+    } pb;
+
+    /* Staging for the raw path, one buffer per chunk kind. Each is emitted
+     * as a chunk, in the order tracks, names, then events, before the events
+     * that reference them. Only allocated when the trace's format is raw. */
+    struct {
+        struct pb_buf names;
+        struct pb_buf tracks;
+        struct pb_buf events;
+    } raw;
 
     _Atomic uint64_t bytes_written;
 };

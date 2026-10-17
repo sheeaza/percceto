@@ -109,7 +109,7 @@ static void raw_queue_tracks(struct pf_trace *t)
     pthread_mutex_unlock(&t->track_lock);
 
     for (unsigned i = t->tracks_emitted; i < count; i++)
-        raw_put_track(&t->raw_tracks, &t->tracks[i]);
+        raw_put_track(&t->raw.tracks, &t->tracks[i]);
     t->tracks_emitted = count;
 }
 
@@ -118,11 +118,11 @@ static void raw_queue_tracks(struct pf_trace *t)
 static int raw_flush(struct pf_trace *t)
 {
     raw_queue_tracks(t);
-    if (raw_write_chunk(t, RAW_CHUNK_TRACKS, &t->raw_tracks) != 0)
+    if (raw_write_chunk(t, RAW_CHUNK_TRACKS, &t->raw.tracks) != 0)
         return -1;
-    if (raw_write_chunk(t, RAW_CHUNK_NAMES, &t->raw_names) != 0)
+    if (raw_write_chunk(t, RAW_CHUNK_NAMES, &t->raw.names) != 0)
         return -1;
-    return raw_write_chunk(t, RAW_CHUNK_EVENTS, &t->raw_events);
+    return raw_write_chunk(t, RAW_CHUNK_EVENTS, &t->raw.events);
 }
 
 /* Queues one record for the raw file. The name is queued as a definition
@@ -141,12 +141,12 @@ static int raw_emit_record(struct pf_trace *t, const uint8_t *rec)
         /* A full table cannot dedupe, so the definition is queued again.
          * Harmless: the reader keeps the first, and the copies are identical. */
         if (!found || is_new)
-            raw_put_name(&t->raw_names, name, strlen(name));
+            raw_put_name(&t->raw.names, name, strlen(name));
     }
 
     /* The record is copied as is; see struct pf_rec for the layout. */
-    pb_put_bytes(&t->raw_events, rec, PF_PAYLOAD_BYTES);
-    if (t->raw_events.len >= PF_OUT_FLUSH_THRESHOLD)
+    pb_put_bytes(&t->raw.events, rec, PF_PAYLOAD_BYTES);
+    if (t->raw.events.len >= PF_OUT_FLUSH_THRESHOLD)
         return raw_flush(t);
     return 0;
 }
