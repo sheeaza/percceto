@@ -11,3 +11,7 @@ build/
 # clangd: index cache, plus the root symlink into build/
 .cache/
 compile_commands.json
+
+# Python bytecode from running tools/ scripts and their tests
+__pycache__/
+*.pyc
