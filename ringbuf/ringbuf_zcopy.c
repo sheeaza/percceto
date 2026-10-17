@@ -1,5 +1,3 @@
-#define _POSIX_C_SOURCE 200112L
-
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stddef.h>
@@ -107,14 +105,16 @@ struct ringbuf_zcopy *ringbuf_zcopy_create(size_t slot_size,
     if (tail_bytes == 0)
         return NULL;
 
+    /* C11 aligned_alloc requires the size to be a multiple of the alignment. */
     size_t total =
         add_checked(offsetof(struct ringbuf_zcopy, tail), tail_bytes);
+    total = align_up(total, _Alignof(struct ringbuf_zcopy));
     if (total == 0)
         return NULL;
 
-    struct ringbuf_zcopy *rb = NULL;
-    if (posix_memalign((void **)&rb, _Alignof(struct ringbuf_zcopy), total) !=
-        0)
+    struct ringbuf_zcopy *rb =
+        aligned_alloc(_Alignof(struct ringbuf_zcopy), total);
+    if (rb == NULL)
         return NULL;
 
     /* Only overwrite mode has two writers to reconcile, so only it pays for

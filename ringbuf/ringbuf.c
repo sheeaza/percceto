@@ -1,5 +1,3 @@
-#define _POSIX_C_SOURCE 200112L
-
 #include <stdatomic.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -148,12 +146,14 @@ struct ringbuf *ringbuf_create(size_t slot_size, size_t min_capacity,
             return NULL;
     }
 
+    /* C11 aligned_alloc requires the size to be a multiple of the alignment. */
     size_t total = add_checked(offsetof(struct ringbuf, tail), tail_bytes);
+    total = align_up(total, _Alignof(struct ringbuf));
     if (total == 0)
         return NULL;
 
-    struct ringbuf *rb = NULL;
-    if (posix_memalign((void **)&rb, _Alignof(struct ringbuf), total) != 0)
+    struct ringbuf *rb = aligned_alloc(_Alignof(struct ringbuf), total);
+    if (rb == NULL)
         return NULL;
 
     rb->capacity = capacity;

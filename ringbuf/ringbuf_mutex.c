@@ -1,5 +1,3 @@
-#define _POSIX_C_SOURCE 200112L
-
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stddef.h>
@@ -91,6 +89,21 @@ static size_t add_checked(size_t a, size_t b)
 }
 
 /**
+ * align_up - round up to an alignment boundary
+ * @v: value to round
+ * @align: alignment, which must be a power of two
+ *
+ * Return: @v rounded up to a multiple of @align, or 0 on overflow.
+ */
+static size_t align_up(size_t v, size_t align)
+{
+    size_t sum = add_checked(v, align - 1);
+    if (sum == 0)
+        return 0;
+    return sum & ~(align - 1);
+}
+
+/**
  * ringbuf_mutex_create - allocate a ring buffer
  * @slot_size: size of each slot in bytes
  * @min_capacity: lower bound on the slot count
@@ -122,14 +135,16 @@ struct ringbuf_mutex *ringbuf_mutex_create(size_t slot_size,
         return NULL;
     size_t data_bytes = capacity * slot_size;
 
+    /* C11 aligned_alloc requires the size to be a multiple of the alignment. */
     size_t total =
         add_checked(offsetof(struct ringbuf_mutex, slots), data_bytes);
+    total = align_up(total, _Alignof(struct ringbuf_mutex));
     if (total == 0)
         return NULL;
 
-    struct ringbuf_mutex *rb = NULL;
-    if (posix_memalign((void **)&rb, _Alignof(struct ringbuf_mutex), total) !=
-        0)
+    struct ringbuf_mutex *rb =
+        aligned_alloc(_Alignof(struct ringbuf_mutex), total);
+    if (rb == NULL)
         return NULL;
 
     /* Only overwrite mode has two writers to reconcile, so only it pays for
