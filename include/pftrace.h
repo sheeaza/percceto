@@ -187,6 +187,8 @@ PF_API void pf_trace_close(struct pf_trace *t);
  * re-emitted at the head of every dump, so events always resolve against
  * a known track even once the ring has wrapped. Not a hot-path call.
  *
+ * Safe to call from any thread, concurrently with other pf_track_*() calls.
+ *
  * Return: The new track's track_uuid, or 0 if the table is full.
  */
 PF_API uint64_t pf_track_process(struct pf_trace *t, int32_t pid,
@@ -200,6 +202,8 @@ PF_API uint64_t pf_track_process(struct pf_trace *t, int32_t pid,
  * @tid: Thread ID to record.
  * @name: Thread name, or %NULL.
  *
+ * Safe to call from any thread, concurrently with other pf_track_*() calls.
+ *
  * Return: The new track's track_uuid, or 0 if the table is full.
  */
 PF_API uint64_t pf_track_thread(struct pf_trace *t, uint64_t parent_uuid,
@@ -211,6 +215,8 @@ PF_API uint64_t pf_track_thread(struct pf_trace *t, uint64_t parent_uuid,
  * @parent_uuid: Parent track's uuid, or 0 if there is none.
  * @name: Counter track name, or %NULL.
  * @unit: Unit the counter's values are measured in.
+ *
+ * Safe to call from any thread, concurrently with other pf_track_*() calls.
  *
  * Return: The new track's track_uuid, or 0 if the table is full.
  */
