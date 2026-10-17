@@ -1,9 +1,9 @@
 # The library, once per ring backend.
 #
-# All three link the same pftrace.c, pb_writer.c and public header, and
-# differ only in which ring implements src/pf_ring.h. That is what makes
-# BENCHMARK_ring_backends.md a comparison of rings rather than of
-# libraries: everything above the ring is the same code.
+# All three link the same pftrace.c, its two output formats, pb_writer.c and
+# the public header, and differ only in which ring implements src/pf_ring.h.
+# That is what makes BENCHMARK_ring_backends.md a comparison of rings rather
+# than of libraries: everything above the ring is the same code.
 #
 # `pftrace` is the default target and the one every test and tool links.
 # The other two exist to be benchmarked, and are built only when
@@ -20,7 +20,7 @@
 #   extra     ringbuf library the backend wraps, empty for none
 function(pftrace_add_library name ring define extra)
   set(target pftrace${name})
-  add_library(${target} STATIC pb_writer.c pftrace.c ${ring})
+  add_library(${target} STATIC pb_writer.c pftrace.c pftrace_pb.c pftrace_raw.c ${ring})
   if(extra)
     target_link_libraries(${target} PUBLIC ${extra})
   endif()
@@ -83,7 +83,7 @@ endif()
 #   sanitizer the -fsanitize= value
 function(pftrace_add_sanitized name ring ringbuf define sanitizer)
   set(target pftrace${name})
-  add_library(${target} STATIC pb_writer.c pftrace.c ${ring} ${ringbuf})
+  add_library(${target} STATIC pb_writer.c pftrace.c pftrace_pb.c pftrace_raw.c ${ring} ${ringbuf})
   target_include_directories(${target}
     PUBLIC ${PROJECT_SOURCE_DIR}/include
     PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${PROJECT_SOURCE_DIR}/ringbuf
