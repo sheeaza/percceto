@@ -1,9 +1,10 @@
-/* pf_track_counter() identifies a track by its name.
+/* pf_track_counter() and pf_track_thread_named() identify a track by its
+ * parent and name.
  *
- * Covers: the same name returns the same uuid and takes no table entry;
- * distinct names and distinct parents get distinct tracks; a unit conflict
- * returns 0; concurrent creation of one name yields one track; and a full
- * table still refuses new names.
+ * Covers: the same identity returns the same uuid and takes no table entry;
+ * distinct names and parents get distinct tracks; a unit conflict returns 0;
+ * concurrent creation of one name yields one track; a full table still
+ * refuses new names.
  */
 
 #include <pthread.h>
@@ -158,6 +159,53 @@ static void test_concurrent_same_name(void)
     unlink(path);
 }
 
+/* Thread tracks by name: parent and name identify the track. A repeat call
+ * returns the same track whatever pid and tid it passes, a different parent
+ * gives a separate track, and a full table refuses new names. */
+static void test_thread_named(void)
+{
+    const char *path = "counter_name_thread.pftrace";
+    struct pf_trace *t = open_trace(path, 4);
+    if (!t) {
+        check(0, "open trace");
+        return;
+    }
+    uint64_t a = pf_track_thread_named(t, 0, 100, 7, "worker");
+    int same = a != 0;
+    for (int i = 0; i < 1000; i++)
+        same &= pf_track_thread_named(t, 0, 100, 1000 + i, "worker") == a;
+    check(same, "same name returns the same track, pid and tid ignored");
+
+    uint64_t b = pf_track_thread_named(t, 0, 100, 7, "other");
+    check(b && b != a, "different name gives a separate track");
+
+    /* Table has room for 4. Two entries are taken, so two more names fit. */
+    int fits = pf_track_thread_named(t, 0, 100, 7, "c") &&
+               pf_track_thread_named(t, 0, 100, 7, "d");
+    check(fits, "two more names fit");
+    check(pf_track_thread_named(t, 0, 100, 7, "e") == 0,
+          "table full refuses a new name");
+    check(pf_track_thread_named(t, 0, 100, 7, "worker") == a,
+          "existing name still found on a full table");
+    pf_trace_close(t);
+    unlink(path);
+
+    struct pf_trace *u = open_trace(path, 16);
+    if (!u) {
+        check(0, "open trace");
+        return;
+    }
+    uint64_t p1 = pf_track_process(u, 1, "p1");
+    uint64_t p2 = pf_track_process(u, 2, "p2");
+    uint64_t x = pf_track_thread_named(u, p1, 1, 7, "worker");
+    uint64_t y = pf_track_thread_named(u, p2, 2, 8, "worker");
+    check(x && y && x != y, "same name under different parents is separate");
+    check(pf_track_thread_named(u, p1, 1, 9, "worker") == x,
+          "same name under the same parent is the same track");
+    pf_trace_close(u);
+    unlink(path);
+}
+
 int main(void)
 {
     printf("test_counter_name\n");
@@ -165,6 +213,7 @@ int main(void)
     test_distinct_names_and_parents();
     test_unit_conflict();
     test_concurrent_same_name();
+    test_thread_named();
     if (failures) {
         printf("%d failure(s)\n", failures);
         return 1;

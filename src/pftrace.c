@@ -424,17 +424,22 @@ static bool track_name_eq(const struct track_def *td, const char *name)
            memcmp(td->name, name, n) == 0;
 }
 
-uint64_t pf_track_counter(struct pf_trace *t, uint64_t parent_uuid,
-                          const char *name, enum pf_unit unit)
+/* Returns the uuid of the track of @kind under @parent_uuid named @name,
+ * adding one with @pid, @tid and @unit if there is none. A NULL @name never
+ * matches, so unnamed tracks are always new. A match with a different @unit
+ * returns 0. Lookup and insert share one critical section, so two threads
+ * registering the same name cannot both insert it. */
+static uint64_t track_find_or_add(struct pf_trace *t, enum track_kind kind,
+                                  uint64_t parent_uuid, int32_t pid,
+                                  int32_t tid, const char *name,
+                                  enum pf_unit unit)
 {
-    /* Lookup and insert in one critical section, so two threads creating the
-     * same name cannot both insert it. */
     pthread_mutex_lock(&t->track_lock);
     uint64_t uuid = 0;
     bool found = false;
     for (unsigned i = 0; i < t->track_count && name; i++) {
         const struct track_def *td = &t->tracks[i];
-        if (td->kind != TRACK_COUNTER || td->parent_uuid != parent_uuid ||
+        if (td->kind != kind || td->parent_uuid != parent_uuid ||
             !track_name_eq(td, name))
             continue;
         /* Same name with a different unit is a conflict, not a match. */
@@ -443,10 +448,23 @@ uint64_t pf_track_counter(struct pf_trace *t, uint64_t parent_uuid,
         break;
     }
     if (!found)
-        uuid =
-            track_add_locked(t, TRACK_COUNTER, parent_uuid, 0, 0, name, unit);
+        uuid = track_add_locked(t, kind, parent_uuid, pid, tid, name, unit);
     pthread_mutex_unlock(&t->track_lock);
     return uuid;
+}
+
+uint64_t pf_track_counter(struct pf_trace *t, uint64_t parent_uuid,
+                          const char *name, enum pf_unit unit)
+{
+    return track_find_or_add(t, TRACK_COUNTER, parent_uuid, 0, 0, name, unit);
+}
+
+uint64_t pf_track_thread_named(struct pf_trace *t, uint64_t parent_uuid,
+                               int32_t pid, int32_t tid, const char *name)
+{
+    /* pid and tid are recorded only when the track is created. */
+    return track_find_or_add(t, TRACK_THREAD, parent_uuid, pid, tid, name,
+                             PF_UNIT_UNSPECIFIED);
 }
 
 /* --- Simple API -------------------------------------------------------

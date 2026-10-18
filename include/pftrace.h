@@ -210,6 +210,30 @@ PF_API uint64_t pf_track_thread(struct pf_trace *t, uint64_t parent_uuid,
                                 int32_t pid, int32_t tid, const char *name);
 
 /**
+ * pf_track_thread_named() - Get or register a thread track by name.
+ * @t: Trace context.
+ * @parent_uuid: Parent process track's uuid, or 0 if there is none.
+ * @pid: Process ID owning the thread. Recorded only when the track is
+ *      created.
+ * @tid: Thread ID to record. Recorded only when the track is created.
+ * @name: Thread track name. Must be non-%NULL to match; a %NULL name
+ *      always creates a new track.
+ *
+ * Identity is @parent_uuid and @name. A call with the same parent and name
+ * as an existing thread track returns that track, and the @pid and @tid
+ * passed on that call are ignored. Two threads that should be separate
+ * tracks must therefore use distinct names. Creating a track with an
+ * existing identity does not add a table entry.
+ *
+ * Safe to call from any thread, concurrently with other pf_track_*() calls.
+ *
+ * Return: The track's track_uuid, or 0 if the table is full.
+ */
+PF_API uint64_t pf_track_thread_named(struct pf_trace *t, uint64_t parent_uuid,
+                                      int32_t pid, int32_t tid,
+                                      const char *name);
+
+/**
  * pf_track_counter() - Get or register a counter track.
  * @t: Trace context.
  * @parent_uuid: Parent track's uuid, or 0 if there is none.
