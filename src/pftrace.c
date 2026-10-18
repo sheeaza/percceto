@@ -341,15 +341,13 @@ static void set_track_name(struct track_def *td, const char *name)
     td->has_name = true;
 }
 
-static uint64_t track_add(struct pf_trace *t, enum track_kind kind,
-                          uint64_t parent_uuid, int32_t pid, int32_t tid,
-                          const char *name, enum pf_unit unit)
+/* Appends a track. Caller holds track_lock. */
+static uint64_t track_add_locked(struct pf_trace *t, enum track_kind kind,
+                                 uint64_t parent_uuid, int32_t pid, int32_t tid,
+                                 const char *name, enum pf_unit unit)
 {
-    pthread_mutex_lock(&t->track_lock);
-    if (t->track_count >= t->cfg.max_tracks) {
-        pthread_mutex_unlock(&t->track_lock);
+    if (t->track_count >= t->cfg.max_tracks)
         return 0;
-    }
     struct track_def *td = &t->tracks[t->track_count++];
     memset(td, 0, sizeof(*td));
     td->kind = kind;
@@ -360,7 +358,16 @@ static uint64_t track_add(struct pf_trace *t, enum track_kind kind,
     td->unit = unit;
     if (name)
         set_track_name(td, name);
-    uint64_t uuid = td->uuid;
+    return td->uuid;
+}
+
+static uint64_t track_add(struct pf_trace *t, enum track_kind kind,
+                          uint64_t parent_uuid, int32_t pid, int32_t tid,
+                          const char *name, enum pf_unit unit)
+{
+    pthread_mutex_lock(&t->track_lock);
+    uint64_t uuid =
+        track_add_locked(t, kind, parent_uuid, pid, tid, name, unit);
     pthread_mutex_unlock(&t->track_lock);
     return uuid;
 }
@@ -407,10 +414,39 @@ uint64_t pf_track_thread(struct pf_trace *t, uint64_t parent_uuid, int32_t pid,
                      PF_UNIT_UNSPECIFIED);
 }
 
+/* Whether @td's stored name is @name. Compares against the truncated form
+ * stored by set_track_name(), so a name longer than the cap matches its own
+ * stored copy. */
+static bool track_name_eq(const struct track_def *td, const char *name)
+{
+    size_t n = strnlen(name, PF_TRACK_NAME_MAX - 1);
+    return td->has_name && strlen(td->name) == n &&
+           memcmp(td->name, name, n) == 0;
+}
+
 uint64_t pf_track_counter(struct pf_trace *t, uint64_t parent_uuid,
                           const char *name, enum pf_unit unit)
 {
-    return track_add(t, TRACK_COUNTER, parent_uuid, 0, 0, name, unit);
+    /* Lookup and insert in one critical section, so two threads creating the
+     * same name cannot both insert it. */
+    pthread_mutex_lock(&t->track_lock);
+    uint64_t uuid = 0;
+    bool found = false;
+    for (unsigned i = 0; i < t->track_count && name; i++) {
+        const struct track_def *td = &t->tracks[i];
+        if (td->kind != TRACK_COUNTER || td->parent_uuid != parent_uuid ||
+            !track_name_eq(td, name))
+            continue;
+        /* Same name with a different unit is a conflict, not a match. */
+        uuid = td->unit == unit ? td->uuid : 0;
+        found = true;
+        break;
+    }
+    if (!found)
+        uuid =
+            track_add_locked(t, TRACK_COUNTER, parent_uuid, 0, 0, name, unit);
+    pthread_mutex_unlock(&t->track_lock);
+    return uuid;
 }
 
 /* --- Simple API -------------------------------------------------------

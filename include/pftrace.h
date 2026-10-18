@@ -210,15 +210,25 @@ PF_API uint64_t pf_track_thread(struct pf_trace *t, uint64_t parent_uuid,
                                 int32_t pid, int32_t tid, const char *name);
 
 /**
- * pf_track_counter() - Register a counter track.
+ * pf_track_counter() - Get or register a counter track.
  * @t: Trace context.
  * @parent_uuid: Parent track's uuid, or 0 if there is none.
- * @name: Counter track name, or %NULL.
+ * @name: Counter track name, or %NULL. Names longer than the track name
+ *      cap are truncated, and the truncated form is what is compared.
  * @unit: Unit the counter's values are measured in.
+ *
+ * Identity is the name: a counter track with the same @parent_uuid and
+ * @name as an existing one is that track, and its uuid is returned. Two
+ * objects that should be separate series must therefore use distinct
+ * names, e.g. by including an id. Creating a track with an existing name
+ * does not add a table entry.
+ *
+ * Asking for an existing name with a different @unit returns 0.
  *
  * Safe to call from any thread, concurrently with other pf_track_*() calls.
  *
- * Return: The new track's track_uuid, or 0 if the table is full.
+ * Return: The track's track_uuid, or 0 if the table is full or the unit
+ *      conflicts with an existing track of the same name.
  */
 PF_API uint64_t pf_track_counter(struct pf_trace *t, uint64_t parent_uuid,
                                  const char *name, enum pf_unit unit);

@@ -31,6 +31,12 @@ add_test(NAME stress COMMAND test_stress WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
 set_tests_properties(stress PROPERTIES FIXTURES_SETUP stress_traces)
 add_test(NAME noalloc COMMAND test_noalloc)
 
+# Counter tracks are identified by name: same name, same track. Covers the
+# lookup under track_lock, including two threads creating one name at once.
+add_executable(test_counter_name test_counter_name.c)
+target_link_libraries(test_counter_name PRIVATE pftrace Threads::Threads)
+add_test(NAME counter_name COMMAND test_counter_name)
+
 if(PFTRACE_BUILD_BENCH)
   foreach(backend mpsc zcopy)
     add_executable(test_stress_${backend} test_stress.c)
