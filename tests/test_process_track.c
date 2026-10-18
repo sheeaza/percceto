@@ -1,6 +1,6 @@
 /* The simple API's thread tracks have the process track as their parent.
  *
- * pf_trace_open() registers a process track for getpid(). The first _sp call
+ * pf_trace_open() registers a process track for getpid(). The first _g call
  * on a thread creates that thread's track, and it must name the process track
  * as its parent. Reads the trace's track table directly, since the public API
  * does not expose the process uuid.
@@ -59,12 +59,12 @@ int main(void)
               t->tracks[p].pid == (int32_t)getpid(),
           "process track has the uuid and pid of this process");
 
-    /* The first _sp call on this thread registers its thread track. */
-    pf_slice_begin_sp("probe");
-    pf_slice_end_sp();
+    /* The first _g call on this thread registers its thread track. */
+    pf_slice_begin_g("probe");
+    pf_slice_end_g();
 
     int th = find_track(t, TRACK_THREAD, (int32_t)gettid());
-    check(th >= 0, "first _sp call registers this thread's track");
+    check(th >= 0, "first _g call registers this thread's track");
     check(th >= 0 && t->tracks[th].parent_uuid == t->process_uuid,
           "thread track is a child of the process track");
 

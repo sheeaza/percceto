@@ -44,11 +44,11 @@ add_executable(test_process_track test_process_track.c)
 target_link_libraries(test_process_track PRIVATE pftrace)
 add_test(NAME process_track COMMAND test_process_track)
 
-# The _sp counter calls act on the default trace and the calling thread's
+# The _g counter calls act on the default trace and the calling thread's
 # track, and match their explicit counterparts.
-add_executable(test_counter_sp test_counter_sp.c)
-target_link_libraries(test_counter_sp PRIVATE pftrace)
-add_test(NAME counter_sp COMMAND test_counter_sp)
+add_executable(test_counter_g test_counter_g.c)
+target_link_libraries(test_counter_g PRIVATE pftrace)
+add_test(NAME counter_g COMMAND test_counter_g)
 
 if(PFTRACE_BUILD_BENCH)
   foreach(backend mpsc zcopy)

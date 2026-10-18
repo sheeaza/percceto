@@ -487,9 +487,9 @@ static void *simple_worker(void *arg)
     a->tid = gettid();
 
     for (int i = 0; i < SIMPLE_ROUNDS; i++) {
-        pf_slice_begin_sp("job");
-        pf_instant_event_sp("tick");
-        pf_slice_end_sp();
+        pf_slice_begin_g("job");
+        pf_instant_event_g("tick");
+        pf_slice_end_g();
     }
     return NULL;
 }
@@ -502,7 +502,7 @@ static const struct rtrack *find_thread_track(const struct parsed *p, pid_t tid)
     return NULL;
 }
 
-/* Each thread's first _sp call registers its own track, and the name set by
+/* Each thread's first _g call registers its own track, and the name set by
  * pf_thread_name() before that call is what the track carries. Every event
  * a thread emits must sit on its own track and nothing else's. */
 static void simple_threads(const char *path)
@@ -600,12 +600,12 @@ static void simple_rename(const char *path)
 
     /* The flush makes the first declaration reach the file before the
      * rename, which is the case that needs the track re-declared. */
-    pf_slice_begin_sp("before");
-    pf_slice_end_sp();
+    pf_slice_begin_g("before");
+    pf_slice_end_g();
     CHECK(pf_trace_flush(t, NULL, NULL, 0) == 0, "simple rename: flush failed");
     pf_thread_name("renamed");
-    pf_slice_begin_sp("after");
-    pf_slice_end_sp();
+    pf_slice_begin_g("after");
+    pf_slice_end_g();
     pf_trace_close(t);
 
     struct parsed p;

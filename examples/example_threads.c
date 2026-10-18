@@ -35,19 +35,19 @@ static void *worker_main(void *arg)
     pf_thread_name(name);
 
     for (int i = 0; i < ROUNDS_PER_WORKER; i++) {
-        pf_slice_begin_sp("job");
+        pf_slice_begin_g("job");
 
-        pf_slice_begin_sp("load");
+        pf_slice_begin_g("load");
         usleep(300 + w->id * 100);
-        pf_slice_end_sp();
+        pf_slice_end_g();
 
-        pf_slice_begin_sp("process");
+        pf_slice_begin_g("process");
         usleep(300);
         if (i % 3 == 0)
-            pf_instant_event_sp("checkpoint");
-        pf_slice_end_sp();
+            pf_instant_event_g("checkpoint");
+        pf_slice_end_g();
 
-        pf_slice_end_sp(); /* job */
+        pf_slice_end_g(); /* job */
 
         atomic_fetch_add(&sh->jobs_done, 1);
     }

@@ -672,21 +672,21 @@ static uint64_t thread_track(struct pf_trace *t)
     return thread_track_register(t);
 }
 
-void pf_slice_begin_sp_impl(const char *name)
+void pf_slice_begin_g_impl(const char *name)
 {
     struct pf_trace *t = default_trace();
     if (t)
         pf_slice_begin_impl(t, thread_track(t), name);
 }
 
-void pf_slice_end_sp(void)
+void pf_slice_end_g(void)
 {
     struct pf_trace *t = default_trace();
     if (t)
         pf_slice_end(t, thread_track(t));
 }
 
-void pf_instant_event_sp_impl(const char *name)
+void pf_instant_event_g_impl(const char *name)
 {
     struct pf_trace *t = default_trace();
     if (t)
@@ -707,34 +707,34 @@ void pf_thread_name(const char *name)
         track_rename(t, tl_slot.uuid, tl_slot.name);
 }
 
-uint64_t pf_thread_track_sp(void)
+uint64_t pf_thread_track_g(void)
 {
     struct pf_trace *t = default_trace();
     return t ? thread_track(t) : 0;
 }
 
-uint64_t pf_track_counter_sp(uint64_t parent_uuid, const char *name,
-                             enum pf_unit unit)
+uint64_t pf_track_counter_g(uint64_t parent_uuid, const char *name,
+                            enum pf_unit unit)
 {
     struct pf_trace *t = default_trace();
     return t ? pf_track_counter(t, parent_uuid, name, unit) : 0;
 }
 
-void pf_counter_set_int_sp(uint64_t counter_track_uuid, int64_t value)
+void pf_counter_set_int_g(uint64_t counter_track_uuid, int64_t value)
 {
     struct pf_trace *t = default_trace();
     if (t)
         pf_counter_set_int(t, counter_track_uuid, value);
 }
 
-void pf_counter_set_double_sp(uint64_t counter_track_uuid, double value)
+void pf_counter_set_double_g(uint64_t counter_track_uuid, double value)
 {
     struct pf_trace *t = default_trace();
     if (t)
         pf_counter_set_double(t, counter_track_uuid, value);
 }
 
-int pf_trace_dump_sp(const char *name, char *file, size_t size)
+int pf_trace_dump_g(const char *name, char *file, size_t size)
 {
     struct pf_trace *t = default_trace();
     if (!t) {
@@ -744,7 +744,7 @@ int pf_trace_dump_sp(const char *name, char *file, size_t size)
     return pf_trace_dump(t, name, file, size);
 }
 
-int pf_trace_flush_sp(const char *name, char *file, size_t size)
+int pf_trace_flush_g(const char *name, char *file, size_t size)
 {
     struct pf_trace *t = default_trace();
     if (!t) {

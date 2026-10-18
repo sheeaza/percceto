@@ -393,7 +393,7 @@ PF_API void pf_counter_set_double(struct pf_trace *t,
  *   - The default is the trace pf_trace_open() returned. It is meant to be
  *     opened once, by the main thread, and to live for the whole process.
  *     pf_trace_close() clears it.
- *   - A thread's track is created on its first _sp call. The library calls
+ *   - A thread's track is created on its first _g call. The library calls
  *     gettid() and getpid() at that point and registers a thread track with
  *     them. The track is a child of the process track, which pf_trace_open()
  *     registers for getpid().
@@ -410,59 +410,58 @@ PF_API void pf_counter_set_double(struct pf_trace *t,
  */
 
 /**
- * pf_slice_begin_sp() - Begin a slice on the calling thread's track.
+ * pf_slice_begin_g() - Begin a slice on the calling thread's track.
  * @name: Slice name. Must be a string literal -- see PF_NAME_LITERAL().
  */
-#define pf_slice_begin_sp(name) pf_slice_begin_sp_impl(PF_NAME_LITERAL(name))
+#define pf_slice_begin_g(name) pf_slice_begin_g_impl(PF_NAME_LITERAL(name))
 
 /**
- * pf_slice_begin_sp_impl() - pf_slice_begin_sp() without the literal check.
+ * pf_slice_begin_g_impl() - pf_slice_begin_g() without the literal check.
  * @name: Slice name, or %NULL. Borrowed, not copied; see
  *      pf_slice_begin_impl() for the lifetime requirement.
  */
-PF_API void pf_slice_begin_sp_impl(const char *name);
+PF_API void pf_slice_begin_g_impl(const char *name);
 
 /**
- * pf_slice_end_sp() - End the calling thread's most recently begun slice.
+ * pf_slice_end_g() - End the calling thread's most recently begun slice.
  */
-PF_API void pf_slice_end_sp(void);
+PF_API void pf_slice_end_g(void);
 
 /**
- * pf_instant_event_sp() - Record a marker on the calling thread's track.
+ * pf_instant_event_g() - Record a marker on the calling thread's track.
  * @name: Marker name. Must be a string literal -- see PF_NAME_LITERAL().
  */
-#define pf_instant_event_sp(name) \
-    pf_instant_event_sp_impl(PF_NAME_LITERAL(name))
+#define pf_instant_event_g(name) pf_instant_event_g_impl(PF_NAME_LITERAL(name))
 
 /**
- * pf_instant_event_sp_impl() - pf_instant_event_sp() without the literal
+ * pf_instant_event_g_impl() - pf_instant_event_g() without the literal
  *      check.
  * @name: Marker name, or %NULL. Borrowed, not copied.
  */
-PF_API void pf_instant_event_sp_impl(const char *name);
+PF_API void pf_instant_event_g_impl(const char *name);
 
 /**
  * pf_thread_name() - Name the calling thread's track.
  * @name: Thread name. Copied, so it may be a computed string.
  *
- * May be called before the thread's first _sp call, or at any time after.
+ * May be called before the thread's first _g call, or at any time after.
  * A rename after registration is picked up by the next flush.
  */
 PF_API void pf_thread_name(const char *name);
 
 /**
- * pf_thread_track_sp() - Get the calling thread's track uuid.
+ * pf_thread_track_g() - Get the calling thread's track uuid.
  *
- * Registers the thread's track on the first call, as the other _sp calls
+ * Registers the thread's track on the first call, as the other _g calls
  * do, then returns the same cached uuid. Use it as the @parent_uuid of
  * pf_track_counter() to nest a counter under the calling thread.
  *
  * Return: The thread track's track_uuid, or 0 if there is no default trace.
  */
-PF_API uint64_t pf_thread_track_sp(void);
+PF_API uint64_t pf_thread_track_g(void);
 
 /**
- * pf_track_counter_sp() - pf_track_counter() on the default trace.
+ * pf_track_counter_g() - pf_track_counter() on the default trace.
  * @parent_uuid: Parent track, as for pf_track_counter(). 0 selects the
  *      process track.
  * @name: Counter track name, or %NULL.
@@ -471,37 +470,37 @@ PF_API uint64_t pf_thread_track_sp(void);
  * Return: The track's track_uuid, or 0 if there is no default trace or the
  *      call would fail for the reasons pf_track_counter() gives.
  */
-PF_API uint64_t pf_track_counter_sp(uint64_t parent_uuid, const char *name,
-                                    enum pf_unit unit);
+PF_API uint64_t pf_track_counter_g(uint64_t parent_uuid, const char *name,
+                                   enum pf_unit unit);
 
 /**
- * pf_counter_set_int_sp() - pf_counter_set_int() on the default trace.
+ * pf_counter_set_int_g() - pf_counter_set_int() on the default trace.
  * @counter_track_uuid: Counter track to sample.
  * @value: Value to record.
  */
-PF_API void pf_counter_set_int_sp(uint64_t counter_track_uuid, int64_t value);
+PF_API void pf_counter_set_int_g(uint64_t counter_track_uuid, int64_t value);
 
 /**
- * pf_counter_set_double_sp() - pf_counter_set_double() on the default trace.
+ * pf_counter_set_double_g() - pf_counter_set_double() on the default trace.
  * @counter_track_uuid: Counter track to sample.
  * @value: Value to record.
  */
-PF_API void pf_counter_set_double_sp(uint64_t counter_track_uuid, double value);
+PF_API void pf_counter_set_double_g(uint64_t counter_track_uuid, double value);
 
 /**
- * pf_trace_dump_sp() - pf_trace_dump() on the default trace.
+ * pf_trace_dump_g() - pf_trace_dump() on the default trace.
  * @name: As for pf_trace_dump().
  * @file: As for pf_trace_dump().
  * @size: As for pf_trace_dump().
  *
  * Return: As for pf_trace_dump(), or -1 with %ENODEV if there is no default
- *      trace. Unlike the other _sp calls this does not succeed silently
+ *      trace. Unlike the other _g calls this does not succeed silently
  *      without one, because the caller expects a file.
  */
-PF_API int pf_trace_dump_sp(const char *name, char *file, size_t size);
+PF_API int pf_trace_dump_g(const char *name, char *file, size_t size);
 
 /**
- * pf_trace_flush_sp() - pf_trace_flush() on the default trace.
+ * pf_trace_flush_g() - pf_trace_flush() on the default trace.
  * @name: As for pf_trace_flush().
  * @file: As for pf_trace_flush().
  * @size: As for pf_trace_flush().
@@ -509,7 +508,7 @@ PF_API int pf_trace_dump_sp(const char *name, char *file, size_t size);
  * Return: As for pf_trace_flush(), or -1 with %ENODEV if there is no default
  *      trace.
  */
-PF_API int pf_trace_flush_sp(const char *name, char *file, size_t size);
+PF_API int pf_trace_flush_g(const char *name, char *file, size_t size);
 
 #ifdef __cplusplus
 }
