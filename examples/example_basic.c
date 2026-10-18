@@ -65,12 +65,9 @@ static void report(const char *label, struct pf_trace *t)
  * wrong, at which point the buffer holds the window leading up to it. */
 static int run_snapshot(void)
 {
-    const char *path = "demo_snapshot.pftrace";
-    unlink(path); /* O_APPEND would otherwise extend a previous run */
-
     struct pf_config cfg;
     pf_config_init(&cfg);
-    cfg.path = path;
+    cfg.path = ".";
     cfg.process_name = "demo_app";
     cfg.mode = PF_MODE_SNAPSHOT;
     cfg.ring_bytes = 256 * 1024;
@@ -89,7 +86,8 @@ static int run_snapshot(void)
 
     /* Pretend the program noticed a stall here. */
     pf_instant_event(t, tr.main_thread, "perf_drop_detected");
-    if (pf_trace_dump(t) != 0) {
+    char leaf[512] = "";
+    if (pf_trace_dump(t, "demo_snapshot", leaf, sizeof(leaf)) != 0) {
         perror("pf_trace_dump");
         pf_trace_close(t);
         return 1;
@@ -97,7 +95,14 @@ static int run_snapshot(void)
 
     report("snapshot", t);
     pf_trace_close(t);
-    printf("  wrote %s\n", path);
+
+    /* The dump's name is timestamped, so it is moved to a fixed name for the
+     * trace validators in tools/CMakeLists.txt to read. */
+    if (rename(leaf, "demo_snapshot.pftrace") != 0) {
+        perror("rename");
+        return 1;
+    }
+    printf("  wrote %s (from %s)\n", "demo_snapshot.pftrace", leaf);
     return 0;
 }
 
@@ -105,12 +110,13 @@ static int run_snapshot(void)
  * so the file accumulates everything rather than a window. */
 static int run_continuous(void)
 {
-    const char *path = "demo_continuous.pftrace";
-    unlink(path);
+    const char *name = "demo_continuous.pftrace";
+    unlink(name);
 
     struct pf_config cfg;
     pf_config_init(&cfg);
-    cfg.path = path;
+    cfg.path = ".";
+    cfg.name = name;
     cfg.process_name = "demo_app";
     cfg.mode = PF_MODE_CONTINUOUS;
     cfg.ring_bytes = 128 * 1024;
@@ -129,7 +135,7 @@ static int run_continuous(void)
      * gapless because the drain thread keeps up. */
     do_work(t, &tr, 60);
 
-    if (pf_trace_flush(t) != 0) {
+    if (pf_trace_flush(t, NULL, NULL, 0) != 0) {
         perror("pf_trace_flush");
         pf_trace_close(t);
         return 1;
@@ -143,7 +149,7 @@ static int run_continuous(void)
                (unsigned long long)s.dropped);
 
     pf_trace_close(t);
-    printf("  wrote %s\n", path);
+    printf("  wrote %s\n", name);
     return 0;
 }
 

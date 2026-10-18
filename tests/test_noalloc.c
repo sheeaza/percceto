@@ -22,6 +22,7 @@
 #include <string.h>
 #include <unistd.h>
 
+#include "dump_dir.h"
 #include "pftrace.h"
 
 /* Prefix for this build's output files; see the note in test_stress.c. */
@@ -79,13 +80,15 @@ static void check_mode(const char *label, enum pf_mode mode, bool dump)
 {
     printf("%s:\n", label);
 
-    char path[64];
-    snprintf(path, sizeof(path), PF_TRACE_PREFIX "noalloc_%s.pftrace", label);
-    unlink(path);
+    char dir[64];
+    snprintf(dir, sizeof(dir), PF_TRACE_PREFIX "noalloc_%s.d", label);
+    dir_reset(dir);
 
     struct pf_config cfg;
     pf_config_init(&cfg);
-    cfg.path = path;
+    cfg.path = dir;
+    if (mode == PF_MODE_CONTINUOUS)
+        cfg.name = "trace.pftrace";
     cfg.mode = mode;
     cfg.ring_bytes = 512 * 1024;
     cfg.watermark_pct = 50;
@@ -111,7 +114,7 @@ static void check_mode(const char *label, enum pf_mode mode, bool dump)
     pf_counter_set_int(t, ctr, 1);
     pf_counter_set_double(t, ctr, 1.0);
     if (dump)
-        pf_trace_dump(t);
+        pf_trace_dump(t, "noalloc", NULL, 0);
 
     atomic_store(&armed, true);
 
@@ -128,7 +131,7 @@ static void check_mode(const char *label, enum pf_mode mode, bool dump)
     }
 
     /* An explicit dump exercises encode+write on this thread too. */
-    if (dump && pf_trace_dump(t) != 0) {
+    if (dump && pf_trace_dump(t, "noalloc", NULL, 0) != 0) {
         perror("  pf_trace_dump");
         failures++;
     }
@@ -149,7 +152,6 @@ static void check_mode(const char *label, enum pf_mode mode, bool dump)
     atomic_store(&violations, 0);
 
     pf_trace_close(t);
-    unlink(path);
 }
 
 int main(void)

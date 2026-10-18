@@ -19,6 +19,7 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "dump_dir.h"
 #include "pftrace.h"
 
 static uint64_t now_ns(void)
@@ -42,12 +43,12 @@ int main(void)
      * eviction work and report it as per-event cost -- which is
      * exactly what made an earlier version of this benchmark appear to
      * show named events costing twice what they do. */
-    const char *path = "bench.pftrace";
-    unlink(path);
+    const char *dir = "bench.d";
+    dir_reset(dir);
 
     struct pf_config cfg;
     pf_config_init(&cfg);
-    cfg.path = path;
+    cfg.path = dir;
     cfg.mode = PF_MODE_SNAPSHOT;
     cfg.ring_bytes = 512 * 1024 * 1024;
 
@@ -88,9 +89,9 @@ int main(void)
 
     /* Drain cost: fill a ring without draining, then time one dump.
      * Snapshot mode trims, so use a ring large enough to hold the lot. */
-    unlink(path);
+    dir_reset(dir);
     pf_config_init(&cfg);
-    cfg.path = path;
+    cfg.path = dir;
     cfg.mode = PF_MODE_SNAPSHOT;
     cfg.ring_bytes = 64 * 1024 * 1024;
     cfg.drain_interval_ms = 60000; /* keep the trim thread out of the way */
@@ -109,7 +110,7 @@ int main(void)
     }
 
     t0 = now_ns();
-    if (pf_trace_dump(t) != 0)
+    if (pf_trace_dump(t, "bench", NULL, 0) != 0)
         perror("dump");
     t1 = now_ns();
 
@@ -123,6 +124,6 @@ int main(void)
            s.bytes_written, fill * 2, (double)s.bytes_written / (fill * 2));
 
     pf_trace_close(t);
-    unlink(path);
+    dir_reset(dir);
     return 0;
 }

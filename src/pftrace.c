@@ -2,6 +2,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdbool.h>
@@ -165,11 +166,142 @@ static int drain_locked(struct pf_trace *t)
     return pb_drain_locked(t);
 }
 
+/* --- Output files ------------------------------------------------------
+ * Continuous mode writes one file, held open from pf_trace_open. Snapshot
+ * mode writes a new file for each dump, named
+ * <name>-<UTC time>-<seq>.pftrace in the trace's directory. */
+
+/* Whether @name can be a single path component in the trace's directory. */
+static bool leaf_name_ok(const char *name)
+{
+    return name && name[0] && strlen(name) <= NAME_MAX && !strchr(name, '/') &&
+           strcmp(name, ".") != 0 && strcmp(name, "..") != 0;
+}
+
+/* The name a caller passes to pf_trace_open or a dump must match the mode:
+ * continuous names its one file at open and dumps take none; snapshot names
+ * each dump and takes no name at open. */
+static bool open_name_ok(const struct pf_config *cfg)
+{
+    return cfg->mode == PF_MODE_CONTINUOUS ? leaf_name_ok(cfg->name) :
+                                             cfg->name == NULL;
+}
+
+static bool dump_name_ok(const struct pf_trace *t, const char *name)
+{
+    return t->cfg.mode == PF_MODE_SNAPSHOT ? leaf_name_ok(name) : name == NULL;
+}
+
+/* Fails with ENAMETOOLONG if the caller wants the name back and @file cannot
+ * hold @leaf and its NUL. Checked before any write, so nothing is written
+ * that the caller cannot find. */
+static int name_fits(const char *leaf, char *file, size_t size)
+{
+    if (file && strlen(leaf) >= size) {
+        errno = ENAMETOOLONG;
+        return -1;
+    }
+    return 0;
+}
+
+/* Copies @leaf out to the caller, if they asked for it. Caller has checked
+ * that it fits with name_fits. */
+static void name_out(char *file, size_t size, const char *leaf)
+{
+    if (file)
+        snprintf(file, size, "%s", leaf);
+}
+
+/* Builds the file name for one snapshot dump, <name>-<timestamp>-<seq>.pftrace.
+ * The timestamp is UTC to the millisecond, as in 20261018T143007.512Z. The
+ * sequence number is per trace and separates dumps that land in the same
+ * millisecond. Takes the next sequence number, so the caller holds out_lock.
+ * Uses no allocation. */
+static int snapshot_leaf(struct pf_trace *t, const char *name, char *leaf,
+                         size_t size)
+{
+    struct timespec ts;
+    struct tm tm;
+    char stamp[32];
+
+    clock_gettime(CLOCK_REALTIME, &ts);
+    if (!gmtime_r(&ts.tv_sec, &tm)) {
+        errno = EOVERFLOW;
+        return -1;
+    }
+    strftime(stamp, sizeof(stamp), "%Y%m%dT%H%M%S", &tm);
+
+    int len = snprintf(leaf, size, "%s-%s.%03ldZ-%04u.pftrace", name, stamp,
+                       ts.tv_nsec / 1000000L, (unsigned)t->dump_seq++);
+    if (len < 0 || (size_t)len >= size) {
+        errno = ENAMETOOLONG;
+        return -1;
+    }
+    return 0;
+}
+
+/* Writes the ring into a new file named @name in the trace's directory,
+ * replacing any file already there. The file is self-contained: interning
+ * restarts and tracks are re-declared, and a raw file gets its own header.
+ * Caller holds out_lock. */
+static int snapshot_write_locked(struct pf_trace *t, const char *name,
+                                 char *file, size_t size, bool sync)
+{
+    char leaf[512];
+    if (snapshot_leaf(t, name, leaf, sizeof(leaf)) != 0)
+        return -1;
+    if (name_fits(leaf, file, size) != 0)
+        return -1;
+
+    int fd =
+        openat(t->dirfd, leaf, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+    if (fd < 0)
+        return -1;
+
+    t->fd = fd;
+    t->tracks_emitted = 0;
+    intern_table_reset(&t->name_table);
+
+    int rc = 0;
+    if (t->cfg.format == PF_FORMAT_RAW)
+        rc = raw_write_header(t);
+    if (rc == 0)
+        rc = drain_locked(t);
+    if (rc == 0 && sync)
+        rc = fdatasync(fd);
+
+    /* Keep the write's errno, not the close's. */
+    int err = errno;
+    close(fd);
+    t->fd = -1;
+    errno = err;
+    if (rc == 0)
+        name_out(file, size, leaf);
+    return rc;
+}
+
+/* Caller holds out_lock. @sync forces the data to disk before returning.
+ * Continuous mode reports the name of its open file. */
+static int dump_locked(struct pf_trace *t, const char *name, char *file,
+                       size_t size, bool sync)
+{
+    if (t->cfg.mode == PF_MODE_SNAPSHOT)
+        return snapshot_write_locked(t, name, file, size, sync);
+    if (name_fits(t->file_name, file, size) != 0)
+        return -1;
+    if (drain_locked(t) != 0)
+        return -1;
+    if (sync && fdatasync(t->fd) != 0)
+        return -1;
+    name_out(file, size, t->file_name);
+    return 0;
+}
+
 /* --- Drain thread -------------------------------------------------------
  * Continuous mode only. It writes the ring out whenever it crosses the
  * watermark or the interval elapses. Snapshot mode starts no thread: the
  * ring keeps its own tail on a known record boundary (see pf_ring_reserve),
- * and a dump is taken on demand by pf_trace_dump or pf_trace_close. */
+ * and a dump is taken on demand by pf_trace_dump. */
 
 /* Waits for a wake signal, the drain interval, or shutdown.
  *
@@ -617,7 +749,7 @@ void pf_config_init(struct pf_config *cfg)
 
 struct pf_trace *pf_trace_open(const struct pf_config *cfg)
 {
-    if (!cfg || !cfg->path || cfg->watermark_pct > 99) {
+    if (!cfg || !cfg->path || cfg->watermark_pct > 99 || !open_name_ok(cfg)) {
         errno = EINVAL;
         return NULL;
     }
@@ -627,6 +759,7 @@ struct pf_trace *pf_trace_open(const struct pf_config *cfg)
         return NULL;
 
     t->fd = -1;
+    t->dirfd = -1;
     t->cfg = *cfg;
     if (t->cfg.ring_bytes == 0)
         t->cfg.ring_bytes = 8u * 1024u * 1024u;
@@ -654,11 +787,22 @@ struct pf_trace *pf_trace_open(const struct pf_config *cfg)
     size_t slots = pf_ring_capacity_slots(&t->ring);
     t->watermark_slots = slots * t->cfg.watermark_pct / 100u;
 
-    /* O_APPEND so every write lands at the end, which is what lets a
-     * continuous trace stay readable while it is still being written. */
-    t->fd = open(t->cfg.path, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0644);
-    if (t->fd < 0)
+    /* Held for the life of the trace, since every snapshot dump opens its
+     * file in this directory. Opening it here means a bad path fails at open. */
+    t->dirfd = open(t->cfg.path, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    if (t->dirfd < 0)
         goto destroy_ring;
+
+    /* Continuous only: its one file. O_APPEND so every write lands at the end,
+     * which is what lets a continuous trace stay readable while it is still
+     * being written. Snapshot files are opened by each dump. */
+    if (t->cfg.mode == PF_MODE_CONTINUOUS) {
+        snprintf(t->file_name, sizeof(t->file_name), "%s", t->cfg.name);
+        t->fd = openat(t->dirfd, t->cfg.name,
+                       O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0644);
+        if (t->fd < 0)
+            goto close_dir;
+    }
 
     staging_init(t);
 
@@ -685,8 +829,10 @@ struct pf_trace *pf_trace_open(const struct pf_config *cfg)
     atomic_init(&t->bytes_written, 0);
 
     /* Before the drain thread starts, so the header is the file's first
-     * bytes. An existing file is refused here, see raw_write_header. */
-    if (t->cfg.format == PF_FORMAT_RAW && raw_write_header(t) != 0)
+     * bytes. An existing file is refused here, see raw_write_header. Snapshot
+     * files get their header from each dump, so this is continuous only. */
+    if (t->cfg.mode == PF_MODE_CONTINUOUS && t->cfg.format == PF_FORMAT_RAW &&
+        raw_write_header(t) != 0)
         goto destroy_sync;
 
     if (t->cfg.mode == PF_MODE_CONTINUOUS &&
@@ -695,6 +841,8 @@ struct pf_trace *pf_trace_open(const struct pf_config *cfg)
     g_default_trace = t;
     return t;
 
+    /* Only continuous mode gets this far with a file open, so the close of
+     * t->fd below never runs for a snapshot trace. */
 destroy_sync:
     pthread_cond_destroy(&t->drain_cv);
     pthread_mutex_destroy(&t->drain_lock);
@@ -702,6 +850,8 @@ destroy_sync:
     pthread_mutex_destroy(&t->out_lock);
     staging_free(t);
     close(t->fd);
+close_dir:
+    close(t->dirfd);
 destroy_ring:
     pf_ring_destroy(&t->ring);
 free_tracks:
@@ -711,21 +861,29 @@ free_trace:
     return NULL;
 }
 
-int pf_trace_dump(struct pf_trace *t)
+/* Shared by pf_trace_dump and pf_trace_flush. */
+static int dump_public(struct pf_trace *t, const char *name, char *file,
+                       size_t size, bool sync)
 {
+    if (!dump_name_ok(t, name)) {
+        errno = EINVAL;
+        return -1;
+    }
     pthread_mutex_lock(&t->out_lock);
-    int rc = drain_locked(t);
+    int rc = dump_locked(t, name, file, size, sync);
     pthread_mutex_unlock(&t->out_lock);
     return rc;
 }
 
-int pf_trace_flush(struct pf_trace *t)
+int pf_trace_dump(struct pf_trace *t, const char *name, char *file, size_t size)
 {
-    if (pf_trace_dump(t) != 0)
-        return -1;
-    if (fdatasync(t->fd) != 0)
-        return -1;
-    return 0;
+    return dump_public(t, name, file, size, false);
+}
+
+int pf_trace_flush(struct pf_trace *t, const char *name, char *file,
+                   size_t size)
+{
+    return dump_public(t, name, file, size, true);
 }
 
 void pf_trace_stats(const struct pf_trace *t, struct pf_stats *out)
@@ -754,16 +912,18 @@ void pf_trace_close(struct pf_trace *t)
         pthread_cond_signal(&t->drain_cv);
         pthread_mutex_unlock(&t->drain_lock);
         pthread_join(t->drain_thread, NULL);
-    }
 
-    /* Write whatever is still buffered, so a trace exists even if the
-     * program never asked for one explicitly. */
-    pthread_mutex_lock(&t->out_lock);
-    (void)drain_locked(t);
-    pthread_mutex_unlock(&t->out_lock);
+        /* Write whatever is still buffered, so the file holds every event. A
+         * snapshot trace writes nothing here: its buffered window goes out only
+         * through an explicit pf_trace_dump. */
+        pthread_mutex_lock(&t->out_lock);
+        (void)drain_locked(t);
+        pthread_mutex_unlock(&t->out_lock);
+    }
 
     if (t->fd >= 0)
         close(t->fd);
+    close(t->dirfd);
     staging_free(t);
     pf_ring_destroy(&t->ring);
     free(t->tracks);

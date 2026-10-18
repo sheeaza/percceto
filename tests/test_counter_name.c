@@ -29,11 +29,11 @@ static void check(int ok, const char *what)
 
 /* Opens a trace whose table holds @max_tracks entries beyond the process
  * track pf_trace_open() registers, so the tests count only their own. */
-static struct pf_trace *open_trace(const char *path, unsigned max_tracks)
+static struct pf_trace *open_trace(unsigned max_tracks)
 {
     struct pf_config cfg;
     pf_config_init(&cfg);
-    cfg.path = path;
+    cfg.path = ".";
     cfg.max_tracks = max_tracks + 1;
     return pf_trace_open(&cfg);
 }
@@ -41,8 +41,7 @@ static struct pf_trace *open_trace(const char *path, unsigned max_tracks)
 /* Same name, many calls: one uuid, and the table holds one entry. */
 static void test_same_name_one_track(void)
 {
-    const char *path = "counter_name_same.pftrace";
-    struct pf_trace *t = open_trace(path, 4);
+    struct pf_trace *t = open_trace(4);
     if (!t) {
         check(0, "open trace");
         return;
@@ -64,14 +63,12 @@ static void test_same_name_one_track(void)
     check(pf_track_counter(t, 0, "queue/a.depth", PF_UNIT_COUNT) == first,
           "existing name still found on a full table");
     pf_trace_close(t);
-    unlink(path);
 }
 
 /* Distinct names and distinct parents are separate tracks. */
 static void test_distinct_names(void)
 {
-    const char *path = "counter_name_distinct.pftrace";
-    struct pf_trace *t = open_trace(path, 16);
+    struct pf_trace *t = open_trace(16);
     if (!t) {
         check(0, "open trace");
         return;
@@ -92,14 +89,12 @@ static void test_distinct_names(void)
     check(pf_track_counter(t, under_proc, "x", PF_UNIT_COUNT) == 0,
           "a counter track is refused as a parent");
     pf_trace_close(t);
-    unlink(path);
 }
 
 /* Same name, different unit: conflict, reported as 0. */
 static void test_unit_conflict(void)
 {
-    const char *path = "counter_name_unit.pftrace";
-    struct pf_trace *t = open_trace(path, 16);
+    struct pf_trace *t = open_trace(16);
     if (!t) {
         check(0, "open trace");
         return;
@@ -111,7 +106,6 @@ static void test_unit_conflict(void)
     check(pf_track_counter(t, 0, "bytes", PF_UNIT_SIZE_BYTES) == ok,
           "same name with the original unit still returns the track");
     pf_trace_close(t);
-    unlink(path);
 }
 
 /* Concurrent creation of one name: every thread sees the same uuid. */
@@ -130,8 +124,7 @@ static void *race_main(void *arg)
 
 static void test_concurrent_same_name(void)
 {
-    const char *path = "counter_name_race.pftrace";
-    struct pf_trace *t = open_trace(path, 16);
+    struct pf_trace *t = open_trace(16);
     if (!t) {
         check(0, "open trace");
         return;
@@ -161,7 +154,6 @@ static void test_concurrent_same_name(void)
     }
     check(room, "one table entry for the shared name, 15 more fit");
     pf_trace_close(t);
-    unlink(path);
 }
 
 /* Thread tracks by name: parent and name identify the track. A repeat call
@@ -169,8 +161,7 @@ static void test_concurrent_same_name(void)
  * gives a separate track, and a full table refuses new names. */
 static void test_thread_named(void)
 {
-    const char *path = "counter_name_thread.pftrace";
-    struct pf_trace *t = open_trace(path, 4);
+    struct pf_trace *t = open_trace(4);
     if (!t) {
         check(0, "open trace");
         return;
@@ -193,7 +184,6 @@ static void test_thread_named(void)
     check(pf_track_thread_named(t, 100, 7, "worker") == a,
           "existing name still found on a full table");
     pf_trace_close(t);
-    unlink(path);
 }
 
 int main(void)

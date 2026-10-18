@@ -45,10 +45,9 @@ int main(void)
     pf_counter_set_int_sp(1, 1);
     pf_counter_set_double_sp(1, 1.0);
 
-    const char *path = "counter_sp.pftrace";
     struct pf_config cfg;
     pf_config_init(&cfg);
-    cfg.path = path;
+    cfg.path = ".";
     struct pf_trace *t = pf_trace_open(&cfg);
     if (!t) {
         check(0, "open trace");
@@ -92,7 +91,6 @@ int main(void)
           "both _sp samples are published to the ring");
 
     pf_trace_close(t);
-    unlink(path);
 
     if (failures) {
         printf("%d failure(s)\n", failures);

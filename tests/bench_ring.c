@@ -69,6 +69,7 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "dump_dir.h"
 #include "pftrace.h"
 
 /* Which backend this binary was linked against. Only for labelling: the
@@ -295,7 +296,9 @@ static struct result run_one(const struct scenario *s)
 
     struct pf_config cfg;
     pf_config_init(&cfg);
-    cfg.path = path;
+    cfg.path = ".";
+    if (s->mode == PF_MODE_CONTINUOUS)
+        cfg.name = path;
     cfg.mode = s->mode;
     cfg.ring_bytes = s->ring_bytes;
 
@@ -453,7 +456,7 @@ static void bench_cost(void)
 
             struct pf_config cfg;
             pf_config_init(&cfg);
-            cfg.path = path;
+            cfg.path = ".";
             cfg.mode = PF_MODE_SNAPSHOT;
             /* Holds the whole measured loop plus the warmup with room to
              * spare, so no eviction happens inside the timed section. */
@@ -510,12 +513,12 @@ static void bench_drain(void)
     double per[REPS];
 
     for (int rep = 0; rep < REPS; rep++) {
-        const char *path = "bench_ring.pftrace";
-        unlink(path);
+        const char *dir = "bench_ring.d";
+        dir_reset(dir);
 
         struct pf_config cfg;
         pf_config_init(&cfg);
-        cfg.path = path;
+        cfg.path = dir;
         cfg.mode = PF_MODE_SNAPSHOT;
         /* Large enough to hold the fill without evicting, so the dump
          * walks every record and the figure is per delivered event. */
@@ -535,12 +538,12 @@ static void bench_drain(void)
         }
 
         uint64_t t0 = now_ns();
-        if (pf_trace_dump(t) != 0)
+        if (pf_trace_dump(t, "bench_ring", NULL, 0) != 0)
             perror("pf_trace_dump");
         per[rep] = (double)(now_ns() - t0) / (fill * 2);
 
         pf_trace_close(t);
-        unlink(path);
+        dir_reset(dir);
     }
 
     double p = per[median_index(per, REPS)];

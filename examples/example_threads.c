@@ -56,12 +56,13 @@ static void *worker_main(void *arg)
 
 static int run(void)
 {
-    const char *path = "demo_threads.pftrace";
-    unlink(path); /* O_APPEND would otherwise extend a previous run */
+    const char *name = "demo_threads.pftrace";
+    unlink(name); /* O_APPEND would otherwise extend a previous run */
 
     struct pf_config cfg;
     pf_config_init(&cfg);
-    cfg.path = path;
+    cfg.path = ".";
+    cfg.name = name;
     cfg.process_name = "demo_threads";
     cfg.mode = PF_MODE_CONTINUOUS;
     cfg.ring_bytes = 256 * 1024;
@@ -106,7 +107,7 @@ static int run(void)
         return 1;
     }
 
-    if (pf_trace_flush(t) != 0) {
+    if (pf_trace_flush(t, NULL, NULL, 0) != 0) {
         perror("pf_trace_flush");
         pf_trace_close(t);
         return 1;
@@ -123,7 +124,7 @@ static int run(void)
                (unsigned long long)s.dropped);
 
     pf_trace_close(t);
-    printf("  wrote %s\n", path);
+    printf("  wrote %s\n", name);
     return 0;
 }
 

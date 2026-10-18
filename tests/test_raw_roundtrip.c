@@ -21,6 +21,7 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "dump_dir.h"
 #include "pftrace.h"
 
 /* Mirrors the values documented in docs/raw_format.md. Kept separate from
@@ -262,23 +263,43 @@ struct ids {
     uint64_t thread, counter;
 };
 
+/* Moves the dump @leaf, written in @dir, to @path. */
+static int move_dump(const char *dir, const char *leaf, const char *path)
+{
+    char file[512];
+    snprintf(file, sizeof(file), "%s/%s", dir, leaf);
+    return rename(file, path);
+}
+
 /* Each iteration emits four events, in this order:
  *   0: slice begin on the thread, name "compute"
  *   1: counter on the counter track, value i
  *   2: instant on the thread, name "tick"
  *   3: slice end on the thread
- */
+ *
+ * A continuous trace is the file @path in the working directory. A snapshot
+ * trace is dumped into the directory @path.d, and the dump is then moved to
+ * @path, so every caller reads the same name in either mode. */
 static int write_trace(const char *path, enum pf_mode mode, int iters,
                        struct ids *out)
 {
-    unlink(path);
+    char dir[256];
+    char leaf[512] = "";
+    snprintf(dir, sizeof(dir), "%s.d", path);
 
     struct pf_config cfg;
     pf_config_init(&cfg);
-    cfg.path = path;
     cfg.format = PF_FORMAT_RAW;
     cfg.mode = mode;
     cfg.process_name = "rawapp";
+    if (mode == PF_MODE_CONTINUOUS) {
+        unlink(path);
+        cfg.path = ".";
+        cfg.name = path;
+    } else {
+        dir_reset(dir);
+        cfg.path = dir;
+    }
 
     struct pf_trace *t = pf_trace_open(&cfg);
     if (!t)
@@ -294,7 +315,15 @@ static int write_trace(const char *path, enum pf_mode mode, int iters,
         pf_slice_end(t, out->thread);
     }
 
+    if (mode == PF_MODE_SNAPSHOT &&
+        pf_trace_dump(t, "snap", leaf, sizeof(leaf)) != 0) {
+        pf_trace_close(t);
+        return -1;
+    }
     pf_trace_close(t);
+
+    if (mode == PF_MODE_SNAPSHOT)
+        return move_dump(dir, leaf, path);
     return 0;
 }
 
@@ -426,8 +455,10 @@ static void refuses_existing(const char *path)
 {
     struct pf_config cfg;
     pf_config_init(&cfg);
-    cfg.path = path;
+    cfg.path = ".";
+    cfg.name = path;
     cfg.format = PF_FORMAT_RAW;
+    cfg.mode = PF_MODE_CONTINUOUS;
 
     errno = 0;
     struct pf_trace *t = pf_trace_open(&cfg);
@@ -476,10 +507,13 @@ static const struct rtrack *find_thread_track(const struct parsed *p, pid_t tid)
  * a thread emits must sit on its own track and nothing else's. */
 static void simple_threads(const char *path)
 {
-    unlink(path);
+    char dir[256];
+    char leaf[512] = "";
+    snprintf(dir, sizeof(dir), "%s.d", path);
+    dir_reset(dir);
     struct pf_config cfg;
     pf_config_init(&cfg);
-    cfg.path = path;
+    cfg.path = dir;
     cfg.format = PF_FORMAT_RAW;
     cfg.mode = PF_MODE_SNAPSHOT;
 
@@ -498,7 +532,10 @@ static void simple_threads(const char *path)
     }
     for (int i = 0; i < SIMPLE_THREADS; i++)
         pthread_join(th[i], NULL);
+    CHECK(pf_trace_dump(t, "simple", leaf, sizeof(leaf)) == 0,
+          "simple threads: dump failed");
     pf_trace_close(t);
+    CHECK(move_dump(dir, leaf, path) == 0, "simple threads: no dump");
 
     struct parsed p;
     if (parse_raw(path, &p) != 0) {
@@ -550,7 +587,8 @@ static void simple_rename(const char *path)
     unlink(path);
     struct pf_config cfg;
     pf_config_init(&cfg);
-    cfg.path = path;
+    cfg.path = ".";
+    cfg.name = path;
     cfg.format = PF_FORMAT_RAW;
     cfg.mode = PF_MODE_CONTINUOUS;
 
@@ -564,7 +602,7 @@ static void simple_rename(const char *path)
      * rename, which is the case that needs the track re-declared. */
     pf_slice_begin_sp("before");
     pf_slice_end_sp();
-    CHECK(pf_trace_flush(t) == 0, "simple rename: flush failed");
+    CHECK(pf_trace_flush(t, NULL, NULL, 0) == 0, "simple rename: flush failed");
     pf_thread_name("renamed");
     pf_slice_begin_sp("after");
     pf_slice_end_sp();

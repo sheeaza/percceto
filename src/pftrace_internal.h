@@ -1,6 +1,7 @@
 #ifndef PFTRACE_INTERNAL_H
 #define PFTRACE_INTERNAL_H
 
+#include <limits.h>
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdbool.h>
@@ -146,6 +147,10 @@ struct track_def {
 /* --- Trace context ---------------------------------------------------- */
 
 struct pf_trace {
+    /* Directory the output goes in, held for the life of the trace. */
+    int dirfd;
+    /* Continuous: the one output file, held open. Snapshot: -1 except while a
+     * dump is writing its file. */
     int fd;
     struct pf_config cfg;
     struct pf_ring ring;
@@ -156,7 +161,7 @@ struct pf_trace {
 
     /* Serializes drains: a caller's pf_trace_dump() against the drain
      * thread, and against another caller's. Also covers the intern
-     * tables, the staging buffers and tracks_emitted. */
+     * tables, the staging buffers, tracks_emitted, fd and dump_seq. */
     pthread_mutex_t out_lock;
 
     /* Guards the track table against concurrent pf_track_* calls, and
@@ -166,6 +171,13 @@ struct pf_trace {
     unsigned track_count;
     unsigned tracks_emitted;
     uint64_t next_uuid;
+
+    /* Snapshot mode: number of the next dump, used in its file name. Per
+     * trace, so it only separates dumps made within one run. */
+    uint32_t dump_seq;
+    /* Continuous mode: the name of the open file, copied at open so a dump
+     * can report it. */
+    char file_name[NAME_MAX + 1];
 
     /* Uuid of the process track for getpid(), registered at open. The
      * parent of the thread tracks the simple API creates. 0 if the table

@@ -42,10 +42,9 @@ int main(void)
 {
     printf("test_process_track\n");
 
-    const char *path = "process_track.pftrace";
     struct pf_config cfg;
     pf_config_init(&cfg);
-    cfg.path = path;
+    cfg.path = ".";
     struct pf_trace *t = pf_trace_open(&cfg);
     if (!t) {
         check(0, "open trace");
@@ -70,11 +69,10 @@ int main(void)
           "thread track is a child of the process track");
 
     pf_trace_close(t);
-    unlink(path);
 
     /* A name set in the config is the process track's name. */
     pf_config_init(&cfg);
-    cfg.path = path;
+    cfg.path = ".";
     cfg.process_name = "custom-proc";
     t = pf_trace_open(&cfg);
     if (!t) {
@@ -86,7 +84,6 @@ int main(void)
               "process_name from config names the process track");
         pf_trace_close(t);
     }
-    unlink(path);
 
     if (failures) {
         printf("%d failure(s)\n", failures);

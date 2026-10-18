@@ -56,8 +56,13 @@ enum pf_format {
 
 /**
  * struct pf_config - Trace parameters, fixed for the life of the trace.
- * @path: Output file path. Required. Opened with O_APPEND, so an
- *      existing file is extended rather than truncated.
+ * @path: Directory the output goes in. Required. Checked at open, and held
+ *      for the life of the trace, since snapshot dumps open their files in
+ *      it.
+ * @name: Continuous: the output file name within @path. Required, and fixed
+ *      for the life of the trace. Opened with O_APPEND, so an existing file
+ *      is extended rather than truncated. Snapshot: must be %NULL, since
+ *      each pf_trace_dump() names its own file.
  * @ring_bytes: In-RAM ring buffer size. Rounded up -- to a power of two
  *      and a page multiple, or to a whole number of slots, depending on
  *      the ring backend -- so it is a lower bound rather than the figure
@@ -80,6 +85,7 @@ enum pf_format {
  */
 struct pf_config {
     const char *path;
+    const char *name;
     size_t ring_bytes;
     enum pf_mode mode;
     enum pf_format format;
@@ -113,15 +119,18 @@ struct pf_stats {
  * pf_config_init() - Fill a config with defaults.
  * @cfg: Config to initialize.
  *
- * Sets every field to its default, leaving &pf_config.path %NULL for the
- * caller to set. Call this before changing individual fields so later
- * additions to the struct keep their defaults.
+ * Sets every field to its default, leaving &pf_config.path and
+ * &pf_config.name %NULL for the caller to set. Call this before changing
+ * individual fields so later additions to the struct keep their defaults.
  */
 PF_API void pf_config_init(struct pf_config *cfg);
 
 /**
  * pf_trace_open() - Allocate the ring and open the output file.
- * @cfg: Trace parameters. Copied, so it need not outlive this call.
+ * @cfg: Trace parameters. Copied, so it need not outlive this call. The
+ *      strings it points to, &pf_config.path and &pf_config.name, are read
+ *      here, except that the directory is held open for the life of the
+ *      trace.
  *
  * Performs every allocation the trace will ever need, and in
  * %PF_MODE_CONTINUOUS starts the drain thread. After this returns, the
@@ -129,14 +138,28 @@ PF_API void pf_config_init(struct pf_config *cfg);
  *
  * Return: A new trace context, or %NULL on failure, with errno set.
  * %EINVAL means @cfg or its path is %NULL, or @watermark_pct exceeds 99,
- * or @format is %PF_FORMAT_RAW on a big-endian host. %EEXIST means
- * @format is %PF_FORMAT_RAW and the file already has contents.
+ * or the name does not fit the mode (missing or not a single path
+ * component in %PF_MODE_CONTINUOUS, given in %PF_MODE_SNAPSHOT), or
+ * @format is %PF_FORMAT_RAW on a big-endian host. %EEXIST means
+ * @format is %PF_FORMAT_RAW in %PF_MODE_CONTINUOUS and the file already
+ * has contents. Errors from opening the directory or file pass through.
  */
 PF_API struct pf_trace *pf_trace_open(const struct pf_config *cfg);
 
 /**
  * pf_trace_dump() - Write everything currently buffered.
  * @t: Trace context.
+ * @name: In %PF_MODE_SNAPSHOT, the stem of the new file, required. The file
+ *      is named &lt;name&gt;-&lt;UTC time&gt;-&lt;seq&gt;.pftrace, for example
+ *      frame_stall-20261018T143007.512Z-0003.pftrace, in the directory given
+ *      at open. An existing file of that exact name is overwritten. In
+ *      %PF_MODE_CONTINUOUS, must be %NULL: the dump drains into the one file
+ *      opened at open.
+ * @file: Receives the name of the file the dump wrote, without the directory,
+ *      NUL-terminated. Join it to the directory given at open to get the
+ *      path. May be %NULL. In %PF_MODE_CONTINUOUS it is the name of the open
+ *      file. Set only when the dump succeeds.
+ * @size: Size of @file in bytes.
  *
  * Writes the ring's contents to the output file, preceded by the track
  * table so the result stands alone as a trace. In %PF_MODE_SNAPSHOT this
@@ -146,20 +169,29 @@ PF_API struct pf_trace *pf_trace_open(const struct pf_config *cfg);
  * Safe to call from any thread, and safe to call concurrently with the
  * drain thread.
  *
- * Return: 0 on success, or -1 with errno set from write().
+ * Return: 0 on success, or -1 with errno set from the open or write.
+ * %EINVAL means @name does not match the mode, or is not a single path
+ * component. %ENAMETOOLONG means @file is too small for the name; nothing
+ * is written in that case.
  */
-PF_API int pf_trace_dump(struct pf_trace *t);
+PF_API int pf_trace_dump(struct pf_trace *t, const char *name, char *file,
+                         size_t size);
 
 /**
  * pf_trace_flush() - Dump, then force the result to disk.
  * @t: Trace context.
+ * @name: As for pf_trace_dump().
+ * @file: As for pf_trace_dump().
+ * @size: As for pf_trace_dump().
  *
- * pf_trace_dump() plus fdatasync(). Use before a crash is likely; a
- * plain dump is enough for the file to be readable by other processes.
+ * pf_trace_dump() plus fdatasync(), on the file that dump wrote. Use
+ * before a crash is likely; a plain dump is enough for the file to be
+ * readable by other processes.
  *
  * Return: 0 on success, or -1 with errno set.
  */
-PF_API int pf_trace_flush(struct pf_trace *t);
+PF_API int pf_trace_flush(struct pf_trace *t, const char *name, char *file,
+                          size_t size);
 
 /**
  * pf_trace_stats() - Read the cumulative counters.
@@ -172,12 +204,16 @@ PF_API int pf_trace_flush(struct pf_trace *t);
 PF_API void pf_trace_stats(const struct pf_trace *t, struct pf_stats *out);
 
 /**
- * pf_trace_close() - Dump what is buffered, then free everything.
+ * pf_trace_close() - Free everything, writing the buffer first in
+ * %PF_MODE_CONTINUOUS.
  * @t: Trace context to close, or %NULL.
  *
- * Stops and joins the drain thread, writes any remaining buffered
- * events, closes the file and unmaps the ring. Not safe to call
- * concurrently with any other function on @t.
+ * In %PF_MODE_CONTINUOUS, stops and joins the drain thread and writes any
+ * remaining buffered events, so the file holds every event. In
+ * %PF_MODE_SNAPSHOT it writes nothing: events still in the ring are lost
+ * unless pf_trace_dump() was called first. Then closes the file and
+ * unmaps the ring. Not safe to call concurrently with any other function
+ * on @t.
  */
 PF_API void pf_trace_close(struct pf_trace *t);
 

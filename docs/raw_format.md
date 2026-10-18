@@ -25,7 +25,7 @@ reader (the offline Python parser).
 
 ```
 +---------------------------+
-| file header (fixed)       |  written once, at open
+| file header (fixed)       |  written once per file: at open, or per dump
 +---------------------------+
 | chunk                     |
 | chunk                     |  appended over time, in order
@@ -178,15 +178,16 @@ The writer is chosen per trace by `pf_config.format`:
 - `PF_FORMAT_PROTOBUF` (default): Perfetto protobuf, written by the drain.
 - `PF_FORMAT_RAW`: this format.
 
-A raw file must be new or empty. `pf_trace_open` returns `EEXIST` for a
-non-empty file, so a raw file is never mixed with another format.
+A continuous raw file must be new or empty. `pf_trace_open` returns `EEXIST`
+for a non-empty file, so a raw file is never mixed with another format. A
+snapshot dump writes a new file each time, so it always starts empty.
 
 ## Snapshot mode
 
-A snapshot dump writes the same format: the file header, then the NAMES and
-TRACKS chunks needed by the snapshot, then one EVENTS chunk. Interning does
-not restart within a single file, so a snapshot needs no special case in the
-reader.
+A snapshot dump writes the same format into its own file: the file header,
+then the NAMES and TRACKS chunks needed by the snapshot, then one EVENTS chunk.
+Interning starts empty in every file, so each file stands alone and needs no
+special case in the reader.
 
 ## Open items
 

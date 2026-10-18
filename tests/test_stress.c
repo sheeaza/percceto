@@ -21,6 +21,7 @@
 #include <string.h>
 #include <unistd.h>
 
+#include "dump_dir.h"
 #include "pftrace.h"
 
 /* Prefix for this build's output files. Set per backend by CMake so the
@@ -73,12 +74,12 @@ static void test_snapshot_window(void)
     printf("snapshot window (%d events through a %dKiB ring):\n", EVENTS,
            RING_BYTES / 1024);
 
-    const char *path = PF_TRACE_PREFIX "stress_snapshot.pftrace";
-    unlink(path);
+    const char *dir = PF_TRACE_PREFIX "stress_snapshot.d";
+    dir_reset(dir);
 
     struct pf_config cfg;
     pf_config_init(&cfg);
-    cfg.path = path;
+    cfg.path = dir;
     cfg.mode = PF_MODE_SNAPSHOT;
     cfg.ring_bytes = RING_BYTES;
     cfg.drain_interval_ms = 5;
@@ -101,7 +102,8 @@ static void test_snapshot_window(void)
 
     /* The stall the program just noticed. */
     pf_instant_event(t, track, "perf_drop_detected");
-    CHECK(pf_trace_dump(t) == 0, "dump");
+    char leaf[512] = "";
+    CHECK(pf_trace_dump(t, "snap", leaf, sizeof(leaf)) == 0, "dump");
 
     struct pf_stats s;
     pf_trace_stats(t, &s);
@@ -121,8 +123,10 @@ static void test_snapshot_window(void)
 
     /* And it must be the RECENT window: the trigger marker is in the file
      * and the startup marker is long gone. */
-    FILE *f = fopen(path, "rb");
-    CHECK(f != NULL, "reopen %s", path);
+    char file[512];
+    snprintf(file, sizeof(file), "%s/%s", dir, leaf);
+    FILE *f = fopen(file, "rb");
+    CHECK(f != NULL, "reopen %s", file);
     if (f) {
         static char buf[4 * 1024 * 1024];
         size_t n = fread(buf, 1, sizeof(buf), f);
@@ -134,6 +138,9 @@ static void test_snapshot_window(void)
         CHECK(has_trigger, "window contains the event that triggered the dump");
         CHECK(!has_early, "window has recycled past the start of the run");
     }
+    /* tools/CMakeLists.txt reads this trace by its fixed name. */
+    CHECK(rename(file, PF_TRACE_PREFIX "stress_snapshot.pftrace") == 0,
+          "move the dump to its fixed name");
     printf("  ok\n");
 }
 
@@ -154,7 +161,8 @@ static void test_continuous_gapless(void)
 
     struct pf_config cfg;
     pf_config_init(&cfg);
-    cfg.path = path;
+    cfg.path = ".";
+    cfg.name = path;
     cfg.mode = PF_MODE_CONTINUOUS;
     cfg.ring_bytes = 1024 * 1024;
     cfg.watermark_pct = 50;
@@ -180,7 +188,7 @@ static void test_continuous_gapless(void)
     for (unsigned i = 0; i < 4; i++)
         pthread_join(th[i], NULL);
 
-    CHECK(pf_trace_flush(t) == 0, "flush");
+    CHECK(pf_trace_flush(t, NULL, NULL, 0) == 0, "flush");
 
     struct pf_stats s;
     pf_trace_stats(t, &s);
@@ -216,7 +224,8 @@ static void test_continuous_paced(void)
 
     struct pf_config cfg;
     pf_config_init(&cfg);
-    cfg.path = path;
+    cfg.path = ".";
+    cfg.name = path;
     cfg.mode = PF_MODE_CONTINUOUS;
     cfg.ring_bytes = 1024 * 1024;
     cfg.watermark_pct = 75;
@@ -241,7 +250,7 @@ static void test_continuous_paced(void)
             usleep(1000);
     }
 
-    CHECK(pf_trace_flush(t) == 0, "flush");
+    CHECK(pf_trace_flush(t, NULL, NULL, 0) == 0, "flush");
 
     struct pf_stats s;
     pf_trace_stats(t, &s);
@@ -310,12 +319,12 @@ static void test_long_names(void)
 {
     printf("long names:\n");
 
-    const char *path = PF_TRACE_PREFIX "stress_names.pftrace";
-    unlink(path);
+    const char *dir = PF_TRACE_PREFIX "stress_names.d";
+    dir_reset(dir);
 
     struct pf_config cfg;
     pf_config_init(&cfg);
-    cfg.path = path;
+    cfg.path = dir;
     cfg.mode = PF_MODE_SNAPSHOT;
     cfg.ring_bytes = 128 * 1024;
 
@@ -343,7 +352,8 @@ static void test_long_names(void)
         pf_slice_begin(t, track, LONG_NAME);
         pf_slice_end(t, track);
     }
-    CHECK(pf_trace_dump(t) == 0, "dump");
+    char leaf[512] = "";
+    CHECK(pf_trace_dump(t, "names", leaf, sizeof(leaf)) == 0, "dump");
 
     struct pf_stats s;
     pf_trace_stats(t, &s);
@@ -356,8 +366,10 @@ static void test_long_names(void)
      * occurrence is all that is expected. */
     size_t want = strlen(LONG_NAME);
     CHECK(want == 520, "the test name is %zu bytes", want);
-    FILE *f = fopen(path, "rb");
-    CHECK(f != NULL, "reopen %s", path);
+    char file[512];
+    snprintf(file, sizeof(file), "%s/%s", dir, leaf);
+    FILE *f = fopen(file, "rb");
+    CHECK(f != NULL, "reopen %s", file);
     if (f) {
         static char buf[1024 * 1024];
         size_t n = fread(buf, 1, sizeof(buf), f);
@@ -365,6 +377,9 @@ static void test_long_names(void)
         CHECK(memmem(buf, n, LONG_NAME, want) != NULL,
               "the full %zu-byte name reached the file", want);
     }
+    /* tools/CMakeLists.txt reads this trace by its fixed name. */
+    CHECK(rename(file, PF_TRACE_PREFIX "stress_names.pftrace") == 0,
+          "move the dump to its fixed name");
 #undef LONG_NAME
     printf("  ok\n");
 }
