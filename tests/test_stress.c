@@ -88,8 +88,7 @@ static void test_snapshot_window(void)
     if (!t)
         return;
 
-    uint64_t proc = pf_track_process(t, 4321, "stress");
-    uint64_t track = pf_track_thread(t, proc, 4321, 1, "main");
+    uint64_t track = pf_track_thread(t, 4321, 1, "main");
 
     /* "early" appears only at the very start, so if it survives to the
      * dump the ring is not actually recycling. */
@@ -166,14 +165,13 @@ static void test_continuous_gapless(void)
     if (!t)
         return;
 
-    uint64_t proc = pf_track_process(t, 4322, "stress");
     uint64_t tracks[4];
     pthread_t th[4];
     struct worker_arg args[4];
     for (unsigned i = 0; i < 4; i++) {
         char name[16];
         snprintf(name, sizeof(name), "w%u", i);
-        tracks[i] = pf_track_thread(t, proc, 4322, (int32_t)(i + 1), name);
+        tracks[i] = pf_track_thread(t, 4322, (int32_t)(i + 1), name);
         args[i] =
             (struct worker_arg){ .t = t, .track = tracks[i], .n = EVENTS / 4 };
         CHECK(pthread_create(&th[i], NULL, worker_fn, &args[i]) == 0,
@@ -229,8 +227,7 @@ static void test_continuous_paced(void)
     if (!t)
         return;
 
-    uint64_t proc = pf_track_process(t, 4324, "paced");
-    uint64_t track = pf_track_thread(t, proc, 4324, 1, "main");
+    uint64_t track = pf_track_thread(t, 4324, 1, "main");
 
     /* ~100k events over ~2s: 50k events/s, far above most real tracing
      * and far below what the drain thread sustains. */
@@ -327,8 +324,7 @@ static void test_long_names(void)
     if (!t)
         return;
 
-    uint64_t proc = pf_track_process(t, 4323, "names");
-    uint64_t track = pf_track_thread(t, proc, 4323, 1, "main");
+    uint64_t track = pf_track_thread(t, 4323, 1, "main");
 
 /* 520 characters: longer than the old 255-byte cap and than the whole
  * record, and a literal, so the compile-time check accepts it. */

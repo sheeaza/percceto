@@ -408,10 +408,10 @@ uint64_t pf_track_process(struct pf_trace *t, int32_t pid, const char *name)
     return track_add(t, TRACK_PROCESS, 0, pid, 0, name, PF_UNIT_UNSPECIFIED);
 }
 
-uint64_t pf_track_thread(struct pf_trace *t, uint64_t parent_uuid, int32_t pid,
-                         int32_t tid, const char *name)
+uint64_t pf_track_thread(struct pf_trace *t, int32_t pid, int32_t tid,
+                         const char *name)
 {
-    return track_add(t, TRACK_THREAD, parent_uuid, pid, tid, name,
+    return track_add(t, TRACK_THREAD, t->process_uuid, pid, tid, name,
                      PF_UNIT_UNSPECIFIED);
 }
 
@@ -454,17 +454,18 @@ static uint64_t track_find_or_add(struct pf_trace *t, enum track_kind kind,
     return uuid;
 }
 
-uint64_t pf_track_counter(struct pf_trace *t, uint64_t parent_uuid,
-                          const char *name, enum pf_unit unit)
+uint64_t pf_track_counter(struct pf_trace *t, const char *name,
+                          enum pf_unit unit)
 {
-    return track_find_or_add(t, TRACK_COUNTER, parent_uuid, 0, 0, name, unit);
+    return track_find_or_add(t, TRACK_COUNTER, t->process_uuid, 0, 0, name,
+                             unit);
 }
 
-uint64_t pf_track_thread_named(struct pf_trace *t, uint64_t parent_uuid,
-                               int32_t pid, int32_t tid, const char *name)
+uint64_t pf_track_thread_named(struct pf_trace *t, int32_t pid, int32_t tid,
+                               const char *name)
 {
     /* pid and tid are recorded only when the track is created. */
-    return track_find_or_add(t, TRACK_THREAD, parent_uuid, pid, tid, name,
+    return track_find_or_add(t, TRACK_THREAD, t->process_uuid, pid, tid, name,
                              PF_UNIT_UNSPECIFIED);
 }
 

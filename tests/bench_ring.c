@@ -305,8 +305,7 @@ static struct result run_one(const struct scenario *s)
         return r;
     }
 
-    uint64_t proc = pf_track_process(t, 1, "bench");
-    uint64_t track = pf_track_thread(t, proc, 1, 1, "main");
+    uint64_t track = pf_track_thread(t, 1, 1, "main");
 
     static struct worker prod[MAX_PRODUCERS];
     pthread_t th[MAX_PRODUCERS];
@@ -466,8 +465,7 @@ static void bench_cost(void)
                 perror("pf_trace_open");
                 return;
             }
-            uint64_t proc = pf_track_process(t, 1, "bench");
-            uint64_t trk = pf_track_thread(t, proc, 1, 1, "main");
+            uint64_t trk = pf_track_thread(t, 1, 1, "main");
 
             /* Touch the pages this repetition will use, so first-touch
              * faults are not charged per event. */
@@ -529,8 +527,7 @@ static void bench_drain(void)
             perror("pf_trace_open");
             return;
         }
-        uint64_t proc = pf_track_process(t, 1, "bench");
-        uint64_t trk = pf_track_thread(t, proc, 1, 1, "main");
+        uint64_t trk = pf_track_thread(t, 1, 1, "main");
 
         for (unsigned i = 0; i < fill; i++) {
             pf_slice_begin(t, trk, "compute");

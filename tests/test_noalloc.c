@@ -99,9 +99,8 @@ static void check_mode(const char *label, enum pf_mode mode, bool dump)
         failures++;
         return;
     }
-    uint64_t proc = pf_track_process(t, 999, "noalloc");
-    uint64_t track = pf_track_thread(t, proc, 999, 1, "main");
-    uint64_t ctr = pf_track_counter(t, proc, "depth", PF_UNIT_COUNT);
+    uint64_t track = pf_track_thread(t, 999, 1, "main");
+    uint64_t ctr = pf_track_counter(t, "depth", PF_UNIT_COUNT);
 
     /* Touch every distinct event shape once before arming, so lazily
      * initialized libc state (stdio buffers, locale, the first

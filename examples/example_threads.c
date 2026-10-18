@@ -78,8 +78,7 @@ static int run(void)
     struct shared sh = { .t = t, .pid = getpid() };
     atomic_init(&sh.jobs_done, 0);
     sh.proc = pf_track_process(t, sh.pid, "demo_threads");
-    sh.jobs_done_track =
-        pf_track_counter(t, sh.proc, "jobs_done", PF_UNIT_COUNT);
+    sh.jobs_done_track = pf_track_counter(t, "jobs_done", PF_UNIT_COUNT);
 
     pthread_t threads[NUM_WORKERS];
     struct worker workers[NUM_WORKERS];

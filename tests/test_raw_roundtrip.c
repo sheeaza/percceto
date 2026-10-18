@@ -284,8 +284,8 @@ static int write_trace(const char *path, enum pf_mode mode, int iters,
         return -1;
 
     out->proc = pf_track_process(t, 42, "rawapp");
-    out->thread = pf_track_thread(t, out->proc, 42, 1, "main");
-    out->counter = pf_track_counter(t, out->proc, "depth", PF_UNIT_COUNT);
+    out->thread = pf_track_thread(t, 42, 1, "main");
+    out->counter = pf_track_counter(t, "depth", PF_UNIT_COUNT);
 
     for (int i = 0; i < iters; i++) {
         pf_slice_begin(t, out->thread, "compute");

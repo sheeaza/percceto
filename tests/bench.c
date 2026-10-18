@@ -56,8 +56,7 @@ int main(void)
         perror("open");
         return 1;
     }
-    uint64_t proc = pf_track_process(t, 1, "bench");
-    uint64_t trk = pf_track_thread(t, proc, 1, 1, "main");
+    uint64_t trk = pf_track_thread(t, 1, 1, "main");
 
     /* Warm the mapping so first-touch page faults are not counted as
      * per-event cost. */
@@ -101,8 +100,7 @@ int main(void)
         perror("open");
         return 1;
     }
-    proc = pf_track_process(t, 1, "bench");
-    trk = pf_track_thread(t, proc, 1, 1, "main");
+    trk = pf_track_thread(t, 1, 1, "main");
 
     const unsigned fill = 400000;
     for (unsigned i = 0; i < fill; i++) {

@@ -201,31 +201,32 @@ PF_API uint64_t pf_track_process(struct pf_trace *t, int32_t pid,
 /**
  * pf_track_thread() - Register a thread track.
  * @t: Trace context.
- * @parent_uuid: Parent process track's uuid, or 0 if there is none.
  * @pid: Process ID owning the thread.
  * @tid: Thread ID to record.
  * @name: Thread name, or %NULL.
+ *
+ * The track is a child of the trace's process track, registered by
+ * pf_trace_open().
  *
  * Safe to call from any thread, concurrently with other pf_track_*() calls.
  *
  * Return: The new track's track_uuid, or 0 if the table is full.
  */
-PF_API uint64_t pf_track_thread(struct pf_trace *t, uint64_t parent_uuid,
-                                int32_t pid, int32_t tid, const char *name);
+PF_API uint64_t pf_track_thread(struct pf_trace *t, int32_t pid, int32_t tid,
+                                const char *name);
 
 /**
  * pf_track_thread_named() - Get or register a thread track by name.
  * @t: Trace context.
- * @parent_uuid: Parent process track's uuid, or 0 if there is none.
  * @pid: Process ID owning the thread. Recorded only when the track is
  *      created.
  * @tid: Thread ID to record. Recorded only when the track is created.
  * @name: Thread track name. Must be non-%NULL to match; a %NULL name
  *      always creates a new track.
  *
- * Identity is @parent_uuid and @name. A call with the same parent and name
- * as an existing thread track returns that track, and the @pid and @tid
- * passed on that call are ignored. Two threads that should be separate
+ * Identity is @name, under the trace's process track. A call with the same
+ * name as an existing thread track returns that track, and the @pid and
+ * @tid passed on that call are ignored. Two threads that should be separate
  * tracks must therefore use distinct names. Creating a track with an
  * existing identity does not add a table entry.
  *
@@ -233,23 +234,21 @@ PF_API uint64_t pf_track_thread(struct pf_trace *t, uint64_t parent_uuid,
  *
  * Return: The track's track_uuid, or 0 if the table is full.
  */
-PF_API uint64_t pf_track_thread_named(struct pf_trace *t, uint64_t parent_uuid,
-                                      int32_t pid, int32_t tid,
-                                      const char *name);
+PF_API uint64_t pf_track_thread_named(struct pf_trace *t, int32_t pid,
+                                      int32_t tid, const char *name);
 
 /**
  * pf_track_counter() - Get or register a counter track.
  * @t: Trace context.
- * @parent_uuid: Parent track's uuid, or 0 if there is none.
  * @name: Counter track name, or %NULL. Names longer than the track name
  *      cap are truncated, and the truncated form is what is compared.
  * @unit: Unit the counter's values are measured in.
  *
- * Identity is the name: a counter track with the same @parent_uuid and
- * @name as an existing one is that track, and its uuid is returned. Two
- * objects that should be separate series must therefore use distinct
- * names, e.g. by including an id. Creating a track with an existing name
- * does not add a table entry.
+ * The track is a child of the trace's process track. Identity is the
+ * name: a counter track with the same @name as an existing one is that
+ * track, and its uuid is returned. Two objects that should be separate
+ * series must therefore use distinct names, e.g. by including an id.
+ * Creating a track with an existing name does not add a table entry.
  *
  * Asking for an existing name with a different @unit returns 0.
  *
@@ -258,8 +257,8 @@ PF_API uint64_t pf_track_thread_named(struct pf_trace *t, uint64_t parent_uuid,
  * Return: The track's track_uuid, or 0 if the table is full or the unit
  *      conflicts with an existing track of the same name.
  */
-PF_API uint64_t pf_track_counter(struct pf_trace *t, uint64_t parent_uuid,
-                                 const char *name, enum pf_unit unit);
+PF_API uint64_t pf_track_counter(struct pf_trace *t, const char *name,
+                                 enum pf_unit unit);
 
 /**
  * PF_NAME_LITERAL() - Assert at compile time that @s is a string literal.

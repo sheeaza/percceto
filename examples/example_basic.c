@@ -18,9 +18,9 @@ static struct tracks setup_tracks(struct pf_trace *t)
 {
     struct tracks tr;
     tr.proc = pf_track_process(t, 1234, "demo_app");
-    tr.main_thread = pf_track_thread(t, tr.proc, 1234, 1, "main");
-    tr.worker_thread = pf_track_thread(t, tr.proc, 1234, 2, "worker");
-    tr.queue_depth = pf_track_counter(t, tr.proc, "queue_depth", PF_UNIT_COUNT);
+    tr.main_thread = pf_track_thread(t, 1234, 1, "main");
+    tr.worker_thread = pf_track_thread(t, 1234, 2, "worker");
+    tr.queue_depth = pf_track_counter(t, "queue_depth", PF_UNIT_COUNT);
     return tr;
 }
 
