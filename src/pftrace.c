@@ -578,6 +578,33 @@ void pf_thread_name(const char *name)
         track_rename(t, tl_slot.uuid, tl_slot.name);
 }
 
+uint64_t pf_thread_track_sp(void)
+{
+    struct pf_trace *t = default_trace();
+    return t ? thread_track(t) : 0;
+}
+
+uint64_t pf_track_counter_sp(uint64_t parent_uuid, const char *name,
+                             enum pf_unit unit)
+{
+    struct pf_trace *t = default_trace();
+    return t ? pf_track_counter(t, parent_uuid, name, unit) : 0;
+}
+
+void pf_counter_set_int_sp(uint64_t counter_track_uuid, int64_t value)
+{
+    struct pf_trace *t = default_trace();
+    if (t)
+        pf_counter_set_int(t, counter_track_uuid, value);
+}
+
+void pf_counter_set_double_sp(uint64_t counter_track_uuid, double value)
+{
+    struct pf_trace *t = default_trace();
+    if (t)
+        pf_counter_set_double(t, counter_track_uuid, value);
+}
+
 /* --- Lifecycle --------------------------------------------------------- */
 
 void pf_config_init(struct pf_config *cfg)

@@ -414,6 +414,44 @@ PF_API void pf_instant_event_sp_impl(const char *name);
  */
 PF_API void pf_thread_name(const char *name);
 
+/**
+ * pf_thread_track_sp() - Get the calling thread's track uuid.
+ *
+ * Registers the thread's track on the first call, as the other _sp calls
+ * do, then returns the same cached uuid. Use it as the @parent_uuid of
+ * pf_track_counter() to nest a counter under the calling thread.
+ *
+ * Return: The thread track's track_uuid, or 0 if there is no default trace.
+ */
+PF_API uint64_t pf_thread_track_sp(void);
+
+/**
+ * pf_track_counter_sp() - pf_track_counter() on the default trace.
+ * @parent_uuid: Parent track, as for pf_track_counter(). 0 selects the
+ *      process track.
+ * @name: Counter track name, or %NULL.
+ * @unit: Unit the counter's values are measured in.
+ *
+ * Return: The track's track_uuid, or 0 if there is no default trace or the
+ *      call would fail for the reasons pf_track_counter() gives.
+ */
+PF_API uint64_t pf_track_counter_sp(uint64_t parent_uuid, const char *name,
+                                    enum pf_unit unit);
+
+/**
+ * pf_counter_set_int_sp() - pf_counter_set_int() on the default trace.
+ * @counter_track_uuid: Counter track to sample.
+ * @value: Value to record.
+ */
+PF_API void pf_counter_set_int_sp(uint64_t counter_track_uuid, int64_t value);
+
+/**
+ * pf_counter_set_double_sp() - pf_counter_set_double() on the default trace.
+ * @counter_track_uuid: Counter track to sample.
+ * @value: Value to record.
+ */
+PF_API void pf_counter_set_double_sp(uint64_t counter_track_uuid, double value);
+
 #ifdef __cplusplus
 }
 #endif

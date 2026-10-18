@@ -44,6 +44,12 @@ add_executable(test_process_track test_process_track.c)
 target_link_libraries(test_process_track PRIVATE pftrace)
 add_test(NAME process_track COMMAND test_process_track)
 
+# The _sp counter calls act on the default trace and the calling thread's
+# track, and match their explicit counterparts.
+add_executable(test_counter_sp test_counter_sp.c)
+target_link_libraries(test_counter_sp PRIVATE pftrace)
+add_test(NAME counter_sp COMMAND test_counter_sp)
+
 if(PFTRACE_BUILD_BENCH)
   foreach(backend mpsc zcopy)
     add_executable(test_stress_${backend} test_stress.c)
