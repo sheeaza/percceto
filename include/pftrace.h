@@ -223,25 +223,28 @@ PF_API uint64_t pf_track_thread_named(struct pf_trace *t, int32_t pid,
 /**
  * pf_track_counter() - Get or register a counter track.
  * @t: Trace context.
+ * @parent_uuid: Parent track. 0 selects the trace's process track. Otherwise
+ *      a thread track's uuid, as returned by pf_track_thread() or
+ *      pf_track_thread_named().
  * @name: Counter track name, or %NULL. Names longer than the track name
  *      cap are truncated, and the truncated form is what is compared.
  * @unit: Unit the counter's values are measured in.
  *
- * The track is a child of the trace's process track. Identity is the
- * name: a counter track with the same @name as an existing one is that
- * track, and its uuid is returned. Two objects that should be separate
- * series must therefore use distinct names, e.g. by including an id.
- * Creating a track with an existing name does not add a table entry.
+ * Identity is @parent_uuid and @name: a counter track with the same parent
+ * and name as an existing one is that track, and its uuid is returned. Two
+ * objects that should be separate series must therefore use distinct
+ * names, e.g. by including an id. Creating a track with an existing
+ * identity does not add a table entry.
  *
- * Asking for an existing name with a different @unit returns 0.
+ * Asking for an existing identity with a different @unit returns 0.
  *
  * Safe to call from any thread, concurrently with other pf_track_*() calls.
  *
- * Return: The track's track_uuid, or 0 if the table is full or the unit
- *      conflicts with an existing track of the same name.
+ * Return: The track's track_uuid, or 0 if the table is full, @parent_uuid
+ *      is not a thread track, or the unit conflicts with an existing track.
  */
-PF_API uint64_t pf_track_counter(struct pf_trace *t, const char *name,
-                                 enum pf_unit unit);
+PF_API uint64_t pf_track_counter(struct pf_trace *t, uint64_t parent_uuid,
+                                 const char *name, enum pf_unit unit);
 
 /**
  * PF_NAME_LITERAL() - Assert at compile time that @s is a string literal.

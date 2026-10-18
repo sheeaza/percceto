@@ -19,7 +19,7 @@ static struct tracks setup_tracks(struct pf_trace *t)
     struct tracks tr;
     tr.main_thread = pf_track_thread(t, getpid(), 1, "main");
     tr.worker_thread = pf_track_thread(t, getpid(), 2, "worker");
-    tr.queue_depth = pf_track_counter(t, "queue_depth", PF_UNIT_COUNT);
+    tr.queue_depth = pf_track_counter(t, 0, "queue_depth", PF_UNIT_COUNT);
     return tr;
 }
 

@@ -420,6 +420,23 @@ static bool track_name_eq(const struct track_def *td, const char *name)
            memcmp(td->name, name, n) == 0;
 }
 
+/* Whether @uuid names a process or thread track, the only kinds a track may
+ * be parented under. Tracks are never removed, so a uuid in range is valid. */
+static bool track_can_parent(struct pf_trace *t, uint64_t uuid)
+{
+    bool ok = false;
+    pthread_mutex_lock(&t->track_lock);
+    for (unsigned i = 0; i < t->track_count; i++) {
+        if (t->tracks[i].uuid != uuid)
+            continue;
+        ok = t->tracks[i].kind == TRACK_PROCESS ||
+             t->tracks[i].kind == TRACK_THREAD;
+        break;
+    }
+    pthread_mutex_unlock(&t->track_lock);
+    return ok;
+}
+
 /* Returns the uuid of the track of @kind under @parent_uuid named @name,
  * adding one with @pid, @tid and @unit if there is none. A NULL @name never
  * matches, so unnamed tracks are always new. A match with a different @unit
@@ -449,11 +466,15 @@ static uint64_t track_find_or_add(struct pf_trace *t, enum track_kind kind,
     return uuid;
 }
 
-uint64_t pf_track_counter(struct pf_trace *t, const char *name,
-                          enum pf_unit unit)
+uint64_t pf_track_counter(struct pf_trace *t, uint64_t parent_uuid,
+                          const char *name, enum pf_unit unit)
 {
-    return track_find_or_add(t, TRACK_COUNTER, t->process_uuid, 0, 0, name,
-                             unit);
+    /* 0 selects the process track. Any other parent must be a process or
+     * thread track, not a counter. */
+    if (parent_uuid && !track_can_parent(t, parent_uuid))
+        return 0;
+    uint64_t parent = parent_uuid ? parent_uuid : t->process_uuid;
+    return track_find_or_add(t, TRACK_COUNTER, parent, 0, 0, name, unit);
 }
 
 uint64_t pf_track_thread_named(struct pf_trace *t, int32_t pid, int32_t tid,

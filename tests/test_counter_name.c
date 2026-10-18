@@ -47,21 +47,21 @@ static void test_same_name_one_track(void)
         check(0, "open trace");
         return;
     }
-    uint64_t first = pf_track_counter(t, "queue/a.depth", PF_UNIT_COUNT);
+    uint64_t first = pf_track_counter(t, 0, "queue/a.depth", PF_UNIT_COUNT);
     int same = first != 0;
     for (int i = 0; i < 100; i++)
-        same &= pf_track_counter(t, "queue/a.depth", PF_UNIT_COUNT) == first;
+        same &= pf_track_counter(t, 0, "queue/a.depth", PF_UNIT_COUNT) == first;
     check(same, "same name returns the same uuid");
 
     /* The table has room for 4. One is taken by the name above, so three
      * more distinct names must fit and a fourth must not. */
-    int fits = pf_track_counter(t, "b", PF_UNIT_COUNT) &&
-               pf_track_counter(t, "c", PF_UNIT_COUNT) &&
-               pf_track_counter(t, "d", PF_UNIT_COUNT);
+    int fits = pf_track_counter(t, 0, "b", PF_UNIT_COUNT) &&
+               pf_track_counter(t, 0, "c", PF_UNIT_COUNT) &&
+               pf_track_counter(t, 0, "d", PF_UNIT_COUNT);
     check(fits, "repeated name used one table entry, three more fit");
-    check(pf_track_counter(t, "e", PF_UNIT_COUNT) == 0,
+    check(pf_track_counter(t, 0, "e", PF_UNIT_COUNT) == 0,
           "table full refuses a new name");
-    check(pf_track_counter(t, "queue/a.depth", PF_UNIT_COUNT) == first,
+    check(pf_track_counter(t, 0, "queue/a.depth", PF_UNIT_COUNT) == first,
           "existing name still found on a full table");
     pf_trace_close(t);
     unlink(path);
@@ -76,9 +76,21 @@ static void test_distinct_names(void)
         check(0, "open trace");
         return;
     }
-    uint64_t a = pf_track_counter(t, "queue/a.depth", PF_UNIT_COUNT);
-    uint64_t b = pf_track_counter(t, "queue/b.depth", PF_UNIT_COUNT);
+    uint64_t a = pf_track_counter(t, 0, "queue/a.depth", PF_UNIT_COUNT);
+    uint64_t b = pf_track_counter(t, 0, "queue/b.depth", PF_UNIT_COUNT);
     check(a && b && a != b, "distinct names give distinct tracks");
+
+    /* The parent is part of the identity: the same name under the process
+     * and under a thread is two tracks, and repeats under one parent are one. */
+    uint64_t thr = pf_track_thread(t, getpid(), 5, "w");
+    uint64_t under_proc = pf_track_counter(t, 0, "depth", PF_UNIT_COUNT);
+    uint64_t under_thr = pf_track_counter(t, thr, "depth", PF_UNIT_COUNT);
+    check(thr && under_proc && under_thr && under_proc != under_thr,
+          "same name under the process and under a thread is separate");
+    check(pf_track_counter(t, thr, "depth", PF_UNIT_COUNT) == under_thr,
+          "same name under the same thread is the same track");
+    check(pf_track_counter(t, under_proc, "x", PF_UNIT_COUNT) == 0,
+          "a counter track is refused as a parent");
     pf_trace_close(t);
     unlink(path);
 }
@@ -92,11 +104,11 @@ static void test_unit_conflict(void)
         check(0, "open trace");
         return;
     }
-    uint64_t ok = pf_track_counter(t, "bytes", PF_UNIT_SIZE_BYTES);
+    uint64_t ok = pf_track_counter(t, 0, "bytes", PF_UNIT_SIZE_BYTES);
     check(ok != 0, "first registration with a unit succeeds");
-    check(pf_track_counter(t, "bytes", PF_UNIT_COUNT) == 0,
+    check(pf_track_counter(t, 0, "bytes", PF_UNIT_COUNT) == 0,
           "same name with a different unit returns 0");
-    check(pf_track_counter(t, "bytes", PF_UNIT_SIZE_BYTES) == ok,
+    check(pf_track_counter(t, 0, "bytes", PF_UNIT_SIZE_BYTES) == ok,
           "same name with the original unit still returns the track");
     pf_trace_close(t);
     unlink(path);
@@ -112,7 +124,7 @@ static void *race_main(void *arg)
 {
     struct race_arg *ra = arg;
     for (int i = 0; i < CREATES_PER_THREAD; i++)
-        ra->seen[i] = pf_track_counter(ra->t, "shared", PF_UNIT_COUNT);
+        ra->seen[i] = pf_track_counter(ra->t, 0, "shared", PF_UNIT_COUNT);
     return NULL;
 }
 
@@ -145,7 +157,7 @@ static void test_concurrent_same_name(void)
     for (int i = 0; i < 15; i++) {
         char name[16];
         snprintf(name, sizeof(name), "n%d", i);
-        room &= pf_track_counter(t, name, PF_UNIT_COUNT) != 0;
+        room &= pf_track_counter(t, 0, name, PF_UNIT_COUNT) != 0;
     }
     check(room, "one table entry for the shared name, 15 more fit");
     pf_trace_close(t);

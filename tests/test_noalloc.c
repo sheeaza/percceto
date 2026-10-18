@@ -100,7 +100,7 @@ static void check_mode(const char *label, enum pf_mode mode, bool dump)
         return;
     }
     uint64_t track = pf_track_thread(t, 999, 1, "main");
-    uint64_t ctr = pf_track_counter(t, "depth", PF_UNIT_COUNT);
+    uint64_t ctr = pf_track_counter(t, 0, "depth", PF_UNIT_COUNT);
 
     /* Touch every distinct event shape once before arming, so lazily
      * initialized libc state (stdio buffers, locale, the first
