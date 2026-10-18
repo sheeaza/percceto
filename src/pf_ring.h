@@ -107,10 +107,7 @@ struct pf_rec_res {
 
 /**
  * struct pf_ring_reader - A walk in progress over published records.
- * @pos: Backend-defined cursor. A ticket for the ringbuf backends; either
- *      way it only ever
- *      moves forward, and pf_ring_read_commit() releases everything below
- *      it.
+ * @pos: Records taken so far in this walk. Only ever moves forward.
  * @end: One past the last record this walk will consider, so a walk
  *      terminates even while producers keep publishing.
  */
@@ -212,16 +209,6 @@ void pf_ring_read_begin(struct pf_ring *r, struct pf_ring_reader *rd);
  * until the next call on @rd.
  */
 const uint8_t *pf_ring_next(struct pf_ring *r, struct pf_ring_reader *rd);
-
-/**
- * pf_ring_read_commit() - Release every record walked so far.
- * @r: Ring.
- * @rd: Walk state.
- *
- * Frees the space for producers. In a lossless ring this is what lets
- * them stop dropping.
- */
-void pf_ring_read_commit(struct pf_ring *r, struct pf_ring_reader *rd);
 
 /**
  * pf_ring_capacity_slots() - Slots the ring holds.

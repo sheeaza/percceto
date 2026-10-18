@@ -143,13 +143,6 @@ const uint8_t *pf_ring_next(struct pf_ring *r, struct pf_ring_reader *rd)
     return r->pop_buf;
 }
 
-void pf_ring_read_commit(struct pf_ring *r, struct pf_ring_reader *rd)
-{
-    (void)r;
-    (void)rd;
-    /* ringbuf_zcopy_pop frees each slot as it retires it. */
-}
-
 size_t pf_ring_capacity_slots(const struct pf_ring *r)
 {
     return ringbuf_zcopy_capacity(r->rb);

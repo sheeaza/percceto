@@ -166,6 +166,5 @@ int raw_drain_locked(struct pf_trace *t)
             return -1;
     }
 
-    pf_ring_read_commit(&t->ring, &rd);
     return raw_flush(t);
 }
