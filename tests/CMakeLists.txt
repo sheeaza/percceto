@@ -37,6 +37,13 @@ add_executable(test_counter_name test_counter_name.c)
 target_link_libraries(test_counter_name PRIVATE pftrace Threads::Threads)
 add_test(NAME counter_name COMMAND test_counter_name)
 
+# The simple API's thread tracks must have the process track as parent.
+# Reads the internal track table, since the public API does not expose the
+# process uuid.
+add_executable(test_process_track test_process_track.c)
+target_link_libraries(test_process_track PRIVATE pftrace)
+add_test(NAME process_track COMMAND test_process_track)
+
 if(PFTRACE_BUILD_BENCH)
   foreach(backend mpsc zcopy)
     add_executable(test_stress_${backend} test_stress.c)

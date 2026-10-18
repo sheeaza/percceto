@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/prctl.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -512,8 +513,8 @@ static uint64_t thread_track_register(struct pf_trace *t)
         name = fallback;
     }
 
-    tl_slot.uuid = track_add(t, TRACK_THREAD, 0, (int32_t)getpid(), tid, name,
-                             PF_UNIT_UNSPECIFIED);
+    tl_slot.uuid = track_add(t, TRACK_THREAD, t->process_uuid,
+                             (int32_t)getpid(), tid, name, PF_UNIT_UNSPECIFIED);
     tl_slot.registered = true;
     return tl_slot.uuid;
 }
@@ -624,6 +625,15 @@ struct pf_trace *pf_trace_open(const struct pf_config *cfg)
 
     pthread_mutex_init(&t->out_lock, NULL);
     pthread_mutex_init(&t->track_lock, NULL);
+
+    /* The process track is the parent of the simple API's thread tracks.
+     * Registered before the drain starts, so its descriptor is in the first
+     * dump. Named after the program's comm, if the OS gives one. */
+    char comm[16] = "";
+    prctl(PR_GET_NAME, comm, 0, 0, 0);
+    t->process_uuid = track_add(t, TRACK_PROCESS, 0, (int32_t)getpid(), 0,
+                                comm[0] ? comm : NULL, PF_UNIT_UNSPECIFIED);
+
     pthread_mutex_init(&t->drain_lock, NULL);
     pthread_cond_init(&t->drain_cv, NULL);
     atomic_init(&t->wake_pending, 0);

@@ -167,6 +167,11 @@ struct pf_trace {
     unsigned tracks_emitted;
     uint64_t next_uuid;
 
+    /* Uuid of the process track for getpid(), registered at open. The
+     * parent of the thread tracks the simple API creates. 0 if the table
+     * had no room for it. */
+    uint64_t process_uuid;
+
     /* Drain thread wakeup. wake_pending is checked by producers without
      * the lock, so one futex is spent per drain cycle rather than per
      * event past the watermark. */

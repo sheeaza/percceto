@@ -27,12 +27,14 @@ static void check(int ok, const char *what)
         failures++;
 }
 
+/* Opens a trace whose table holds @max_tracks entries beyond the process
+ * track pf_trace_open() registers, so the tests count only their own. */
 static struct pf_trace *open_trace(const char *path, unsigned max_tracks)
 {
     struct pf_config cfg;
     pf_config_init(&cfg);
     cfg.path = path;
-    cfg.max_tracks = max_tracks;
+    cfg.max_tracks = max_tracks + 1;
     return pf_trace_open(&cfg);
 }
 

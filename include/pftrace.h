@@ -71,7 +71,8 @@ enum pf_format {
  * @drain_interval_ms: Upper bound on how long a buffered event waits
  *      before the drain thread considers writing it. 0 selects 100.
  *      Ignored unless @mode is %PF_MODE_CONTINUOUS.
- * @max_tracks: Capacity of the track table. 0 selects 256. Tracks are
+ * @max_tracks: Capacity of the track table. 0 selects 256. The process
+ *      track pf_trace_open() registers takes one entry. Tracks are
  *      re-emitted at the head of every dump, so they cost file space
  *      rather than ring space.
  */
@@ -370,7 +371,8 @@ PF_API void pf_counter_set_double(struct pf_trace *t,
  *     pf_trace_close() clears it.
  *   - A thread's track is created on its first _sp call. The library calls
  *     gettid() and getpid() at that point and registers a thread track with
- *     them.
+ *     them. The track is a child of the process track, which pf_trace_open()
+ *     registers for getpid().
  *   - The uuid is cached in thread-local storage. Once cached, a call costs
  *     a pointer load, a thread-local read and a flag check. No syscall.
  *   - Track names: pf_thread_name() sets it. If the track does not exist

@@ -336,17 +336,21 @@ static void check_contents(const struct parsed *p, const struct ids *ids,
     CHECK(p->clock_id == (uint32_t)CLOCK_BOOTTIME, "clock_id %u", p->clock_id);
     CHECK(p->flags == 0, "flags %u", p->flags);
 
-    CHECK(p->ntrk == 3, "tracks %zu, want 3", p->ntrk);
-    if (p->ntrk == 3) {
-        CHECK(p->trk[0].uuid == ids->proc && p->trk[0].kind == 0 &&
-                  p->trk[0].pid == 42 && strcmp(p->trk[0].name, "rawapp") == 0,
+    /* Four tracks: the process track pf_trace_open() registers for getpid(),
+     * then the three this test creates. */
+    CHECK(p->ntrk == 4, "tracks %zu, want 4", p->ntrk);
+    if (p->ntrk == 4) {
+        CHECK(p->trk[0].kind == 0 && p->trk[0].pid == (int32_t)getpid(),
+              "open's process track");
+        CHECK(p->trk[1].uuid == ids->proc && p->trk[1].kind == 0 &&
+                  p->trk[1].pid == 42 && strcmp(p->trk[1].name, "rawapp") == 0,
               "process track");
-        CHECK(p->trk[1].uuid == ids->thread && p->trk[1].kind == 1 &&
-                  p->trk[1].tid == 1 && strcmp(p->trk[1].name, "main") == 0,
+        CHECK(p->trk[2].uuid == ids->thread && p->trk[2].kind == 1 &&
+                  p->trk[2].tid == 1 && strcmp(p->trk[2].name, "main") == 0,
               "thread track");
-        CHECK(p->trk[2].uuid == ids->counter && p->trk[2].kind == 2 &&
-                  p->trk[2].unit == PF_UNIT_COUNT &&
-                  strcmp(p->trk[2].name, "depth") == 0,
+        CHECK(p->trk[3].uuid == ids->counter && p->trk[3].kind == 2 &&
+                  p->trk[3].unit == PF_UNIT_COUNT &&
+                  strcmp(p->trk[3].name, "depth") == 0,
               "counter track");
     }
 
@@ -500,8 +504,9 @@ static void simple_threads(const char *path)
         return;
     }
     CHECK(p.torn_bytes == 0, "simple threads: %zu torn bytes", p.torn_bytes);
-    CHECK(p.ntrk == SIMPLE_THREADS, "simple threads: tracks %zu, want %d",
-          p.ntrk, SIMPLE_THREADS);
+    /* One more than SIMPLE_THREADS: the process track from pf_trace_open(). */
+    CHECK(p.ntrk == SIMPLE_THREADS + 1, "simple threads: tracks %zu, want %d",
+          p.ntrk, SIMPLE_THREADS + 1);
 
     for (int i = 0; i < SIMPLE_THREADS; i++) {
         char want[16];
