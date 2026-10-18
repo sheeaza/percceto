@@ -17,8 +17,6 @@
 
 struct shared {
     struct pf_trace *t;
-    pid_t pid;
-    uint64_t proc;
     uint64_t jobs_done_track;
     atomic_int jobs_done;
 };
@@ -64,6 +62,7 @@ static int run(void)
     struct pf_config cfg;
     pf_config_init(&cfg);
     cfg.path = path;
+    cfg.process_name = "demo_threads";
     cfg.mode = PF_MODE_CONTINUOUS;
     cfg.ring_bytes = 256 * 1024;
     cfg.watermark_pct = 75;
@@ -75,9 +74,8 @@ static int run(void)
         return 1;
     }
 
-    struct shared sh = { .t = t, .pid = getpid() };
+    struct shared sh = { .t = t };
     atomic_init(&sh.jobs_done, 0);
-    sh.proc = pf_track_process(t, sh.pid, "demo_threads");
     sh.jobs_done_track = pf_track_counter(t, "jobs_done", PF_UNIT_COUNT);
 
     pthread_t threads[NUM_WORKERS];

@@ -259,7 +259,7 @@ out:
 /* --- Writer ------------------------------------------------------------ */
 
 struct ids {
-    uint64_t proc, thread, counter;
+    uint64_t thread, counter;
 };
 
 /* Each iteration emits four events, in this order:
@@ -278,13 +278,13 @@ static int write_trace(const char *path, enum pf_mode mode, int iters,
     cfg.path = path;
     cfg.format = PF_FORMAT_RAW;
     cfg.mode = mode;
+    cfg.process_name = "rawapp";
 
     struct pf_trace *t = pf_trace_open(&cfg);
     if (!t)
         return -1;
 
-    out->proc = pf_track_process(t, 42, "rawapp");
-    out->thread = pf_track_thread(t, 42, 1, "main");
+    out->thread = pf_track_thread(t, getpid(), 1, "main");
     out->counter = pf_track_counter(t, "depth", PF_UNIT_COUNT);
 
     for (int i = 0; i < iters; i++) {
@@ -336,21 +336,23 @@ static void check_contents(const struct parsed *p, const struct ids *ids,
     CHECK(p->clock_id == (uint32_t)CLOCK_BOOTTIME, "clock_id %u", p->clock_id);
     CHECK(p->flags == 0, "flags %u", p->flags);
 
-    /* Four tracks: the process track pf_trace_open() registers for getpid(),
-     * then the three this test creates. */
-    CHECK(p->ntrk == 4, "tracks %zu, want 4", p->ntrk);
-    if (p->ntrk == 4) {
-        CHECK(p->trk[0].kind == 0 && p->trk[0].pid == (int32_t)getpid(),
-              "open's process track");
-        CHECK(p->trk[1].uuid == ids->proc && p->trk[1].kind == 0 &&
-                  p->trk[1].pid == 42 && strcmp(p->trk[1].name, "rawapp") == 0,
+    /* Three tracks: the process track pf_trace_open() registers, named by
+     * process_name, then the thread and counter this test creates. Both
+     * children must name the process track as their parent. */
+    CHECK(p->ntrk == 3, "tracks %zu, want 3", p->ntrk);
+    if (p->ntrk == 3) {
+        CHECK(p->trk[0].kind == 0 && p->trk[0].pid == (int32_t)getpid() &&
+                  strcmp(p->trk[0].name, "rawapp") == 0,
               "process track");
-        CHECK(p->trk[2].uuid == ids->thread && p->trk[2].kind == 1 &&
-                  p->trk[2].tid == 1 && strcmp(p->trk[2].name, "main") == 0,
+        const uint64_t proc = p->trk[0].uuid;
+        CHECK(p->trk[1].uuid == ids->thread && p->trk[1].kind == 1 &&
+                  p->trk[1].tid == 1 && strcmp(p->trk[1].name, "main") == 0 &&
+                  p->trk[1].parent == proc,
               "thread track");
-        CHECK(p->trk[3].uuid == ids->counter && p->trk[3].kind == 2 &&
-                  p->trk[3].unit == PF_UNIT_COUNT &&
-                  strcmp(p->trk[3].name, "depth") == 0,
+        CHECK(p->trk[2].uuid == ids->counter && p->trk[2].kind == 2 &&
+                  p->trk[2].unit == PF_UNIT_COUNT &&
+                  strcmp(p->trk[2].name, "depth") == 0 &&
+                  p->trk[2].parent == proc,
               "counter track");
     }
 

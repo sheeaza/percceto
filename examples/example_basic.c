@@ -6,9 +6,9 @@
 
 #include "pftrace.h"
 
-/* Registers the same track layout in either mode. */
+/* Registers the same track layout in either mode. The process track is the
+ * one pf_trace_open() registers, named by cfg.process_name. */
 struct tracks {
-    uint64_t proc;
     uint64_t main_thread;
     uint64_t worker_thread;
     uint64_t queue_depth;
@@ -17,9 +17,8 @@ struct tracks {
 static struct tracks setup_tracks(struct pf_trace *t)
 {
     struct tracks tr;
-    tr.proc = pf_track_process(t, 1234, "demo_app");
-    tr.main_thread = pf_track_thread(t, 1234, 1, "main");
-    tr.worker_thread = pf_track_thread(t, 1234, 2, "worker");
+    tr.main_thread = pf_track_thread(t, getpid(), 1, "main");
+    tr.worker_thread = pf_track_thread(t, getpid(), 2, "worker");
     tr.queue_depth = pf_track_counter(t, "queue_depth", PF_UNIT_COUNT);
     return tr;
 }
@@ -72,6 +71,7 @@ static int run_snapshot(void)
     struct pf_config cfg;
     pf_config_init(&cfg);
     cfg.path = path;
+    cfg.process_name = "demo_app";
     cfg.mode = PF_MODE_SNAPSHOT;
     cfg.ring_bytes = 256 * 1024;
 
@@ -111,6 +111,7 @@ static int run_continuous(void)
     struct pf_config cfg;
     pf_config_init(&cfg);
     cfg.path = path;
+    cfg.process_name = "demo_app";
     cfg.mode = PF_MODE_CONTINUOUS;
     cfg.ring_bytes = 128 * 1024;
     cfg.watermark_pct = 75;

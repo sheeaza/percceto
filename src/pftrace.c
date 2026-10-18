@@ -403,11 +403,6 @@ bool track_emit_due(struct pf_trace *t, unsigned i, unsigned first,
     return due;
 }
 
-uint64_t pf_track_process(struct pf_trace *t, int32_t pid, const char *name)
-{
-    return track_add(t, TRACK_PROCESS, 0, pid, 0, name, PF_UNIT_UNSPECIFIED);
-}
-
 uint64_t pf_track_thread(struct pf_trace *t, int32_t pid, int32_t tid,
                          const char *name)
 {

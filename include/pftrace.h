@@ -182,23 +182,6 @@ PF_API void pf_trace_stats(const struct pf_trace *t, struct pf_stats *out);
 PF_API void pf_trace_close(struct pf_trace *t);
 
 /**
- * pf_track_process() - Register a process track.
- * @t: Trace context.
- * @pid: Process ID to record.
- * @name: Process name, or %NULL.
- *
- * Tracks are held in a fixed-capacity table (&pf_config.max_tracks) and
- * re-emitted at the head of every dump, so events always resolve against
- * a known track even once the ring has wrapped. Not a hot-path call.
- *
- * Safe to call from any thread, concurrently with other pf_track_*() calls.
- *
- * Return: The new track's track_uuid, or 0 if the table is full.
- */
-PF_API uint64_t pf_track_process(struct pf_trace *t, int32_t pid,
-                                 const char *name);
-
-/**
  * pf_track_thread() - Register a thread track.
  * @t: Trace context.
  * @pid: Process ID owning the thread.
