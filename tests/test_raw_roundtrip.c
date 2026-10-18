@@ -591,6 +591,62 @@ static void simple_rename(const char *path)
     free(p.ev);
 }
 
+/* Checks the raw bytes directly, without the reader: the header matches the
+ * spec byte for byte, and the first NAMES entry is an 8-byte key, a 4-byte
+ * length, then the string. Expected values are encoded little-endian here,
+ * so a field written at the wrong width or in the wrong order fails. */
+static void le_bytes(uint8_t *dst, uint64_t v, int n)
+{
+    for (int i = 0; i < n; i++)
+        dst[i] = (uint8_t)(v >> (8 * i));
+}
+
+static void header_bytes(const char *path)
+{
+    struct ids ids;
+    if (write_trace(path, PF_MODE_SNAPSHOT, 1, &ids) != 0) {
+        CHECK(false, "header: open failed: %s", strerror(errno));
+        return;
+    }
+
+    FILE *f = fopen(path, "rb");
+    if (!f) {
+        CHECK(false, "header: cannot reopen %s", path);
+        return;
+    }
+    static uint8_t buf[4096];
+    size_t n = fread(buf, 1, sizeof(buf), f);
+    fclose(f);
+    CHECK(n > 32 + 8 + 104, "header: file too short (%zu bytes)", n);
+    if (n <= 32 + 8 + 104)
+        return;
+
+    uint8_t want[32] = { 0 };
+    memcpy(want, "PFRAWv1", 8);
+    le_bytes(want + 8, 1, 4);
+    le_bytes(want + 12, 32, 4);
+    le_bytes(want + 16, (uint32_t)CLOCK_BOOTTIME, 4);
+    CHECK(memcmp(buf, want, 32) == 0, "header bytes differ from the spec");
+
+    /* The first chunk is TRACKS: three 104-byte entries. */
+    CHECK(rd32(buf + 32) == CHUNK_TRACKS, "first chunk kind %u, want %d",
+          rd32(buf + 32), CHUNK_TRACKS);
+    uint32_t tlen = rd32(buf + 36);
+    CHECK(tlen == 3 * 104, "TRACKS len %u, want %u", tlen, 3u * 104u);
+
+    /* Then NAMES. Its first entry is "compute", the first name emitted. */
+    size_t off = 32 + 8 + tlen;
+    CHECK(off + 8 + 12 + 7 <= n, "header: file ends before NAMES");
+    if (off + 8 + 12 + 7 > n)
+        return;
+    CHECK(rd32(buf + off) == CHUNK_NAMES, "chunk at %zu kind %u, want NAMES",
+          off, rd32(buf + off));
+    const uint8_t *entry = buf + off + 8;
+    CHECK(rd32(entry + 8) == 7, "name length %u, want 7", rd32(entry + 8));
+    CHECK(memcmp(entry + 12, "compute", 7) == 0,
+          "name bytes are not 'compute'");
+}
+
 int main(void)
 {
     /* Continuous: the drain writes several event chunks, since 5000
@@ -602,7 +658,9 @@ int main(void)
     round_trip("snapshot", PF_MODE_SNAPSHOT, 1000,
                "raw_roundtrip_snapshot.pfraw");
 
+    header_bytes("raw_roundtrip_header.pfraw");
     torn_tail("raw_roundtrip_torn.pfraw", 2000);
+
     refuses_existing("raw_roundtrip_continuous.pfraw");
 
     simple_threads("raw_roundtrip_simple_threads.pfraw");

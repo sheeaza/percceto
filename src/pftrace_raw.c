@@ -21,11 +21,17 @@
 #define RAW_CHUNK_TRACKS 2u
 #define RAW_CHUNK_EVENTS 3u
 
-/* Appends the low @n bytes of @v, least significant first. */
-static void raw_put_le(struct pb_buf *b, uint64_t v, unsigned n)
+/* Field writers. The width comes from the parameter type, so each call site
+ * casts to the width the spec gives. Host byte order is the file's byte order
+ * because raw_write_header refuses big-endian builds. */
+static void raw_put_u32(struct pb_buf *b, uint32_t v)
 {
-    for (unsigned i = 0; i < n; i++)
-        pb_put_byte(b, (uint8_t)(v >> (8 * i)));
+    pb_put_bytes(b, &v, sizeof(v));
+}
+
+static void raw_put_u64(struct pb_buf *b, uint64_t v)
+{
+    pb_put_bytes(b, &v, sizeof(v));
 }
 
 /* Writes the file header. It is the first thing in a new raw file, and it
@@ -47,11 +53,11 @@ int raw_write_header(struct pf_trace *t)
 
     pb_buf_reset(&t->out);
     pb_put_bytes(&t->out, RAW_MAGIC, sizeof(RAW_MAGIC)); /* 8, with NUL */
-    raw_put_le(&t->out, RAW_VERSION, 4);
-    raw_put_le(&t->out, sizeof(struct pf_rec), 4);
-    raw_put_le(&t->out, (uint32_t)CLOCK_BOOTTIME, 4);
-    raw_put_le(&t->out, 0, 4); /* flags, reserved */
-    raw_put_le(&t->out, 0, 8); /* reserved */
+    raw_put_u32(&t->out, RAW_VERSION);
+    raw_put_u32(&t->out, (uint32_t)sizeof(struct pf_rec));
+    raw_put_u32(&t->out, (uint32_t)CLOCK_BOOTTIME);
+    raw_put_u32(&t->out, 0); /* flags, reserved */
+    raw_put_u64(&t->out, 0); /* reserved */
     return out_flush(t);
 #endif
 }
@@ -65,8 +71,8 @@ static int raw_write_chunk(struct pf_trace *t, uint32_t kind,
         return 0;
 
     pb_buf_reset(&t->out);
-    raw_put_le(&t->out, kind, 4);
-    raw_put_le(&t->out, payload->len, 4);
+    raw_put_u32(&t->out, kind);
+    raw_put_u32(&t->out, (uint32_t)payload->len);
     pb_put_bytes(&t->out, payload->data, payload->len);
     pb_buf_reset(payload);
     return out_flush(t);
@@ -77,14 +83,14 @@ static void raw_put_track(struct pb_buf *b, const struct track_def *td)
 {
     size_t nlen = td->has_name ? strnlen(td->name, PF_TRACK_NAME_MAX) : 0;
 
-    raw_put_le(b, td->uuid, 8);
-    raw_put_le(b, td->parent_uuid, 8);
-    raw_put_le(b, td->kind, 4);
-    raw_put_le(b, (uint32_t)td->pid, 4);
-    raw_put_le(b, (uint32_t)td->tid, 4);
-    raw_put_le(b, td->unit, 4);
-    raw_put_le(b, td->has_name, 4);
-    raw_put_le(b, nlen, 4);
+    raw_put_u64(b, td->uuid);
+    raw_put_u64(b, td->parent_uuid);
+    raw_put_u32(b, (uint32_t)td->kind);
+    raw_put_u32(b, (uint32_t)td->pid);
+    raw_put_u32(b, (uint32_t)td->tid);
+    raw_put_u32(b, (uint32_t)td->unit);
+    raw_put_u32(b, (uint32_t)td->has_name);
+    raw_put_u32(b, (uint32_t)nlen);
     pb_put_bytes(b, td->name, nlen);
     for (size_t i = nlen; i < PF_TRACK_NAME_MAX; i++)
         pb_put_byte(b, 0);
@@ -93,8 +99,8 @@ static void raw_put_track(struct pb_buf *b, const struct track_def *td)
 /* One NAMES entry: the pointer key, then the string. */
 static void raw_put_name(struct pb_buf *b, const char *name, size_t nlen)
 {
-    raw_put_le(b, (uint64_t)(uintptr_t)name, 8);
-    raw_put_le(b, nlen, 4);
+    raw_put_u64(b, (uint64_t)(uintptr_t)name);
+    raw_put_u32(b, (uint32_t)nlen);
     pb_put_bytes(b, name, nlen);
 }
 
