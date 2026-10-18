@@ -175,8 +175,7 @@ struct pf_trace {
     /* Drain thread wakeup. wake_pending is checked by producers without
      * the lock, so one futex is spent per drain cycle rather than per
      * event past the watermark. */
-    pthread_t drain_thread;
-    bool drain_thread_started;
+    pthread_t drain_thread; /* valid only in PF_MODE_CONTINUOUS */
     pthread_mutex_t drain_lock;
     pthread_cond_t drain_cv;
     _Atomic unsigned wake_pending;

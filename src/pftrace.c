@@ -166,11 +166,10 @@ static int drain_locked(struct pf_trace *t)
 }
 
 /* --- Drain thread -------------------------------------------------------
- * Runs in both modes, but does different work. Continuous: write the ring
- * out whenever it crosses the watermark or the interval elapses.
- * Snapshot: never write, only advance the ring's tail so it keeps a
- * bounded history on a known record boundary -- without that, producers
- * lap the reader's starting point and a dump has nothing it can walk. */
+ * Continuous mode only. It writes the ring out whenever it crosses the
+ * watermark or the interval elapses. Snapshot mode starts no thread: the
+ * ring keeps its own tail on a known record boundary (see pf_ring_reserve),
+ * and a dump is taken on demand by pf_trace_dump or pf_trace_close. */
 
 /* Waits for a wake signal, the drain interval, or shutdown.
  *
@@ -212,11 +211,9 @@ static void *drain_thread_fn(void *arg)
          * schedules the next one rather than being silently coalesced. */
         atomic_store_explicit(&t->wake_pending, 0, memory_order_release);
 
-        if (t->cfg.mode == PF_MODE_CONTINUOUS) {
-            pthread_mutex_lock(&t->out_lock);
-            (void)drain_locked(t); /* errno surfaces via pf_trace_dump */
-            pthread_mutex_unlock(&t->out_lock);
-        }
+        pthread_mutex_lock(&t->out_lock);
+        (void)drain_locked(t); /* errno surfaces via pf_trace_dump */
+        pthread_mutex_unlock(&t->out_lock);
         if (stopping)
             break;
     }
@@ -692,9 +689,9 @@ struct pf_trace *pf_trace_open(const struct pf_config *cfg)
     if (t->cfg.format == PF_FORMAT_RAW && raw_write_header(t) != 0)
         goto destroy_sync;
 
-    if (pthread_create(&t->drain_thread, NULL, drain_thread_fn, t) != 0)
+    if (t->cfg.mode == PF_MODE_CONTINUOUS &&
+        pthread_create(&t->drain_thread, NULL, drain_thread_fn, t) != 0)
         goto destroy_sync;
-    t->drain_thread_started = true;
     g_default_trace = t;
     return t;
 
@@ -751,7 +748,7 @@ void pf_trace_close(struct pf_trace *t)
     if (g_default_trace == t)
         g_default_trace = NULL;
 
-    if (t->drain_thread_started) {
+    if (t->cfg.mode == PF_MODE_CONTINUOUS) {
         pthread_mutex_lock(&t->drain_lock);
         t->stop = true;
         pthread_cond_signal(&t->drain_cv);
