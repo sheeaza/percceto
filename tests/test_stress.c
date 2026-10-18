@@ -123,7 +123,7 @@ static void test_snapshot_window(void)
 
     /* And it must be the RECENT window: the trigger marker is in the file
      * and the startup marker is long gone. */
-    char file[512];
+    char file[1024];
     snprintf(file, sizeof(file), "%s/%s", dir, leaf);
     FILE *f = fopen(file, "rb");
     CHECK(f != NULL, "reopen %s", file);
@@ -366,7 +366,7 @@ static void test_long_names(void)
      * occurrence is all that is expected. */
     size_t want = strlen(LONG_NAME);
     CHECK(want == 520, "the test name is %zu bytes", want);
-    char file[512];
+    char file[1024];
     snprintf(file, sizeof(file), "%s/%s", dir, leaf);
     FILE *f = fopen(file, "rb");
     CHECK(f != NULL, "reopen %s", file);
