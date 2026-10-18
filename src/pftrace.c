@@ -734,6 +734,26 @@ void pf_counter_set_double_sp(uint64_t counter_track_uuid, double value)
         pf_counter_set_double(t, counter_track_uuid, value);
 }
 
+int pf_trace_dump_sp(const char *name, char *file, size_t size)
+{
+    struct pf_trace *t = default_trace();
+    if (!t) {
+        errno = ENODEV;
+        return -1;
+    }
+    return pf_trace_dump(t, name, file, size);
+}
+
+int pf_trace_flush_sp(const char *name, char *file, size_t size)
+{
+    struct pf_trace *t = default_trace();
+    if (!t) {
+        errno = ENODEV;
+        return -1;
+    }
+    return pf_trace_flush(t, name, file, size);
+}
+
 /* --- Lifecycle --------------------------------------------------------- */
 
 void pf_config_init(struct pf_config *cfg)

@@ -488,6 +488,29 @@ PF_API void pf_counter_set_int_sp(uint64_t counter_track_uuid, int64_t value);
  */
 PF_API void pf_counter_set_double_sp(uint64_t counter_track_uuid, double value);
 
+/**
+ * pf_trace_dump_sp() - pf_trace_dump() on the default trace.
+ * @name: As for pf_trace_dump().
+ * @file: As for pf_trace_dump().
+ * @size: As for pf_trace_dump().
+ *
+ * Return: As for pf_trace_dump(), or -1 with %ENODEV if there is no default
+ *      trace. Unlike the other _sp calls this does not succeed silently
+ *      without one, because the caller expects a file.
+ */
+PF_API int pf_trace_dump_sp(const char *name, char *file, size_t size);
+
+/**
+ * pf_trace_flush_sp() - pf_trace_flush() on the default trace.
+ * @name: As for pf_trace_flush().
+ * @file: As for pf_trace_flush().
+ * @size: As for pf_trace_flush().
+ *
+ * Return: As for pf_trace_flush(), or -1 with %ENODEV if there is no default
+ *      trace.
+ */
+PF_API int pf_trace_flush_sp(const char *name, char *file, size_t size);
+
 #ifdef __cplusplus
 }
 #endif
