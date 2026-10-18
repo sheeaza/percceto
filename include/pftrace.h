@@ -75,6 +75,8 @@ enum pf_format {
  *      track pf_trace_open() registers takes one entry. Tracks are
  *      re-emitted at the head of every dump, so they cost file space
  *      rather than ring space.
+ * @process_name: Name of the process track. %NULL uses the program's comm
+ *      name, if the OS gives one. Copied, so it may be a computed string.
  */
 struct pf_config {
     const char *path;
@@ -84,6 +86,7 @@ struct pf_config {
     unsigned watermark_pct;
     unsigned drain_interval_ms;
     unsigned max_tracks;
+    const char *process_name;
 };
 
 /**

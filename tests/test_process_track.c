@@ -10,6 +10,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <sys/types.h>
 #include <unistd.h>
 
@@ -69,6 +70,22 @@ int main(void)
           "thread track is a child of the process track");
 
     pf_trace_close(t);
+    unlink(path);
+
+    /* A name set in the config is the process track's name. */
+    pf_config_init(&cfg);
+    cfg.path = path;
+    cfg.process_name = "custom-proc";
+    t = pf_trace_open(&cfg);
+    if (!t) {
+        check(0, "open trace with process_name");
+    } else {
+        int q = find_track(t, TRACK_PROCESS, 0);
+        check(q >= 0 && t->tracks[q].has_name &&
+                  strcmp(t->tracks[q].name, "custom-proc") == 0,
+              "process_name from config names the process track");
+        pf_trace_close(t);
+    }
     unlink(path);
 
     if (failures) {

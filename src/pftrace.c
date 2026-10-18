@@ -628,11 +628,15 @@ struct pf_trace *pf_trace_open(const struct pf_config *cfg)
 
     /* The process track is the parent of the simple API's thread tracks.
      * Registered before the drain starts, so its descriptor is in the first
-     * dump. Named after the program's comm, if the OS gives one. */
+     * dump. Named by the caller, or else after the program's comm. */
     char comm[16] = "";
-    prctl(PR_GET_NAME, comm, 0, 0, 0);
+    if (!t->cfg.process_name)
+        prctl(PR_GET_NAME, comm, 0, 0, 0);
+    const char *pname = t->cfg.process_name ? t->cfg.process_name :
+                        comm[0]             ? comm :
+                                              NULL;
     t->process_uuid = track_add(t, TRACK_PROCESS, 0, (int32_t)getpid(), 0,
-                                comm[0] ? comm : NULL, PF_UNIT_UNSPECIFIED);
+                                pname, PF_UNIT_UNSPECIFIED);
 
     pthread_mutex_init(&t->drain_lock, NULL);
     pthread_cond_init(&t->drain_cv, NULL);
