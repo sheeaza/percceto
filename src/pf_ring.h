@@ -10,7 +10,7 @@
  * selection that picks an implementation of it.
  *
  * Two backends exist, and they are compared rather than ranked -- see
- * BENCHMARK_ring_backends.md. Exactly one is compiled in, chosen by a macro
+ * tests/BENCHMARK_ring_backends.md. Exactly one is compiled in, chosen by a macro
  * on the command line:
  *
  *   (default)              pf_ring_mpsc.c -- wraps ringbuf_mpsc
@@ -61,7 +61,7 @@ _Static_assert(PF_PAYLOAD_BYTES % PF_REC_ALIGN == 0,
  *
  * SHARED BY EVERY BACKEND, and that is the point: the retry policy is a
  * property of this interface rather than of any one ring, so the
- * comparison in BENCHMARK_ring_backends.md isolates the cost of claiming
+ * comparison in tests/BENCHMARK_ring_backends.md isolates the cost of claiming
  * a slot instead of accidentally measuring two different drop policies.
  * Getting this wrong is not subtle -- an early version of the benchmark
  * gave only the slot-indexed backends a retry loop, and the mmap ring

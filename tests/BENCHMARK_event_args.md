@@ -21,12 +21,14 @@ The benchmark is a CMake target, not a test. It is gated by the existing
 `PFTRACE_BUILD_BENCH` option, which is off by default. The target is
 `bench_args`, defined in `tests/CMakeLists.txt`, next to `bench`.
 
+Toolchain: clang 21.1.8, CMake 4.1.6, Release build. Any recent clang or GCC
+with C11 should build the same way.
+
 Args tree (`dd756e3`):
 
 ```sh
-nix shell ~/project/nixos_config/.#cshell --command bash -c '
-  cmake -S . -B /tmp/pf_args_build -DCMAKE_BUILD_TYPE=Release -DPFTRACE_BUILD_BENCH=ON &&
-  cmake --build /tmp/pf_args_build --target bench_args -j8'
+cmake -S . -B /tmp/pf_args_build -DCMAKE_BUILD_TYPE=Release -DPFTRACE_BUILD_BENCH=ON
+cmake --build /tmp/pf_args_build --target bench_args -j8
 ```
 
 Baseline tree (`d402de9`), out of tree so the working copy is untouched:
@@ -37,10 +39,9 @@ git archive d402de9 | tar -x -C /tmp/pf_base
 cp tests/bench_args.c /tmp/pf_base/tests/
 # add the bench_args target to /tmp/pf_base/tests/CMakeLists.txt, next to
 # bench (the same two lines as in this tree's tests/CMakeLists.txt)
-nix shell ~/project/nixos_config/.#cshell --command bash -c '
-  cmake -S /tmp/pf_base -B /tmp/pf_base/build -DCMAKE_BUILD_TYPE=Release \
-        -DPFTRACE_BUILD_BENCH=ON &&
-  cmake --build /tmp/pf_base/build --target bench_args -j8'
+cmake -S /tmp/pf_base -B /tmp/pf_base/build -DCMAKE_BUILD_TYPE=Release \
+      -DPFTRACE_BUILD_BENCH=ON
+cmake --build /tmp/pf_base/build --target bench_args -j8
 ```
 
 The baseline build has no args API, so the args sections in `bench_args.c`

@@ -390,7 +390,7 @@ static void maybe_wake_drain(struct pf_trace *t)
  * parallel and only the claim itself is serialized, by one atomic. The
  * ringbuf_zcopy ring must serialize claims with a mutex -- held across the
  * claim alone, never the fill or the submit -- which is the cost that
- * backend exists to measure. See BENCHMARK_ring_backends.md.
+ * backend exists to measure. See tests/BENCHMARK_ring_backends.md.
  *
  * Four stores and no string work at all: the name is stored by address,
  * and the drain thread is what eventually reads the characters. */

@@ -5,7 +5,7 @@
  * sit under the same pftrace.c, the same protobuf encoder and the same
  * drain thread, so a difference measured here is attributable to the ring
  * and to nothing above it. Results are written up in
- * BENCHMARK_ring_backends.md.
+ * tests/BENCHMARK_ring_backends.md.
  *
  * ONE SOURCE, TWO BINARIES. The backend is a compile-time choice, so one
  * process cannot hold two of them -- `struct pf_ring` is a different type

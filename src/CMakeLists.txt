@@ -2,7 +2,7 @@
 #
 # All three link the same pftrace.c, its two output formats, pb_writer.c and
 # the public header, and differ only in which ring implements src/pf_ring.h.
-# That is what makes BENCHMARK_ring_backends.md a comparison of rings rather
+# That is what makes tests/BENCHMARK_ring_backends.md a comparison of rings rather
 # than of libraries: everything above the ring is the same code.
 #
 # `pftrace` is the default target and the one every test and tool links.
