@@ -148,6 +148,45 @@ if(PFTRACE_BUILD_SANITIZED)
   endforeach()
 endif()
 
+# Selected tests, built against each backend's sanitized library as well, so
+# ASan and TSan see their accesses. Each sanitized build runs in its own
+# directory, build/<backend>_<sanitizer>/, so its trace files do not collide
+# with the plain build's. test_noalloc is left out: it interposes malloc, which
+# ASan replaces with its own.
+if(PFTRACE_BUILD_SANITIZED)
+  set(sanitized_tests
+    test_min_ring
+    test_counter_name
+    test_process_track
+    test_counter_g
+    test_args_pb
+    test_raw_roundtrip
+  )
+  foreach(backend ${PFTRACE_BACKENDS})
+    foreach(sanitizer asan tsan)
+      set(run_dir ${CMAKE_BINARY_DIR}/${backend}_${sanitizer})
+      file(MAKE_DIRECTORY ${run_dir})
+      foreach(name ${sanitized_tests})
+        set(target ${name}_${backend}_${sanitizer})
+        add_executable(${target} ${name}.c)
+        target_link_libraries(${target}
+          PRIVATE pftrace_${backend}_${sanitizer} Threads::Threads
+        )
+        # The sanitized library compiles the ring sources in rather than
+        # linking them, so tests that include pftrace_internal.h need the
+        # ringbuf headers themselves.
+        target_include_directories(${target}
+          PRIVATE ${PROJECT_SOURCE_DIR}/ringbuf
+        )
+        if(name STREQUAL "test_raw_roundtrip")
+          target_compile_definitions(${target} PRIVATE _GNU_SOURCE)
+        endif()
+        add_test(NAME ${target} COMMAND ${target} WORKING_DIRECTORY ${run_dir})
+      endforeach()
+    endforeach()
+  endforeach()
+endif()
+
 # The name contract is enforced by the compiler, so the test for it has to
 # be a compilation. Each mode is an object-only build of the same file:
 # name_literal_ok must succeed, and the other three must fail, which is
