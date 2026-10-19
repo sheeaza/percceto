@@ -45,6 +45,11 @@ add_executable(test_args_pb test_args_pb.c)
 target_link_libraries(test_args_pb PRIVATE pftrace Threads::Threads)
 add_test(NAME args_pb COMMAND test_args_pb)
 
+# The ring holds at least min_ring_bytes, at the slot-count boundary.
+add_executable(test_min_ring test_min_ring.c)
+target_link_libraries(test_min_ring PRIVATE pftrace)
+add_test(NAME min_ring COMMAND test_min_ring)
+
 # Counter tracks are identified by name: same name, same track. Covers the
 # lookup under track_lock, including two threads creating one name at once.
 add_executable(test_counter_name test_counter_name.c)

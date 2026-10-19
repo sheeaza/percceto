@@ -120,6 +120,14 @@ _Static_assert(PF_MAX_ARGS <= 3, "RF_NARGS_MASK holds counts up to 3");
  * falls back to the bare format string, as a mismatch does. */
 #define PF_FORMAT_NAME_MAX 128u
 
+/* Slots for a ring of at least @min_bytes. Rounded up, so the ring is never
+ * below the minimum. The library rounds the count up to a power of two
+ * further, and never down. */
+static inline size_t pf_min_slots(size_t min_bytes)
+{
+    return min_bytes / PF_PAYLOAD_BYTES + (min_bytes % PF_PAYLOAD_BYTES != 0);
+}
+
 /* Flush the staging buffer once it passes this, so one write() carries
  * many packets instead of one syscall per event. */
 #define PF_OUT_FLUSH_THRESHOLD (128u * 1024u)

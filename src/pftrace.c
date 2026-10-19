@@ -836,9 +836,8 @@ struct pf_trace *pf_trace_open(const struct pf_config *cfg)
     /* Rounded up, so the ring holds at least min_ring_bytes. A floor here
      * could leave the count one slot short when it is already a power of
      * two. The library then rounds the count up, never down. */
-    size_t min_slots = t->cfg.min_ring_bytes / PF_PAYLOAD_BYTES +
-                       (t->cfg.min_ring_bytes % PF_PAYLOAD_BYTES != 0);
-    if (pf_ring_init(&t->ring, PF_PAYLOAD_BYTES, min_slots,
+    if (pf_ring_init(&t->ring, PF_PAYLOAD_BYTES,
+                     pf_min_slots(t->cfg.min_ring_bytes),
                      t->cfg.mode == PF_MODE_SNAPSHOT) != 0)
         goto free_tracks;
 
