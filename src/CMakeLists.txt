@@ -1,13 +1,12 @@
 # The library, once per ring backend.
 #
-# All three link the same pftrace.c, its two output formats, pb_writer.c and
+# Both link the same pftrace.c, its two output formats, pb_writer.c and
 # the public header, and differ only in which ring implements src/pf_ring.h.
 # That is what makes tests/BENCHMARK_ring_backends.md a comparison of rings rather
 # than of libraries: everything above the ring is the same code.
 #
-# `pftrace` is the default target and the one every test and tool links.
-# The other two exist to be benchmarked, and are built only when
-# PFTRACE_BUILD_BENCH is on -- they are not alternative products.
+# libpftrace_mpsc.a and libpftrace_zcopy.a are both always built. There is no
+# default backend: consumers link the one they mean.
 #
 # Sources are listed relative to this directory, so the paths stay correct
 # if the directory is ever vendored into another project.
@@ -56,16 +55,9 @@ function(pftrace_add_library name ring define extra)
   )
 endfunction()
 
-pftrace_add_library("" pf_ring_mpsc.c "" ringbuf_mpsc)
+pftrace_add_library(_mpsc pf_ring_mpsc.c "" ringbuf_mpsc)
+pftrace_add_library(_zcopy pf_ring_zcopy.c PF_RING_BACKEND_ZCOPY ringbuf_zcopy)
 
-# The default is ringbuf_mpsc, so the mpsc bench target is an alias for it.
-# It exists so the bench loops in tests/ can address every backend by name.
-add_library(pftrace_mpsc ALIAS pftrace)
-
-if(PFTRACE_BUILD_BENCH)
-  pftrace_add_library(_zcopy pf_ring_zcopy.c PF_RING_BACKEND_ZCOPY
-                      ringbuf_zcopy)
-endif()
 
 # Sanitized copies of the library, one per backend and sanitizer, for the
 # stress tests in tests/ to link. Unlike the bench variants these change

@@ -1,95 +1,108 @@
+# Each test below is built once per backend, against libpftrace_<backend>, and
+# runs in build/<backend>/, where the dump_trace and verify_trace tests look
+# for the traces it writes.
+#
 # Drives enough events through a small ring to force many wraps, which is
 # where snapshot windowing and continuous gaplessness actually get tested.
 # memmem, used to confirm which events survived in a window, needs
 # _GNU_SOURCE.
-#
-# Built once per backend when the benchmarks are on: these two use the
-# public API only, so they are the correctness gate for an alternative ring
-# -- each writes its traces to its own paths, so the variants can run
-# concurrently under ctest. The traces the dump_trace tests validate come
-# from the default build's test_stress.
-add_executable(test_stress test_stress.c)
-target_link_libraries(test_stress PRIVATE pftrace Threads::Threads)
-target_compile_definitions(test_stress PRIVATE _GNU_SOURCE)
+foreach(backend ${PFTRACE_BACKENDS})
+  set(run_dir ${CMAKE_BINARY_DIR}/${backend})
 
-# Interposes malloc/calloc/realloc to prove the hot path allocates nothing
-# once the trace is open -- requirement 1. Needs dl for RTLD_NEXT.
-add_executable(test_noalloc test_noalloc.c)
-target_link_libraries(test_noalloc
-  PRIVATE pftrace Threads::Threads ${CMAKE_DL_LIBS}
-)
+  add_executable(test_stress_${backend} test_stress.c)
+  target_link_libraries(test_stress_${backend}
+    PRIVATE pftrace_${backend} Threads::Threads
+  )
+  target_compile_definitions(test_stress_${backend} PRIVATE _GNU_SOURCE)
+  # Writes the stress_*.pftrace files the dump_trace tests read.
+  add_test(NAME stress_${backend} COMMAND test_stress_${backend}
+    WORKING_DIRECTORY ${run_dir})
+  set_tests_properties(stress_${backend} PROPERTIES
+    FIXTURES_SETUP stress_traces_${backend})
 
-# Not a test: reports producer vs drain cost per event, to show where the
-# hot path actually stands and at what rate continuous mode starts dropping.
-add_executable(bench bench.c)
+  # Interposes malloc/calloc/realloc to prove the hot path allocates nothing
+  # once the trace is open -- requirement 1. Needs dl for RTLD_NEXT.
+  add_executable(test_noalloc_${backend} test_noalloc.c)
+  target_link_libraries(test_noalloc_${backend}
+    PRIVATE pftrace_${backend} Threads::Threads ${CMAKE_DL_LIBS}
+  )
+  add_test(NAME noalloc_${backend} COMMAND test_noalloc_${backend}
+    WORKING_DIRECTORY ${run_dir})
 
-# Cost of the record-size change and of event arguments; see the file header.
-add_executable(bench_args bench_args.c)
-target_link_libraries(bench_args PRIVATE pftrace Threads::Threads)
+  # Event arguments rendered into names by the protobuf drain.
+  add_executable(test_args_pb_${backend} test_args_pb.c)
+  target_link_libraries(test_args_pb_${backend}
+    PRIVATE pftrace_${backend} Threads::Threads
+  )
+  add_test(NAME args_pb_${backend} COMMAND test_args_pb_${backend})
+
+  # The ring holds at least min_ring_bytes, at the slot-count boundary.
+  add_executable(test_min_ring_${backend} test_min_ring.c)
+  target_link_libraries(test_min_ring_${backend}
+    PRIVATE pftrace_${backend} Threads::Threads
+  )
+  add_test(NAME min_ring_${backend} COMMAND test_min_ring_${backend})
+
+  # Counter tracks are identified by name: same name, same track. Covers the
+  # lookup under track_lock, including two threads creating one name at once.
+  add_executable(test_counter_name_${backend} test_counter_name.c)
+  target_link_libraries(test_counter_name_${backend}
+    PRIVATE pftrace_${backend} Threads::Threads
+  )
+  add_test(NAME counter_name_${backend} COMMAND test_counter_name_${backend})
+
+  # The simple API's thread tracks must have the process track as parent.
+  # Reads the internal track table, since the public API does not expose the
+  # process uuid.
+  add_executable(test_process_track_${backend} test_process_track.c)
+  target_link_libraries(test_process_track_${backend}
+    PRIVATE pftrace_${backend} Threads::Threads
+  )
+  add_test(NAME process_track_${backend} COMMAND test_process_track_${backend})
+
+  # The _g counter calls act on the default trace and the calling thread's
+  # track, and match their explicit counterparts.
+  add_executable(test_counter_g_${backend} test_counter_g.c)
+  target_link_libraries(test_counter_g_${backend}
+    PRIVATE pftrace_${backend} Threads::Threads
+  )
+  add_test(NAME counter_g_${backend} COMMAND test_counter_g_${backend})
+
+  # Round trip for the raw format: writes it, reads it back with a reader
+  # written from docs/raw_format.md, and compares every event. Its reader
+  # shares no code with the writer, so this checks the spec, not just that the
+  # two agree. Writes the raw_roundtrip_*.pfraw files the converter tests read.
+  add_executable(test_raw_roundtrip_${backend} test_raw_roundtrip.c)
+  target_link_libraries(test_raw_roundtrip_${backend}
+    PRIVATE pftrace_${backend} Threads::Threads
+  )
+  target_compile_definitions(test_raw_roundtrip_${backend} PRIVATE _GNU_SOURCE)
+  add_test(NAME raw_roundtrip_${backend} COMMAND test_raw_roundtrip_${backend}
+    WORKING_DIRECTORY ${run_dir})
+  set_tests_properties(raw_roundtrip_${backend} PROPERTIES
+    FIXTURES_SETUP raw_traces_${backend})
+
+  # Not a test: reports producer vs drain cost per event, to show where the
+  # hot path actually stands and at what rate continuous mode starts dropping.
+  add_executable(bench_${backend} bench.c)
+  target_link_libraries(bench_${backend}
+    PRIVATE pftrace_${backend} Threads::Threads
+  )
+
+  # Cost of the record-size change and of event arguments; see the file header.
+  add_executable(bench_args_${backend} bench_args.c)
+  target_link_libraries(bench_args_${backend}
+    PRIVATE pftrace_${backend} Threads::Threads
+  )
+endforeach()
 
 # Single 64-byte claim versus 32-byte claims, on the vendored ringbuf_mpsc.
+# Compiles the ring directly and does not link the library, so it is built once.
 add_executable(bench_slot_size bench_slot_size.c ${PROJECT_SOURCE_DIR}/ringbuf/ringbuf_mpsc.c)
 target_include_directories(bench_slot_size PRIVATE ${PROJECT_SOURCE_DIR}/ringbuf)
 target_link_libraries(bench_slot_size PRIVATE Threads::Threads)
-target_link_libraries(bench PRIVATE pftrace Threads::Threads)
-
-
-# Writes the stress_*.pftrace files the dump_trace tests read, so it runs in
-# the build root, where they look for them.
-add_test(NAME stress COMMAND test_stress WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
-set_tests_properties(stress PROPERTIES FIXTURES_SETUP stress_traces)
-add_test(NAME noalloc COMMAND test_noalloc)
-
-# Event arguments rendered into names by the protobuf drain.
-add_executable(test_args_pb test_args_pb.c)
-target_link_libraries(test_args_pb PRIVATE pftrace Threads::Threads)
-add_test(NAME args_pb COMMAND test_args_pb)
-
-# The ring holds at least min_ring_bytes, at the slot-count boundary.
-add_executable(test_min_ring test_min_ring.c)
-target_link_libraries(test_min_ring PRIVATE pftrace)
-add_test(NAME min_ring COMMAND test_min_ring)
-
-# Counter tracks are identified by name: same name, same track. Covers the
-# lookup under track_lock, including two threads creating one name at once.
-add_executable(test_counter_name test_counter_name.c)
-target_link_libraries(test_counter_name PRIVATE pftrace Threads::Threads)
-add_test(NAME counter_name COMMAND test_counter_name)
-
-# The simple API's thread tracks must have the process track as parent.
-# Reads the internal track table, since the public API does not expose the
-# process uuid.
-add_executable(test_process_track test_process_track.c)
-target_link_libraries(test_process_track PRIVATE pftrace)
-add_test(NAME process_track COMMAND test_process_track)
-
-# The _g counter calls act on the default trace and the calling thread's
-# track, and match their explicit counterparts.
-add_executable(test_counter_g test_counter_g.c)
-target_link_libraries(test_counter_g PRIVATE pftrace)
-add_test(NAME counter_g COMMAND test_counter_g)
 
 if(PFTRACE_BUILD_BENCH)
-  foreach(backend mpsc zcopy)
-    add_executable(test_stress_${backend} test_stress.c)
-    target_link_libraries(test_stress_${backend}
-      PRIVATE pftrace_${backend} Threads::Threads
-    )
-    target_compile_definitions(test_stress_${backend} PRIVATE
-      _GNU_SOURCE PF_TRACE_PREFIX="stress_${backend}_"
-    )
-    add_test(NAME stress_${backend} COMMAND test_stress_${backend})
-
-    add_executable(test_noalloc_${backend} test_noalloc.c)
-    target_link_libraries(test_noalloc_${backend}
-      PRIVATE pftrace_${backend} Threads::Threads ${CMAKE_DL_LIBS}
-    )
-    target_compile_definitions(test_noalloc_${backend} PRIVATE
-      PF_TRACE_PREFIX="noalloc_${backend}_"
-    )
-    add_test(NAME noalloc_${backend} COMMAND test_noalloc_${backend})
-  endforeach()
-
   # The ring comparison: one source, linked once per backend,
   # since the backend is a compile-time choice and `struct pf_ring` is a
   # different type in each -- one process cannot hold two of them.
@@ -106,12 +119,12 @@ if(PFTRACE_BUILD_BENCH)
   # The backend selector reaches these through the library's PUBLIC compile
   # definitions, so bench_ring.c sees the same macro pf_ring.h switched on
   # and labels its rows correctly.
-  foreach(target_backend mpsc zcopy)
-    add_executable(bench_ring_${target_backend} bench_ring.c)
-    target_link_libraries(bench_ring_${target_backend}
-      PRIVATE pftrace_${target_backend} Threads::Threads
+  foreach(backend ${PFTRACE_BACKENDS})
+    add_executable(bench_ring_${backend} bench_ring.c)
+    target_link_libraries(bench_ring_${backend}
+      PRIVATE pftrace_${backend} Threads::Threads
     )
-    target_compile_options(bench_ring_${target_backend} PRIVATE -O2 -g)
+    target_compile_options(bench_ring_${backend} PRIVATE -O2 -g)
   endforeach()
 endif()
 
@@ -119,7 +132,7 @@ endif()
 # library. The library's PUBLIC flags instrument this file too, so the
 # sanitizer sees the test's own accesses, not only the library's.
 if(PFTRACE_BUILD_SANITIZED)
-  foreach(backend mpsc zcopy)
+  foreach(backend ${PFTRACE_BACKENDS})
     foreach(sanitizer asan tsan)
       add_executable(test_stress_${backend}_${sanitizer} test_stress.c)
       target_link_libraries(test_stress_${backend}_${sanitizer}
@@ -142,13 +155,16 @@ endif()
 # rejecting anything would look exactly like a passing test suite.
 #
 # EXCLUDE_FROM_ALL so a deliberately-failing compile is not part of a
-# normal build; each test drives its own via --target.
+# normal build; each test drives its own via --target. Only the public header
+# is needed, and it is the same for both backends.
 foreach(mode OK VARIABLE STACK_BUFFER EMPTY)
   string(TOLOWER "${mode}" lower)
   add_library(name_literal_${lower} OBJECT EXCLUDE_FROM_ALL
     test_name_literal.c
   )
-  target_link_libraries(name_literal_${lower} PRIVATE pftrace)
+  target_include_directories(name_literal_${lower} PRIVATE
+    ${PROJECT_SOURCE_DIR}/include
+  )
   target_compile_definitions(name_literal_${lower} PRIVATE MODE_${mode})
 
   add_test(NAME name_literal_${lower}
@@ -162,16 +178,3 @@ set_tests_properties(name_literal_variable name_literal_stack_buffer
                      name_literal_empty
   PROPERTIES WILL_FAIL TRUE
 )
-
-# Round trip for the raw format: writes it, reads it back with a reader
-# written from docs/raw_format.md, and compares every event. Its reader
-# shares no code with the writer, so this checks the spec, not just that the
-# two agree.
-add_executable(test_raw_roundtrip test_raw_roundtrip.c)
-target_link_libraries(test_raw_roundtrip PRIVATE pftrace Threads::Threads)
-target_compile_definitions(test_raw_roundtrip PRIVATE _GNU_SOURCE)
-# Writes the raw_roundtrip_*.pfraw files the converter tests read, so it runs
-# in the build root, where they look for them.
-add_test(NAME raw_roundtrip COMMAND test_raw_roundtrip
-  WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
-set_tests_properties(raw_roundtrip PROPERTIES FIXTURES_SETUP raw_traces)
