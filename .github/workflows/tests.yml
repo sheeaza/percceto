@@ -102,8 +102,8 @@ jobs:
         run: cmake --build build -j
 
       - name: Test
-        # The whole suite is ~15 s on x86-64; the arm64 runners are smaller,
-        # so the timeout is generous rather than tight. It is a backstop
+        # Runs the tests in parallel, one per CPU. The timeout is generous
+        # rather than tight, since the arm64 runners are smaller. It is a backstop
         # against a regression that wedges the buffer: the tests' own
         # MAX_SPIN bounds a stalled push/pop, but a corrupted-yet-
         # progressing stream resets that counter on every success and would
@@ -114,7 +114,7 @@ jobs:
         # kernel, tsan aborts with "unsupported VMA range" -- that is a
         # known ThreadSanitizer/aarch64 limitation, not a bug in this tree,
         # and the four non-tsan entries still gate the logic there.
-        run: ctest --test-dir build --output-on-failure --timeout 300
+        run: ctest --test-dir build -j "$(nproc)" --output-on-failure --timeout 300
 
   format:
     # Architecture-independent, so this runs once rather than per-arch.
