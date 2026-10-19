@@ -88,7 +88,7 @@ static double produce(struct pf_trace *t, uint64_t trk, bool args)
 
 /* Snapshot mode, protobuf: produce, then time the dump, which is where
  * the drain encodes. Returns ns per event for production and for the dump. */
-static void snapshot_section(bool args, const char *label)
+static void snapshot_section(bool args, const char *label, size_t ring_bytes)
 {
     const char *dir = "bench_args.d";
     dir_reset(dir);
@@ -98,7 +98,7 @@ static void snapshot_section(bool args, const char *label)
     cfg.mode = PF_MODE_SNAPSHOT;
     cfg.format = PF_FORMAT_PROTOBUF;
     cfg.path = dir;
-    cfg.ring_bytes = 256u << 20;
+    cfg.ring_bytes = ring_bytes;
 
     struct pf_trace *t = pf_trace_open(&cfg);
     if (!t) {
@@ -131,10 +131,14 @@ int main(void)
 {
     printf("clock.real_read %.1f ns/call\n", clock_cost_ns());
 
-    snapshot_section(false, "noargs");
+    snapshot_section(false, "noargs", 256u << 20);
+    /* A ring that stays in cache, so the writes do not go to RAM. Shows how
+     * much of the producer cost is memory traffic. */
+    snapshot_section(false, "noargs_cached", 256u << 10);
 
 #ifdef PF_MAX_ARGS
-    snapshot_section(true, "args2");
+    snapshot_section(true, "args2", 256u << 20);
+    snapshot_section(true, "args2_cached", 256u << 10);
 #endif
     return 0;
 }
