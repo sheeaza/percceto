@@ -1,10 +1,11 @@
-/* pf_track_counter() and pf_track_thread_named() identify a track by its
- * name, under the trace's process track.
+/* pf_track_counter() identifies a track by its name, under the trace's
+ * process track. pf_track_thread_uuid_g() reads the calling thread's track
+ * from TLS.
  *
  * Covers: the same identity returns the same uuid and takes no table entry;
  * distinct names get distinct tracks; a unit conflict returns 0; concurrent
  * creation of one name yields one track; a full table still refuses new
- * names.
+ * names; the TLS thread uuid is stable and needs a default trace.
  */
 
 #include <pthread.h>
@@ -156,33 +157,23 @@ static void test_concurrent_same_name(void)
     pf_trace_close(t);
 }
 
-/* Thread tracks by name: parent and name identify the track. A repeat call
- * returns the same track whatever pid and tid it passes, a different parent
- * gives a separate track, and a full table refuses new names. */
-static void test_thread_named(void)
+/* Thread track uuid from TLS: no default trace gives 0, and with one the
+ * calling thread gets the same cached uuid on every call. */
+static void test_thread_uuid_g(void)
 {
+    check(pf_track_thread_uuid_g() == 0, "no default trace gives 0");
+
     struct pf_trace *t = open_trace(4);
     if (!t) {
         check(0, "open trace");
         return;
     }
-    uint64_t a = pf_track_thread_named(t, 100, 7, "worker");
+    uint64_t a = pf_track_thread_uuid_g();
     int same = a != 0;
     for (int i = 0; i < 1000; i++)
-        same &= pf_track_thread_named(t, 100, 1000 + i, "worker") == a;
-    check(same, "same name returns the same track, pid and tid ignored");
-
-    uint64_t b = pf_track_thread_named(t, 100, 7, "other");
-    check(b && b != a, "different name gives a separate track");
-
-    /* Table has room for 4. Two entries are taken, so two more names fit. */
-    int fits = pf_track_thread_named(t, 100, 7, "c") &&
-               pf_track_thread_named(t, 100, 7, "d");
-    check(fits, "two more names fit");
-    check(pf_track_thread_named(t, 100, 7, "e") == 0,
-          "table full refuses a new name");
-    check(pf_track_thread_named(t, 100, 7, "worker") == a,
-          "existing name still found on a full table");
+        same &= pf_track_thread_uuid_g() == a;
+    check(same, "same thread gets the same cached uuid");
+    check(pf_thread_track_g() == a, "matches pf_thread_track_g()");
     pf_trace_close(t);
 }
 
@@ -193,7 +184,7 @@ int main(void)
     test_distinct_names();
     test_unit_conflict();
     test_concurrent_same_name();
-    test_thread_named();
+    test_thread_uuid_g();
     if (failures) {
         printf("%d failure(s)\n", failures);
         return 1;

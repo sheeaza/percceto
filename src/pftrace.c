@@ -606,14 +606,6 @@ uint64_t pf_track_counter(struct pf_trace *t, uint64_t parent_uuid,
     return track_find_or_add(t, TRACK_COUNTER, parent, 0, 0, name, unit);
 }
 
-uint64_t pf_track_thread_named(struct pf_trace *t, int32_t pid, int32_t tid,
-                               const char *name)
-{
-    /* pid and tid are recorded only when the track is created. */
-    return track_find_or_add(t, TRACK_THREAD, t->process_uuid, pid, tid, name,
-                             PF_UNIT_UNSPECIFIED);
-}
-
 /* --- Simple API -------------------------------------------------------
  * The trace is the process default, set by pf_trace_open() and cleared by
  * pf_trace_close(). It is expected to be created once by the main thread
@@ -708,6 +700,12 @@ void pf_thread_name(const char *name)
 }
 
 uint64_t pf_thread_track_g(void)
+{
+    struct pf_trace *t = default_trace();
+    return t ? thread_track(t) : 0;
+}
+
+uint64_t pf_track_thread_uuid_g(void)
 {
     struct pf_trace *t = default_trace();
     return t ? thread_track(t) : 0;
