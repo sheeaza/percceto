@@ -273,7 +273,7 @@ struct ids {
 /* Moves the dump @leaf, written in @dir, to @path. */
 static int move_dump(const char *dir, const char *leaf, const char *path)
 {
-    char file[512];
+    char file[256 + 1 + 512];
     snprintf(file, sizeof(file), "%s/%s", dir, leaf);
     return rename(file, path);
 }
