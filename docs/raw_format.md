@@ -33,7 +33,7 @@ reader (the offline Python parser).
 +---------------------------+
 ```
 
-There is no index and no trailer in version 1. The reader scans chunks from
+There is no index and no trailer in version 2. The reader scans chunks from
 the start.
 
 ### File header
@@ -41,16 +41,16 @@ the start.
 | Offset | Size | Field        | Value                                   |
 |--------|------|--------------|-----------------------------------------|
 | 0      | 8    | magic        | ASCII `PFRAWv1\0`                       |
-| 8      | 4    | version      | `1`                                     |
-| 12     | 4    | record_size  | `32` (bytes per event record)           |
+| 8      | 4    | version      | `2`                                     |
+| 12     | 4    | record_size  | `48` (bytes per event record)           |
 | 16     | 4    | clock_id     | `CLOCK_BOOTTIME` as defined by the writer's `<time.h>` (`7` on Linux) |
-| 20     | 4    | flags        | `0` in version 1, reserved              |
+| 20     | 4    | flags        | `0` in version 2, reserved              |
 | 24     | 8    | reserved     | `0`                                     |
 
 Total: 32 bytes. The header never changes after it is written.
 
 The reader rejects the file if `magic` does not match, `version` is not
-recognized, or `record_size` is not `32`.
+recognized, or `record_size` is not `48`.
 
 ## Chunks
 
@@ -70,9 +70,9 @@ Chunks are written with one `write()` each, on an fd opened with `O_APPEND`.
 |-------|--------|--------------------------------------------------|
 | 1     | NAMES  | sequence of name entries                         |
 | 2     | TRACKS | sequence of track entries                        |
-| 3     | EVENTS | `len / 32` event records, back to back           |
+| 3     | EVENTS | `len / 48` event records, back to back           |
 
-Any other `kind` value is an error in version 1.
+Any other `kind` value is an error in version 2.
 
 #### NAMES payload
 
@@ -112,8 +112,8 @@ The `name` field is capped at `PF_TRACK_NAME_MAX` (64) bytes.
 
 #### EVENTS payload
 
-Each record is the 32-byte `struct pf_rec` from `src/pftrace.c`, copied as
-is:
+Each record is the 48-byte `struct pf_rec` from `src/pftrace_internal.h`,
+copied as is:
 
 | Offset | Size | Field        | Meaning                                       |
 |--------|------|--------------|-----------------------------------------------|
@@ -122,11 +122,23 @@ is:
 | 16     | 8    | u            | `name` pointer, or `value` if `RF_HAS_VALUE`  |
 | 24     | 4    | type         | `TYPE_*`                                      |
 | 28     | 4    | flags        | `RF_*` bits                                   |
+| 32     | 8    | arg0         | event argument 0: int64 bits or double bits    |
+| 40     | 8    | arg1         | event argument 1: int64 bits or double bits    |
 
 `type` is one of `1` slice begin, `2` slice end, `3` instant, `4` counter.
 
 `RF_HAS_VALUE` (`0x1`) selects `value` in `u`. `RF_VALUE_IS_DOUBLE` (`0x2`)
 means `value` holds an IEEE-754 double.
+
+`RF_NARGS_MASK` (`0xC`, bits 2-3) is the number of arguments, `0` to `2`.
+`RF_ARG0_IS_DOUBLE` (`0x10`) and `RF_ARG1_IS_DOUBLE` (`0x20`) say whether the
+matching argument is a double. Only the first `nargs` of `arg0`, `arg1` are
+used. Events without args have `nargs` `0` and zero in `arg0` and `arg1`.
+
+When `nargs` is nonzero, `u` is a format string, and the arguments fill its
+placeholders in order. The conversions are `%d %i` (signed int), `%u %x %X`
+(unsigned int), `%f %g %e` (double) and `%%`. Anything else, or a placeholder
+count that does not match `nargs`, is an error.
 
 The reader decodes `name` as a pointer key into the NAMES definitions seen
 so far. A value of `0` means the event has no name. The reader decodes
@@ -165,7 +177,7 @@ The reader stops at the first chunk that is incomplete:
 
 - fewer than 8 bytes remain for a chunk header, or
 - `len` bytes are not all present, or
-- for EVENTS, `len` is not a multiple of 32, or
+- for EVENTS, `len` is not a multiple of 48, or
 - for TRACKS, `len` is not a multiple of 104.
 
 Everything before that point is valid. The reader reports the number of

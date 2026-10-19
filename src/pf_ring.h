@@ -44,7 +44,7 @@
  * backend's header into this constant would make every backend pay for it.
  *
  * pftrace.c pins its struct pf_rec to this with a _Static_assert. */
-#define PF_PAYLOAD_BYTES 32u
+#define PF_PAYLOAD_BYTES 48u
 
 /* Every payload is a multiple of 8 bytes, so each of its fields stays
  * naturally aligned and a backend may hand out 8-byte aligned slots. */

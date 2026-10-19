@@ -397,7 +397,8 @@ static void maybe_wake_drain(struct pf_trace *t)
 
 static void emit_event(struct pf_trace *t, uint32_t type, uint64_t track_uuid,
                        const char *name, bool has_value, uint64_t raw_value,
-                       bool value_is_double)
+                       bool value_is_double, unsigned nargs, uint64_t a0,
+                       bool a0_dbl, uint64_t a1, bool a1_dbl)
 {
     /* Timestamp before reserving, not after. The reservation can spin
      * briefly when producers collide, and a timestamp taken afterwards
@@ -423,7 +424,14 @@ static void emit_event(struct pf_trace *t, uint32_t type, uint64_t track_uuid,
         r->u.name = name;
     r->type = type;
     r->flags = (has_value ? RF_HAS_VALUE : 0u) |
-               (value_is_double ? RF_VALUE_IS_DOUBLE : 0u);
+               (value_is_double ? RF_VALUE_IS_DOUBLE : 0u) |
+               (nargs << RF_NARGS_SHIFT) |
+               (nargs > 0 && a0_dbl ? RF_ARG0_IS_DOUBLE : 0u) |
+               (nargs > 1 && a1_dbl ? RF_ARG1_IS_DOUBLE : 0u);
+    /* Always written, so an event without args carries zeros, not whatever
+     * the slot held before. */
+    r->arg[0] = nargs > 0 ? a0 : 0;
+    r->arg[1] = nargs > 1 ? a1 : 0;
 
     pf_ring_submit(&t->ring, &res);
     maybe_wake_drain(t);
@@ -432,25 +440,44 @@ static void emit_event(struct pf_trace *t, uint32_t type, uint64_t track_uuid,
 void pf_slice_begin_impl(struct pf_trace *t, uint64_t track_uuid,
                          const char *name)
 {
-    emit_event(t, TYPE_SLICE_BEGIN, track_uuid, name, false, 0, false);
+    emit_event(t, TYPE_SLICE_BEGIN, track_uuid, name, false, 0, false, 0, 0,
+               false, 0, false);
 }
 
 void pf_instant_event_impl(struct pf_trace *t, uint64_t track_uuid,
                            const char *name)
 {
-    emit_event(t, TYPE_INSTANT, track_uuid, name, false, 0, false);
+    emit_event(t, TYPE_INSTANT, track_uuid, name, false, 0, false, 0, 0, false,
+               0, false);
 }
 
 void pf_slice_end(struct pf_trace *t, uint64_t track_uuid)
 {
-    emit_event(t, TYPE_SLICE_END, track_uuid, NULL, false, 0, false);
+    emit_event(t, TYPE_SLICE_END, track_uuid, NULL, false, 0, false, 0, 0,
+               false, 0, false);
+}
+
+void pf_slice_begin_args_impl(struct pf_trace *t, uint64_t track_uuid,
+                              const char *name, unsigned nargs, uint64_t a0,
+                              bool a0_dbl, uint64_t a1, bool a1_dbl)
+{
+    emit_event(t, TYPE_SLICE_BEGIN, track_uuid, name, false, 0, false, nargs,
+               a0, a0_dbl, a1, a1_dbl);
+}
+
+void pf_instant_event_args_impl(struct pf_trace *t, uint64_t track_uuid,
+                                const char *name, unsigned nargs, uint64_t a0,
+                                bool a0_dbl, uint64_t a1, bool a1_dbl)
+{
+    emit_event(t, TYPE_INSTANT, track_uuid, name, false, 0, false, nargs, a0,
+               a0_dbl, a1, a1_dbl);
 }
 
 void pf_counter_set_int(struct pf_trace *t, uint64_t counter_track_uuid,
                         int64_t value)
 {
     emit_event(t, TYPE_COUNTER, counter_track_uuid, NULL, true, (uint64_t)value,
-               false);
+               false, 0, 0, false, 0, false);
 }
 
 void pf_counter_set_double(struct pf_trace *t, uint64_t counter_track_uuid,
@@ -458,7 +485,8 @@ void pf_counter_set_double(struct pf_trace *t, uint64_t counter_track_uuid,
 {
     uint64_t bits;
     memcpy(&bits, &value, 8);
-    emit_event(t, TYPE_COUNTER, counter_track_uuid, NULL, true, bits, true);
+    emit_event(t, TYPE_COUNTER, counter_track_uuid, NULL, true, bits, true, 0,
+               0, false, 0, false);
 }
 
 /* --- Tracks ------------------------------------------------------------ */
@@ -683,6 +711,24 @@ void pf_instant_event_g_impl(const char *name)
     struct pf_trace *t = default_trace();
     if (t)
         pf_instant_event_impl(t, thread_track(t), name);
+}
+
+void pf_slice_begin_args_g_impl(const char *name, unsigned nargs, uint64_t a0,
+                                bool a0_dbl, uint64_t a1, bool a1_dbl)
+{
+    struct pf_trace *t = default_trace();
+    if (t)
+        pf_slice_begin_args_impl(t, thread_track(t), name, nargs, a0, a0_dbl,
+                                 a1, a1_dbl);
+}
+
+void pf_instant_event_args_g_impl(const char *name, unsigned nargs, uint64_t a0,
+                                  bool a0_dbl, uint64_t a1, bool a1_dbl)
+{
+    struct pf_trace *t = default_trace();
+    if (t)
+        pf_instant_event_args_impl(t, thread_track(t), name, nargs, a0, a0_dbl,
+                                   a1, a1_dbl);
 }
 
 void pf_thread_name(const char *name)

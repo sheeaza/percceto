@@ -26,8 +26,12 @@
 
 /* Mirrors the values documented in docs/raw_format.md. Kept separate from
  * pftrace.c on purpose. */
-#define REC_BYTES 32u
+#define REC_BYTES 48u
 #define RF_HAS_VALUE 0x1u
+#define RF_NARGS_MASK 0xCu
+#define RF_NARGS_SHIFT 2
+#define RF_ARG0_IS_DOUBLE 0x10u
+#define RF_ARG1_IS_DOUBLE 0x20u
 enum {
     TYPE_SLICE_BEGIN = 1,
     TYPE_SLICE_END = 2,
@@ -61,6 +65,7 @@ static int failures;
 struct rev {
     uint64_t ts, track, u;
     uint32_t type, flags;
+    uint64_t a[2];
 };
 
 struct rtrack {
@@ -236,6 +241,8 @@ static int parse_raw(const char *path, struct parsed *p)
                 ev->u = rd64(e + 16);
                 ev->type = rd32(e + 24);
                 ev->flags = rd32(e + 28);
+                ev->a[0] = rd64(e + 32);
+                ev->a[1] = rd64(e + 40);
 
                 /* Ordering rule: definitions precede use. */
                 if (!find_track(p, ev->track))
@@ -360,7 +367,7 @@ static bool event_matches(const struct parsed *p, size_t k,
 static void check_contents(const struct parsed *p, const struct ids *ids,
                            size_t want_events)
 {
-    CHECK(p->version == 1, "version %u", p->version);
+    CHECK(p->version == 2, "version %u", p->version);
     CHECK(p->record_size == REC_BYTES, "record_size %u", p->record_size);
     CHECK(p->clock_id == (uint32_t)CLOCK_BOOTTIME, "clock_id %u", p->clock_id);
     CHECK(p->flags == 0, "flags %u", p->flags);
@@ -661,8 +668,8 @@ static void header_bytes(const char *path)
 
     uint8_t want[32] = { 0 };
     memcpy(want, "PFRAWv1", 8);
-    le_bytes(want + 8, 1, 4);
-    le_bytes(want + 12, 32, 4);
+    le_bytes(want + 8, 2, 4);
+    le_bytes(want + 12, 48, 4);
     le_bytes(want + 16, (uint32_t)CLOCK_BOOTTIME, 4);
     CHECK(memcmp(buf, want, 32) == 0, "header bytes differ from the spec");
 
@@ -685,6 +692,81 @@ static void header_bytes(const char *path)
           "name bytes are not 'compute'");
 }
 
+/* Events with arguments: the format name, the arg count and types in the
+ * flags, and the arg bits. Events without args must carry zeros. */
+static void args_roundtrip(const char *path)
+{
+    unlink(path);
+    struct pf_config cfg;
+    pf_config_init(&cfg);
+    cfg.format = PF_FORMAT_RAW;
+    cfg.mode = PF_MODE_CONTINUOUS;
+    cfg.process_name = "rawapp";
+    cfg.path = ".";
+    cfg.name = path;
+
+    struct pf_trace *t = pf_trace_open(&cfg);
+    if (!t) {
+        CHECK(false, "args: open failed: %s", strerror(errno));
+        return;
+    }
+    uint64_t trk = pf_track_thread(t, getpid(), 1, "args");
+    pf_slice_begin_args(t, trk, "job %d took %f", 7, 2.5);
+    pf_slice_end(t, trk);
+    pf_instant_event_args(t, trk, "n=%u x=%x", 42u, 255u);
+    pf_slice_begin(t, trk, "plain");
+    pf_slice_end(t, trk);
+    pf_trace_close(t);
+
+    static struct parsed p;
+    memset(&p, 0, sizeof p);
+    if (parse_raw(path, &p) != 0) {
+        CHECK(false, "args: reader rejected %s", path);
+        return;
+    }
+    CHECK(p.nev == 5, "args: %zu events, want 5", p.nev);
+    if (p.nev != 5)
+        return;
+
+    const struct rev *e = &p.ev[0];
+    uint64_t want_dbl;
+    double two_and_half = 2.5;
+    memcpy(&want_dbl, &two_and_half, sizeof want_dbl);
+    CHECK(e->type == TYPE_SLICE_BEGIN, "args: event 0 type %u", e->type);
+    CHECK(((e->flags & RF_NARGS_MASK) >> RF_NARGS_SHIFT) == 2,
+          "args: event 0 nargs flags %#x", e->flags);
+    CHECK(!(e->flags & RF_ARG0_IS_DOUBLE) && (e->flags & RF_ARG1_IS_DOUBLE),
+          "args: event 0 arg types %#x", e->flags);
+    CHECK(e->a[0] == 7, "args: event 0 arg0 %llu", (unsigned long long)e->a[0]);
+    CHECK(e->a[1] == want_dbl, "args: event 0 arg1 bits %#llx",
+          (unsigned long long)e->a[1]);
+    const struct rname *n = find_name(&p, e->u);
+    CHECK(n && strcmp(n->s, "job %d took %f") == 0,
+          "args: event 0 name is not the format");
+
+    e = &p.ev[1];
+    CHECK(e->type == TYPE_SLICE_END && e->flags == 0 && e->a[0] == 0 &&
+              e->a[1] == 0,
+          "args: event 1 (no args) is not zeroed");
+
+    e = &p.ev[2];
+    CHECK(e->type == TYPE_INSTANT && e->a[0] == 42 && e->a[1] == 255,
+          "args: event 2 args %llu %llu", (unsigned long long)e->a[0],
+          (unsigned long long)e->a[1]);
+    CHECK(((e->flags & RF_NARGS_MASK) >> RF_NARGS_SHIFT) == 2 &&
+              !(e->flags & (RF_ARG0_IS_DOUBLE | RF_ARG1_IS_DOUBLE)),
+          "args: event 2 flags %#x", e->flags);
+
+    e = &p.ev[3];
+    CHECK(e->type == TYPE_SLICE_BEGIN && e->flags == 0 && e->a[0] == 0 &&
+              e->a[1] == 0,
+          "args: event 3 (plain begin) is not zeroed");
+    e = &p.ev[4];
+    CHECK(e->type == TYPE_SLICE_END && e->flags == 0 && e->a[0] == 0 &&
+              e->a[1] == 0,
+          "args: event 4 (plain end) is not zeroed");
+}
+
 int main(void)
 {
     /* Continuous: the drain writes several event chunks, since 5000
@@ -700,6 +782,8 @@ int main(void)
     torn_tail("raw_roundtrip_torn.pfraw", 2000);
 
     refuses_existing("raw_roundtrip_continuous.pfraw");
+
+    args_roundtrip("raw_roundtrip_args.pfraw");
 
     simple_threads("raw_roundtrip_simple_threads.pfraw");
     simple_rename("raw_roundtrip_simple_rename.pfraw");

@@ -22,6 +22,10 @@ target_link_libraries(test_noalloc
 # Not a test: reports producer vs drain cost per event, to show where the
 # hot path actually stands and at what rate continuous mode starts dropping.
 add_executable(bench bench.c)
+
+# Cost of the record-size change and of event arguments; see the file header.
+add_executable(bench_args bench_args.c)
+target_link_libraries(bench_args PRIVATE pftrace Threads::Threads)
 target_link_libraries(bench PRIVATE pftrace Threads::Threads)
 
 
@@ -30,6 +34,11 @@ target_link_libraries(bench PRIVATE pftrace Threads::Threads)
 add_test(NAME stress COMMAND test_stress WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
 set_tests_properties(stress PROPERTIES FIXTURES_SETUP stress_traces)
 add_test(NAME noalloc COMMAND test_noalloc)
+
+# Event arguments rendered into names by the protobuf drain.
+add_executable(test_args_pb test_args_pb.c)
+target_link_libraries(test_args_pb PRIVATE pftrace Threads::Threads)
+add_test(NAME args_pb COMMAND test_args_pb)
 
 # Counter tracks are identified by name: same name, same track. Covers the
 # lookup under track_lock, including two threads creating one name at once.

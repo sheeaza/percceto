@@ -16,7 +16,7 @@
  * the events that reference them. */
 
 #define RAW_MAGIC "PFRAWv1"
-#define RAW_VERSION 1u
+#define RAW_VERSION 2u
 #define RAW_CHUNK_NAMES 1u
 #define RAW_CHUNK_TRACKS 2u
 #define RAW_CHUNK_EVENTS 3u

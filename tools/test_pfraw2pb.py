@@ -22,7 +22,7 @@ RAW_SLICE_BEGIN, RAW_SLICE_END, RAW_INSTANT, RAW_COUNTER = 1, 2, 3, 4
 
 
 def raw_file(*chunks):
-    header = struct.pack("<8sIIIIQ", b"PFRAWv1\0", 1, 32, 7, 0, 0)
+    header = struct.pack("<8sIIIIQ", b"PFRAWv1\0", 2, 48, 7, 0, 0)
     body = b"".join(struct.pack("<II", kind, len(payload)) + payload
                     for kind, payload in chunks)
     return header + body
@@ -39,8 +39,8 @@ def track_entry(uuid, parent, kind, pid, tid, unit, name):
                        1 if raw else 0, len(raw), raw.ljust(64, b"\0"))
 
 
-def event(ts, track, u, etype, flags=0):
-    return struct.pack("<QQQII", ts, track, u, etype, flags)
+def event(ts, track, u, etype, flags=0, a0=0, a1=0):
+    return struct.pack("<QQQII2Q", ts, track, u, etype, flags, a0, a1)
 
 
 def convert_bytes(data):
@@ -134,9 +134,9 @@ class ConvertTest(unittest.TestCase):
                   event(1, 1, NAME_PTR, RAW_SLICE_BEGIN)
                   + event(2, 1, 0, RAW_SLICE_END))
         data = raw_file(self.thread_tracks(), names, events)
-        # The events chunk is 8 + 64 bytes; 5 are cut, so 67 remain of it.
+        # The events chunk is 8 + 96 bytes; 5 are cut, so 99 remain of it.
         packets, stats, torn = convert_bytes(data[:-5])
-        self.assertEqual(torn, 67)
+        self.assertEqual(torn, 99)
         self.assertEqual(stats["events"], 0)
         self.assertEqual(len(packets), 1)  # descriptor only; events lost
 
@@ -194,6 +194,74 @@ class ConvertTest(unittest.TestCase):
         data = b"NOTRAW00" + raw_file()[8:]
         with self.assertRaisesRegex(pb.RawFormatError, "bad magic"):
             pb.RawReader(io.BytesIO(data))
+
+    def test_args_are_rendered_into_event_name(self):
+        names = (pb.CHUNK_NAMES, name_entry(NAME_PTR, "job %d took %f"))
+        bits = struct.unpack("<Q", struct.pack("<d", 2.5))[0]
+        # Two args: arg0 is an int, arg1 is a double (RF_ARG1_IS_DOUBLE).
+        flags = (2 << pb.RF_NARGS_SHIFT) | 0x20
+        events = (pb.CHUNK_EVENTS,
+                  event(100, 1, NAME_PTR, RAW_SLICE_BEGIN, flags, 7, bits))
+        packets, _, _ = convert_bytes(
+            raw_file(self.thread_tracks(), names, events))
+        self.assertEqual(packets[1].track_event.name, "job 7 took 2.500000")
+
+    def test_unsigned_and_hex_conversions(self):
+        names = (pb.CHUNK_NAMES, name_entry(NAME_PTR, "n=%u x=%x 100%%"))
+        flags = 2 << pb.RF_NARGS_SHIFT
+        events = (pb.CHUNK_EVENTS,
+                  event(100, 1, NAME_PTR, RAW_INSTANT, flags, 42, 255))
+        packets, _, _ = convert_bytes(
+            raw_file(self.thread_tracks(), names, events))
+        self.assertEqual(packets[1].track_event.name, "n=42 x=ff 100%")
+
+    def test_arg_count_mismatch_writes_bare_format_and_warns(self):
+        names = (pb.CHUNK_NAMES, name_entry(NAME_PTR, "job %d"))
+        flags = 2 << pb.RF_NARGS_SHIFT
+        events = (pb.CHUNK_EVENTS,
+                  event(100, 1, NAME_PTR, RAW_SLICE_BEGIN, flags, 7, 0))
+        with self.assertLogs("pfraw2pb", level="WARNING") as logs:
+            packets, stats, _ = convert_bytes(
+                raw_file(self.thread_tracks(), names, events))
+        self.assertEqual(packets[1].track_event.name, "job %d")
+        self.assertEqual(stats["bad_format"], 1)
+        self.assertIn("fewer placeholders", logs.output[0])
+
+    def test_arg_type_mismatch_writes_bare_format_and_warns(self):
+        names = (pb.CHUNK_NAMES, name_entry(NAME_PTR, "%d"))
+        flags = (1 << pb.RF_NARGS_SHIFT) | 0x10  # arg0 is a double
+        events = (pb.CHUNK_EVENTS,
+                  event(100, 1, NAME_PTR, RAW_SLICE_BEGIN, flags, 0, 0))
+        with self.assertLogs("pfraw2pb", level="WARNING") as logs:
+            packets, stats, _ = convert_bytes(
+                raw_file(self.thread_tracks(), names, events))
+        self.assertEqual(packets[1].track_event.name, "%d")
+        self.assertIn("given a double", logs.output[0])
+
+    def test_width_flags_and_precision(self):
+        bits = struct.unpack("<Q", struct.pack("<d", 2.5))[0]
+        self.assertEqual(
+            pb.format_args("[%8d][%-6d][%+d][%08.3f][%.2e]",
+                           [(5, False), (3, False), (3, False),
+                            (bits, True), (bits, True)]),
+            "[       5][3     ][+3][0002.500][2.50e+00]")
+
+    def test_char_and_pointer(self):
+        self.assertEqual(
+            pb.format_args("%c%c p=%p P=%8p",
+                           [(104, False), (105, False),
+                            (4096, False), (255, False)]),
+            "hi p=0x1000 P=    0xff")
+
+    def test_hash_flag_is_rejected(self):
+        with self.assertRaises(pb.RawFormatError):
+            pb.format_args("%#x", [(255, False)])
+
+    def test_name_length_limit_matches_C(self):
+        # 127 characters fit; 128 do not, as in PF_FORMAT_NAME_MAX.
+        self.assertEqual(len(pb.format_args("x" * 127, [])), 127)
+        with self.assertRaisesRegex(pb.RawFormatError, "longer than 127"):
+            pb.format_args("x" * 128, [])
 
 
 if __name__ == "__main__":

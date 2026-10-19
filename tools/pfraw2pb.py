@@ -15,6 +15,8 @@ Usage:
     pfraw2pb.py input.pfraw [-o output.pftrace]
 """
 import argparse
+import logging
+import re
 import struct
 import sys
 from collections import Counter
@@ -26,16 +28,16 @@ from perfetto.protos.perfetto.trace.perfetto_trace_pb2 import (
 )
 
 MAGIC = b"PFRAWv1\0"
-VERSION = 1
+VERSION = 2
 HEADER = struct.Struct("<8sIIIIQ")  # magic, version, record_size, clock, flags, reserved
 CHUNK_HEADER = struct.Struct("<II")  # kind, len
 NAME_HEADER = struct.Struct("<QI")  # ptr, len
 TRACK_ENTRY = struct.Struct("<QQIiiIII64s")  # 104 bytes
-EVENT = struct.Struct("<QQQII")  # 32 bytes: ts, track, u, type, flags
+EVENT = struct.Struct("<QQQII2Q")  # 48 bytes: ts, track, u, type, flags, args
 
 RECORD_SIZE = EVENT.size
 TRACK_SIZE = TRACK_ENTRY.size
-assert RECORD_SIZE == 32 and TRACK_SIZE == 104
+assert RECORD_SIZE == 48 and TRACK_SIZE == 104
 
 CHUNK_NAMES = 1
 CHUNK_TRACKS = 2
@@ -52,6 +54,9 @@ RAW_TYPE_TO_PERFETTO = {
 
 RF_HAS_VALUE = 0x1
 RF_VALUE_IS_DOUBLE = 0x2
+RF_NARGS_SHIFT = 2
+RF_NARGS_MASK = 0x3 << 2
+RF_ARG_IS_DOUBLE = (0x10, 0x20)
 
 TRACK_PROCESS = 0
 TRACK_THREAD = 1
@@ -66,6 +71,8 @@ SEQ_NEEDS_INCREMENTAL_STATE = 2
 
 UINT64_MASK = (1 << 64) - 1
 INT64_SIGN = 1 << 63
+
+log = logging.getLogger("pfraw2pb")
 
 
 class RawFormatError(Exception):
@@ -219,9 +226,10 @@ class Converter:
 
     def events_chunk(self, payload):
         if len(payload) % RECORD_SIZE:
-            raise RawFormatError("events chunk is not a multiple of 32 bytes")
+            raise RawFormatError(
+                f"events chunk is not a multiple of {RECORD_SIZE} bytes")
         batch = Trace()
-        for ts, track, u, etype, flags in EVENT.iter_unpack(payload):
+        for ts, track, u, etype, flags, a0, a1 in EVENT.iter_unpack(payload):
             if track not in self._tracks:
                 raise RawFormatError(f"event refers to undefined track {track}")
             if etype not in RAW_TYPE_TO_PERFETTO:
@@ -233,6 +241,7 @@ class Converter:
             ev.type = RAW_TYPE_TO_PERFETTO[etype]
             ev.track_uuid = track
 
+            nargs = (flags & RF_NARGS_MASK) >> RF_NARGS_SHIFT
             if flags & RF_HAS_VALUE:
                 if flags & RF_VALUE_IS_DOUBLE:
                     ev.double_counter_value = struct.unpack(
@@ -240,6 +249,22 @@ class Converter:
                 else:
                     # The ring stores the two's-complement bits of an int64.
                     ev.counter_value = u - (1 << 64) if u & INT64_SIGN else u
+            elif nargs:
+                # The name is a format; its args are rendered per event, so
+                # the text is written inline rather than interned.
+                if u not in self._names:
+                    raise RawFormatError(f"event refers to undefined name {u:#x}")
+                args = [(a0, bool(flags & RF_ARG_IS_DOUBLE[0])),
+                        (a1, bool(flags & RF_ARG_IS_DOUBLE[1]))][:nargs]
+                try:
+                    ev.name = format_args(self._names[u], args)
+                except RawFormatError as err:
+                    # Same fallback as the C drain: the bare format is
+                    # written, so the event is kept and the mismatch shows.
+                    log.warning("event at ts %d: %s; writing the bare format",
+                                ts, err)
+                    ev.name = self._names[u]
+                    self.stats["bad_format"] += 1
             elif u:
                 if u not in self._names:
                     raise RawFormatError(f"event refers to undefined name {u:#x}")
@@ -252,6 +277,82 @@ class Converter:
                 ev.name_iid = iid
             self.stats["events"] += 1
         self._flush(batch)
+
+
+# One conversion: "%[flags][width][.prec][len]conv". Mirrors parse_spec() and
+# render_arg() in src/pftrace_pb.c, so both writers agree on every name.
+SPEC_RE = re.compile(r"([-+ 0]*)(\d{0,3})(?:\.(\d{1,3}))?(ll|l)?([diuxXoceEfFgGp])")
+# Longest rendered name, NUL included, as in PF_FORMAT_NAME_MAX in C.
+FORMAT_NAME_MAX = 128
+
+
+def format_args(fmt, args):
+    """Renders a format with its args. args is a list of (bits, is_double).
+    Raises RawFormatError on any mismatch, or if the result is too long."""
+    out = []
+    k = 0
+    i = 0
+    while i < len(fmt):
+        if fmt[i] != "%":
+            out.append(fmt[i])
+            i += 1
+            continue
+        if fmt[i + 1:i + 2] == "%":
+            out.append("%")
+            i += 2
+            continue
+        m = SPEC_RE.match(fmt, i + 1)
+        if not m or k >= len(args):
+            raise RawFormatError(f"format {fmt!r}: unsupported or extra conversion")
+        flags, width, prec, lenmod, conv = m.groups()
+        i = m.end()
+        bits, is_double = args[k]
+        k += 1
+        out.append(_render_arg(fmt, flags, width, prec, lenmod, conv,
+                               bits, is_double))
+    if k != len(args):
+        raise RawFormatError(f"format {fmt!r} has fewer placeholders than args")
+    text = "".join(out)
+    if len(text) >= FORMAT_NAME_MAX:
+        raise RawFormatError(f"format {fmt!r}: result is longer than {FORMAT_NAME_MAX - 1}")
+    return text
+
+
+def _render_arg(fmt, flags, width, prec, lenmod, conv, bits, is_double):
+    def bad(why):
+        return RawFormatError(f"format {fmt!r}: {why}")
+
+    if conv in "uxXo" and ("+" in flags or " " in flags):
+        raise bad(f"%{conv} takes no sign flag")
+    if conv in "cp":
+        if "+" in flags or " " in flags or "0" in flags or prec or lenmod:
+            raise bad(f"%{conv} takes only '-' and a width")
+    if conv in "fFeEgG" and lenmod:
+        raise bad(f"%{conv} takes no length modifier")
+    spec_prec = f".{prec}" if prec else ""
+
+    if conv in "diuxXo":
+        if is_double:
+            raise bad(f"%{conv} given a double")
+        if conv in "di":
+            value = bits - (1 << 64) if bits & INT64_SIGN else bits
+            return ("%" + flags + width + spec_prec + "d") % value
+        return ("%" + flags + width + spec_prec + conv) % bits
+    if conv == "c":
+        if is_double or not 1 <= bits <= 127:
+            raise bad("%c needs an int from 1 to 127")
+        return ("%" + flags + width + "c") % chr(bits)
+    if conv == "p":
+        if is_double:
+            raise bad("%p given a double")
+        text = "0x%x" % bits
+        w = int(width) if width else 0
+        return text.ljust(w) if "-" in flags else text.rjust(w)
+    # Float conversions.
+    if not is_double:
+        raise bad(f"%{conv} given an int")
+    value = struct.unpack("<d", struct.pack("<Q", bits))[0]
+    return ("%" + flags + width + spec_prec + conv) % value
 
 
 def convert(src, dst):
@@ -276,6 +377,7 @@ def convert(src, dst):
 
 
 def main(argv=None):
+    logging.basicConfig(format="%(levelname)s: %(message)s")
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("input")
     ap.add_argument("-o", "--output", help="default: input with .pftrace")

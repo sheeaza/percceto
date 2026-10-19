@@ -43,23 +43,29 @@
  * TrackEvent fields (e.g. categories, name, ..) are not supported for
  * TYPE_COUNTER events". RF_HAS_VALUE selects the arm.
  *
- *   0       8       16      24   28   32
- *   +-------+-------+-------+----+----+
- *   | ts    | track | name  |type|flag|
- *   |       |       | value |    |    |
- *   +-------+-------+-------+----+----+
+ *   0       8       16      24   28   32      40      48
+ *   +-------+-------+-------+----+----+-------+-------+
+ *   | ts    | track | name  |type|flag| arg0  | arg1  |
+ *   |       |       | value |    |    |       |       |
+ *   +-------+-------+-------+----+----+-------+-------+
  *
  * Overlaid on the ring rather than copied field by field, which is sound
  * because every member is naturally aligned: a backend hands out 8-byte
  * aligned payloads (PF_REC_ALIGN) and the two 4-byte fields sit in the
  * 24..31 tail. Any buffer this is cast onto must be 8-byte aligned too, as the ring's
  * slots and each backend's pop_buf are.
+ *
+ * arg0 and arg1 hold up to PF_MAX_ARGS event arguments, as int64 bits or
+ * double bits. RF_NARGS_MASK gives how many are used and the RF_ARG*_IS_DOUBLE
+ * bits give each one's type. They are zeroed on events with no args, so the
+ * ring never carries stale bytes. Counters never carry args.
  */
 struct pf_rec {
     uint64_t ts; /* timestamp, ns */
     uint64_t track; /* track_uuid */
 
-    /* Borrowed string literal, or a counter's value; see RF_HAS_VALUE. */
+    /* Borrowed string literal, or a counter's value; see RF_HAS_VALUE. For
+     * an event with args, the name is the format string. */
     union {
         const char *name;
         uint64_t value;
@@ -67,11 +73,18 @@ struct pf_rec {
 
     uint32_t type; /* TYPE_* */
     uint32_t flags; /* see RF_* */
+
+    uint64_t arg[PF_MAX_ARGS];
 };
 
 enum pf_rec_flag {
     RF_HAS_VALUE = 0x1u,
-    RF_VALUE_IS_DOUBLE = 0x2u
+    RF_VALUE_IS_DOUBLE = 0x2u,
+    /* Argument count, 0 to PF_MAX_ARGS, in bits 2-3. */
+    RF_NARGS_SHIFT = 2,
+    RF_NARGS_MASK = 0x3u << 2,
+    RF_ARG0_IS_DOUBLE = 0x10u,
+    RF_ARG1_IS_DOUBLE = 0x20u
 };
 
 /* The layout is the on-ring wire format, so pin it. The size is pinned
@@ -84,6 +97,8 @@ _Static_assert(offsetof(struct pf_rec, track) == 8, "track follows ts");
 _Static_assert(offsetof(struct pf_rec, u) == 16, "name/value follows track");
 _Static_assert(offsetof(struct pf_rec, type) == 24, "type follows name/value");
 _Static_assert(offsetof(struct pf_rec, flags) == 28, "no padding before flags");
+_Static_assert(offsetof(struct pf_rec, arg) == 32, "args follow the header");
+_Static_assert(PF_MAX_ARGS <= 3, "RF_NARGS_MASK holds counts up to 3");
 
 /* Cap on a track's stored name. Fixed so the track table is one
  * allocation at open and never grows. */
@@ -97,6 +112,13 @@ _Static_assert(offsetof(struct pf_rec, flags) == 28, "no padding before flags");
  * imposes. */
 #define PF_NAME_WARM 256u
 #define PF_PACKET_WARM (PF_PAYLOAD_BYTES + PF_NAME_WARM)
+
+/* Longest name an event with args may take once its arguments are
+ * rendered, including the NUL. The drain renders into a stack buffer of this
+ * size. 128 is ample for a typical message, and a larger buffer would be
+ * stack spent on every drain call for names nobody writes. A longer result
+ * falls back to the bare format string, as a mismatch does. */
+#define PF_FORMAT_NAME_MAX 128u
 
 /* Flush the staging buffer once it passes this, so one write() carries
  * many packets instead of one syscall per event. */
