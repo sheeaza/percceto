@@ -90,7 +90,8 @@ static double produce(struct pf_trace *t, uint64_t trk, bool args,
 
 /* Snapshot mode, protobuf: produce, then time the dump, which is where
  * the drain encodes. Returns ns per event for production and for the dump. */
-static void snapshot_section(bool args, const char *label, size_t ring_bytes)
+static void snapshot_section(bool args, const char *label,
+                             size_t min_ring_bytes)
 {
     const char *dir = "bench_args.d";
     dir_reset(dir);
@@ -100,7 +101,7 @@ static void snapshot_section(bool args, const char *label, size_t ring_bytes)
     cfg.mode = PF_MODE_SNAPSHOT;
     cfg.format = PF_FORMAT_PROTOBUF;
     cfg.path = dir;
-    cfg.ring_bytes = ring_bytes;
+    cfg.min_ring_bytes = min_ring_bytes;
 
     /* Open is timed: it is where the ring is warmed. */
     uint64_t o0 = real_ns();

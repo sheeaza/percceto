@@ -64,11 +64,12 @@ enum pf_format {
  *      for the life of the trace. Opened with O_APPEND, so an existing file
  *      is extended rather than truncated. Snapshot: must be %NULL, since
  *      each pf_trace_dump() names its own file.
- * @ring_bytes: In-RAM ring buffer size. Rounded up -- to a power of two
- *      and a page multiple, or to a whole number of slots, depending on
- *      the ring backend -- so it is a lower bound rather than the figure
- *      used. 0 selects 8 MiB. This is the only sizeable allocation the
- *      library makes, and it happens once, at open.
+ * @min_ring_bytes: Least in-RAM ring buffer size to allocate. The ring is
+ *      sized in slots, @min_ring_bytes divided by the slot size, and that
+ *      count is rounded up to a power of two, so the ring can be larger:
+ *      for a slot size that is not a power of two, the allocation can be up
+ *      to about twice this. 0 selects 8 MiB. This is the only sizeable
+ *      allocation the library makes, and it happens once, at open.
  * @mode: Snapshot or continuous; see &enum pf_mode.
  * @format: Protobuf or raw output; see &enum pf_format. Fixed for the
  *      life of the trace, so a file never mixes the two.
@@ -87,7 +88,7 @@ enum pf_format {
 struct pf_config {
     const char *path;
     const char *name;
-    size_t ring_bytes;
+    size_t min_ring_bytes;
     enum pf_mode mode;
     enum pf_format format;
     unsigned watermark_pct;

@@ -90,7 +90,7 @@ static void check_mode(const char *label, enum pf_mode mode, bool dump)
     if (mode == PF_MODE_CONTINUOUS)
         cfg.name = "trace.pftrace";
     cfg.mode = mode;
-    cfg.ring_bytes = 512 * 1024;
+    cfg.min_ring_bytes = 512 * 1024;
     cfg.watermark_pct = 50;
     cfg.drain_interval_ms = 2;
 

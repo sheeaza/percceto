@@ -50,7 +50,7 @@ int main(void)
     pf_config_init(&cfg);
     cfg.path = dir;
     cfg.mode = PF_MODE_SNAPSHOT;
-    cfg.ring_bytes = 512 * 1024 * 1024;
+    cfg.min_ring_bytes = 512 * 1024 * 1024;
 
     struct pf_trace *t = pf_trace_open(&cfg);
     if (!t) {
@@ -93,7 +93,7 @@ int main(void)
     pf_config_init(&cfg);
     cfg.path = dir;
     cfg.mode = PF_MODE_SNAPSHOT;
-    cfg.ring_bytes = 64 * 1024 * 1024;
+    cfg.min_ring_bytes = 64 * 1024 * 1024;
     cfg.drain_interval_ms = 60000; /* keep the trim thread out of the way */
 
     t = pf_trace_open(&cfg);

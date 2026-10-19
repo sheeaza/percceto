@@ -70,7 +70,7 @@ static int run_snapshot(void)
     cfg.path = ".";
     cfg.process_name = "demo_app";
     cfg.mode = PF_MODE_SNAPSHOT;
-    cfg.ring_bytes = 256 * 1024;
+    cfg.min_ring_bytes = 256 * 1024;
 
     struct pf_trace *t = pf_trace_open(&cfg);
     if (!t) {
@@ -119,7 +119,7 @@ static int run_continuous(void)
     cfg.name = name;
     cfg.process_name = "demo_app";
     cfg.mode = PF_MODE_CONTINUOUS;
-    cfg.ring_bytes = 128 * 1024;
+    cfg.min_ring_bytes = 128 * 1024;
     cfg.watermark_pct = 75;
     cfg.drain_interval_ms = 20;
 

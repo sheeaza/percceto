@@ -177,15 +177,18 @@ extra stores, as before.
 Open time rose by about 27%. Part of that is the extra page faults for a larger
 ring, which the rounding below makes worse.
 
-Slot count rounding: the ring is sized in slots, `ring_bytes / slot_size`,
+Slot count rounding: the ring holds at least `min_ring_bytes`. It is sized in
+slots, `min_ring_bytes` divided by the slot size rounded up, and that count is
 rounded up to a power of two. For 256 MiB:
 
 - 32-byte slots: 2^23 slots, 256 MiB exactly.
 - 48-byte slots: 256 MiB / 48 rounds up to 2^23 slots, 384 MiB.
 
 So the 48-byte build was measured with 1.5× the memory of the baseline for the
-same `ring_bytes`. A 64-byte slot is a power of two and does not have this
-problem. Not corrected here.
+same `min_ring_bytes`. This is the rounding, not a bug: the ring never goes
+below the minimum. Choosing a size that fits the memory budget is the user's
+job; the library does not round down. A 64-byte slot is a power of two and
+does not have this problem.
 
 ## Not measured
 
@@ -195,7 +198,7 @@ problem. Not corrected here.
   needs a workload that outruns the drain. Removed from the benchmark.
 - **Same slot count.** A comparison at equal slot count, rather than equal
   bytes, would separate the cost of the bigger slot from the loss of
-  capacity. The library rounds `ring_bytes` up to a power of two, and 48-byte
+  capacity. The library rounds `min_ring_bytes` up to a power of two, and 48-byte
   slots don't divide a power of two evenly, so the slot counts can't match
   exactly. Not attempted.
 

@@ -797,7 +797,7 @@ int pf_trace_flush_g(const char *name, char *file, size_t size)
 void pf_config_init(struct pf_config *cfg)
 {
     memset(cfg, 0, sizeof(*cfg));
-    cfg->ring_bytes = 8u * 1024u * 1024u;
+    cfg->min_ring_bytes = 8u * 1024u * 1024u;
     cfg->mode = PF_MODE_SNAPSHOT;
     cfg->format = PF_FORMAT_PROTOBUF;
     cfg->watermark_pct = 75;
@@ -819,8 +819,8 @@ struct pf_trace *pf_trace_open(const struct pf_config *cfg)
     t->fd = -1;
     t->dirfd = -1;
     t->cfg = *cfg;
-    if (t->cfg.ring_bytes == 0)
-        t->cfg.ring_bytes = 8u * 1024u * 1024u;
+    if (t->cfg.min_ring_bytes == 0)
+        t->cfg.min_ring_bytes = 8u * 1024u * 1024u;
     if (t->cfg.watermark_pct == 0)
         t->cfg.watermark_pct = 75;
     if (t->cfg.drain_interval_ms == 0)
@@ -833,8 +833,12 @@ struct pf_trace *pf_trace_open(const struct pf_config *cfg)
     if (!t->tracks)
         goto free_trace;
 
-    if (pf_ring_init(&t->ring, PF_PAYLOAD_BYTES,
-                     t->cfg.ring_bytes / PF_PAYLOAD_BYTES,
+    /* Rounded up, so the ring holds at least min_ring_bytes. A floor here
+     * could leave the count one slot short when it is already a power of
+     * two. The library then rounds the count up, never down. */
+    size_t min_slots = t->cfg.min_ring_bytes / PF_PAYLOAD_BYTES +
+                       (t->cfg.min_ring_bytes % PF_PAYLOAD_BYTES != 0);
+    if (pf_ring_init(&t->ring, PF_PAYLOAD_BYTES, min_slots,
                      t->cfg.mode == PF_MODE_SNAPSHOT) != 0)
         goto free_tracks;
 

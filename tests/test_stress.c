@@ -81,7 +81,7 @@ static void test_snapshot_window(void)
     pf_config_init(&cfg);
     cfg.path = dir;
     cfg.mode = PF_MODE_SNAPSHOT;
-    cfg.ring_bytes = RING_BYTES;
+    cfg.min_ring_bytes = RING_BYTES;
     cfg.drain_interval_ms = 5;
 
     struct pf_trace *t = pf_trace_open(&cfg);
@@ -164,7 +164,7 @@ static void test_continuous_gapless(void)
     cfg.path = ".";
     cfg.name = path;
     cfg.mode = PF_MODE_CONTINUOUS;
-    cfg.ring_bytes = 1024 * 1024;
+    cfg.min_ring_bytes = 1024 * 1024;
     cfg.watermark_pct = 50;
     cfg.drain_interval_ms = 2;
 
@@ -204,9 +204,9 @@ static void test_continuous_gapless(void)
           s.events, s.dropped, expected);
     /* The file must be far larger than the ring: proof it drained
      * repeatedly rather than holding a single window. */
-    CHECK(s.bytes_written > cfg.ring_bytes,
+    CHECK(s.bytes_written > cfg.min_ring_bytes,
           "wrote more than one ringful (%" PRIu64 " bytes vs %zu ring)",
-          s.bytes_written, cfg.ring_bytes);
+          s.bytes_written, cfg.min_ring_bytes);
 
     pf_trace_close(t);
     printf("  ok\n");
@@ -227,7 +227,7 @@ static void test_continuous_paced(void)
     cfg.path = ".";
     cfg.name = path;
     cfg.mode = PF_MODE_CONTINUOUS;
-    cfg.ring_bytes = 1024 * 1024;
+    cfg.min_ring_bytes = 1024 * 1024;
     cfg.watermark_pct = 75;
     cfg.drain_interval_ms = 10;
 
@@ -263,7 +263,7 @@ static void test_continuous_paced(void)
           "a realistic event rate must not drop anything (%" PRIu64 " lost)",
           s.dropped);
     CHECK(s.events == expected, "every event published");
-    CHECK(s.bytes_written > cfg.ring_bytes,
+    CHECK(s.bytes_written > cfg.min_ring_bytes,
           "drained repeatedly rather than buffering one window");
 
     pf_trace_close(t);
@@ -326,7 +326,7 @@ static void test_long_names(void)
     pf_config_init(&cfg);
     cfg.path = dir;
     cfg.mode = PF_MODE_SNAPSHOT;
-    cfg.ring_bytes = 128 * 1024;
+    cfg.min_ring_bytes = 128 * 1024;
 
     struct pf_trace *t = pf_trace_open(&cfg);
     CHECK(t != NULL, "open");

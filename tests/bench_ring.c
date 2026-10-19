@@ -191,7 +191,7 @@ static int median_index(const double *v, int n)
  */
 struct scenario {
     enum pf_mode mode;
-    size_t ring_bytes;
+    size_t min_ring_bytes;
     unsigned producers;
     unsigned events; /* total, split across producers */
     bool named; /* emit slice_begin with a name, not slice_end */
@@ -300,7 +300,7 @@ static struct result run_one(const struct scenario *s)
     if (s->mode == PF_MODE_CONTINUOUS)
         cfg.name = path;
     cfg.mode = s->mode;
-    cfg.ring_bytes = s->ring_bytes;
+    cfg.min_ring_bytes = s->min_ring_bytes;
 
     struct pf_trace *t = pf_trace_open(&cfg);
     if (!t) {
@@ -460,7 +460,7 @@ static void bench_cost(void)
             cfg.mode = PF_MODE_SNAPSHOT;
             /* Holds the whole measured loop plus the warmup with room to
              * spare, so no eviction happens inside the timed section. */
-            cfg.ring_bytes = 256u * 1024u * 1024u;
+            cfg.min_ring_bytes = 256u * 1024u * 1024u;
             cfg.drain_interval_ms = 60000; /* keep the drain thread away */
 
             struct pf_trace *t = pf_trace_open(&cfg);
@@ -522,7 +522,7 @@ static void bench_drain(void)
         cfg.mode = PF_MODE_SNAPSHOT;
         /* Large enough to hold the fill without evicting, so the dump
          * walks every record and the figure is per delivered event. */
-        cfg.ring_bytes = 64u * 1024u * 1024u;
+        cfg.min_ring_bytes = 64u * 1024u * 1024u;
         cfg.drain_interval_ms = 60000;
 
         struct pf_trace *t = pf_trace_open(&cfg);
@@ -624,7 +624,7 @@ int main(void)
         printf("  producers=%u\n", prod_counts[p]);
         print_header();
         struct scenario s = { .mode = PF_MODE_CONTINUOUS,
-                              .ring_bytes = 8u * 1024u * 1024u,
+                              .min_ring_bytes = 8u * 1024u * 1024u,
                               .producers = prod_counts[p],
                               .events = TP_EVENTS };
         struct result r = bench_one(&s);
@@ -641,7 +641,7 @@ int main(void)
         printf("  producers=%u\n", prod_counts[p]);
         print_header();
         struct scenario s = { .mode = PF_MODE_SNAPSHOT,
-                              .ring_bytes = 8u * 1024u * 1024u,
+                              .min_ring_bytes = 8u * 1024u * 1024u,
                               .producers = prod_counts[p],
                               .events = TP_EVENTS };
         struct result r = bench_one(&s);
@@ -659,7 +659,7 @@ int main(void)
         printf("  ring=%zuKiB\n", ring_sizes[z] / 1024u);
         print_header();
         struct scenario s = { .mode = PF_MODE_CONTINUOUS,
-                              .ring_bytes = ring_sizes[z],
+                              .min_ring_bytes = ring_sizes[z],
                               .producers = 4,
                               .events = TP_EVENTS };
         struct result r = bench_one(&s);
@@ -674,7 +674,7 @@ int main(void)
         printf("  ring=%zuKiB\n", ring_sizes[z] / 1024u);
         print_header();
         struct scenario s = { .mode = PF_MODE_SNAPSHOT,
-                              .ring_bytes = ring_sizes[z],
+                              .min_ring_bytes = ring_sizes[z],
                               .producers = 4,
                               .events = TP_EVENTS };
         struct result r = bench_one(&s);
@@ -690,7 +690,7 @@ int main(void)
     print_header();
     {
         struct scenario s = { .mode = PF_MODE_CONTINUOUS,
-                              .ring_bytes = 8u * 1024u * 1024u,
+                              .min_ring_bytes = 8u * 1024u * 1024u,
                               .producers = 4,
                               .events = TP_EVENTS,
                               .named = true };
@@ -709,7 +709,7 @@ int main(void)
     print_header();
     {
         struct scenario s = { .mode = PF_MODE_CONTINUOUS,
-                              .ring_bytes = 8u * 1024u * 1024u,
+                              .min_ring_bytes = 8u * 1024u * 1024u,
                               .producers = 4,
                               .events = TP_EVENTS / 4,
                               .paced = true };
