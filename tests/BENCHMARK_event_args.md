@@ -114,16 +114,78 @@ Raw runs:
 
 - With no args, the 48-byte record costs about 25–30% more per producer call
   when the ring is large (69.9 → 90.1 ns in run set B; 68.9 → 93.5 ns in run
-  set A). With a cache-sized ring, the gap is about 4% (42.1 → 43.7 ns).
-  The extra cost is memory traffic from the bigger slot: 48 bytes of writes
-  per event instead of 32, which is 1.5× the bytes once the ring no longer
-  fits in cache. The small remaining gap matches the two extra stores that
-  zero the arg fields.
+  set A). The investigation below shows that this gap is first-touch page
+  faults, not the slot size. A cache-sized ring has few faults, so its 4% gap
+  (42.1 → 43.7 ns) does not isolate the slot size either.
+- Once the ring is warm, the 48-byte record costs about 6% more (44.7 → 47.5
+  ns). That remaining cost is the bigger slot's writes, plus the two extra
+  stores that zero the arg fields. It is not separated further.
 - The drain cost is unchanged for events without args, and so is the
   on-disk size.
 - Two args add about 2 ns to the producer, since packing is cheap. They add
   about 64 ns per event in the drain, which is the formatting work.
 - Args add 12.5 bytes per event on disk, from the rendered name text.
+
+## Investigation: where the 25% comes from (run set C, medians of 3 runs)
+
+Run set B's large-ring numbers were written into a freshly allocated ring, so
+every page was faulted in during the timed loop. The benchmark now counts the
+minor page faults during the timed loop, and it can write the whole ring once
+before timing (`warm`).
+
+| Build | Ring | Minor faults | Producer, ns/event |
+|---|---|---|---|
+| Baseline (32 B), no args | cold, 256 MiB | 15,625 | 82.8 |
+| Baseline (32 B), no args | warm | 0 | 44.7 |
+| Args tree (48 B), no args | cold, 256 MiB | 23,437 | 102.2 |
+| Args tree (48 B), no args | warm | 0 | 47.5 |
+| Args tree (48 B), 2 args | warm | 0 | 44.1–49.1 (3 runs) |
+
+The fault counts match the bytes exactly: 2,000,000 events × 32 B / 4 KiB =
+15,625 pages, and × 48 B / 4 KiB = 23,437 pages.
+
+Cost per fault implied by the cold/warm gap: about 4.9 µs for the baseline and
+4.7 µs for the args tree. The 25% cold gap is almost all first-touch page
+faults, which cost more than the writes themselves on this VM.
+
+Once the ring is warm, the 48-byte record costs about 6% more per producer call
+(44.7 → 47.5 ns). That is the remaining effect of the bigger slot: writes, not
+faults. The cache-sized ring does not separate the two causes: it has few faults
+and also less memory traffic, so its 43.9 vs 44.7 ns gap is not a measure of
+either one alone.
+
+Consequence: in a real process the faults happen once, on the first pass over
+each page. A long-running trace reaches steady state quickly. A ring that is
+touched up front (at open) would move that cost out of the hot path. Not done.
+
+## Warm-up at open (run set D, medians of 3 runs)
+
+The MPSC ring is now written once at open (`warm_ring()`, `src/pf_ring_mpsc.c`),
+so the first pass over each page is paid at open, not on the producer. The
+baseline tree got the same change, so both builds are compared like for like.
+
+| Build | Open, 256 MiB ring | Minor faults during produce | Producer, cold, ns/event | Producer, cached 256 KiB, ns/event |
+|---|---|---|---|---|
+| Baseline (32 B), no args | 758 ms | 0 | 23.7 | 40.8 |
+| Args tree (48 B), no args | 966 ms | 0 | 26.2 | 43.4 |
+| Args tree (48 B), 2 args | 968 ms | 0 | 27.3 | 43.9 |
+
+With the warm-up, the producer gap for the 48-byte record is about 10%, down
+from about 25% cold. The remaining gap is the bigger slot's writes and the
+extra stores, as before.
+
+Open time rose by about 27%. Part of that is the extra page faults for a larger
+ring, which the rounding below makes worse.
+
+Slot count rounding: the ring is sized in slots, `ring_bytes / slot_size`,
+rounded up to a power of two. For 256 MiB:
+
+- 32-byte slots: 2^23 slots, 256 MiB exactly.
+- 48-byte slots: 256 MiB / 48 rounds up to 2^23 slots, 384 MiB.
+
+So the 48-byte build was measured with 1.5× the memory of the baseline for the
+same `ring_bytes`. A 64-byte slot is a power of two and does not have this
+problem. Not corrected here.
 
 ## Not measured
 

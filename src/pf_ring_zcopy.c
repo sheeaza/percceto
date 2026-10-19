@@ -1,5 +1,6 @@
 #include <errno.h>
 #include <sched.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "pf_ring.h"
@@ -13,6 +14,32 @@
  * the retry policy, the reader's pop-and-count
  * are the same there and documented more fully.
  */
+
+/* Writes every slot once, then empties the ring again. The same warm-up as
+ * pf_ring_mpsc.c's warm_ring(), and for the same reason: the first pass over
+ * a fresh ring's pages would otherwise fault on the producer's hot path.
+ * Runs before any producer exists, so the push mutex is not needed. */
+static int warm_ring(struct ringbuf_zcopy *rb)
+{
+    size_t slot = ringbuf_zcopy_slot_size(rb);
+    size_t cap = ringbuf_zcopy_capacity(rb);
+    uint8_t *zero = calloc(1, slot);
+    uint8_t *scratch = malloc(slot);
+    int rc = 0;
+
+    if (!zero || !scratch) {
+        rc = -1;
+    } else {
+        for (size_t i = 0; i < cap && rc == 0; i++) {
+            if (!ringbuf_zcopy_push(rb, zero) ||
+                !ringbuf_zcopy_pop(rb, scratch))
+                rc = -1;
+        }
+    }
+    free(zero);
+    free(scratch);
+    return rc;
+}
 
 int pf_ring_init(struct pf_ring *r, size_t slot_size, size_t min_cap,
                  bool overwrite)
@@ -30,6 +57,12 @@ int pf_ring_init(struct pf_ring *r, size_t slot_size, size_t min_cap,
                                  overwrite ? RINGBUF_DROP_OLDEST :
                                              RINGBUF_DROP_NEWEST);
     if (!r->rb) {
+        errno = ENOMEM;
+        return -1;
+    }
+    if (warm_ring(r->rb) != 0) {
+        ringbuf_zcopy_destroy(r->rb);
+        r->rb = NULL;
         errno = ENOMEM;
         return -1;
     }

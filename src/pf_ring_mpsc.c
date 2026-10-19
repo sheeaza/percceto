@@ -1,5 +1,6 @@
 #include <errno.h>
 #include <sched.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "pf_ring.h"
@@ -14,6 +15,35 @@
  * reader's pop-and-count, and keeping occupancy cheap -- and they are what
  * the rest of this file is.
  */
+
+/* Writes every slot once, then empties the ring again.
+ *
+ * A fresh ring's pages are faulted in on first write. On the VM this was
+ * measured on that costs about 4.8 µs per page, which the first pass over the
+ * ring would otherwise pay on the producer's hot path. Pushing and popping
+ * each slot here moves that cost into open. The library's own counters and
+ * indices advance, but pftrace's counters are untouched, so pf_trace_stats
+ * still counts only real events. */
+static int warm_ring(struct ringbuf_mpsc *rb)
+{
+    size_t slot = ringbuf_mpsc_slot_size(rb);
+    size_t cap = ringbuf_mpsc_capacity(rb);
+    uint8_t *zero = calloc(1, slot);
+    uint8_t *scratch = malloc(slot);
+    int rc = 0;
+
+    if (!zero || !scratch) {
+        rc = -1;
+    } else {
+        for (size_t i = 0; i < cap && rc == 0; i++) {
+            if (!ringbuf_mpsc_push(rb, zero) || !ringbuf_mpsc_pop(rb, scratch))
+                rc = -1;
+        }
+    }
+    free(zero);
+    free(scratch);
+    return rc;
+}
 
 int pf_ring_init(struct pf_ring *r, size_t slot_size, size_t min_cap,
                  bool overwrite)
@@ -36,6 +66,12 @@ int pf_ring_init(struct pf_ring *r, size_t slot_size, size_t min_cap,
         /* create() reports allocation failure and invalid arguments
          * alike, without distinguishing them. slot_size and min_cap were
          * checked above, so what is left is the allocation. */
+        errno = ENOMEM;
+        return -1;
+    }
+    if (warm_ring(r->rb) != 0) {
+        ringbuf_mpsc_destroy(r->rb);
+        r->rb = NULL;
         errno = ENOMEM;
         return -1;
     }

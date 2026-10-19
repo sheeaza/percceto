@@ -26,6 +26,11 @@ add_executable(bench bench.c)
 # Cost of the record-size change and of event arguments; see the file header.
 add_executable(bench_args bench_args.c)
 target_link_libraries(bench_args PRIVATE pftrace Threads::Threads)
+
+# Single 64-byte claim versus 32-byte claims, on the vendored ringbuf_mpsc.
+add_executable(bench_slot_size bench_slot_size.c ${PROJECT_SOURCE_DIR}/ringbuf/ringbuf_mpsc.c)
+target_include_directories(bench_slot_size PRIVATE ${PROJECT_SOURCE_DIR}/ringbuf)
+target_link_libraries(bench_slot_size PRIVATE Threads::Threads)
 target_link_libraries(bench PRIVATE pftrace Threads::Threads)
 
 
