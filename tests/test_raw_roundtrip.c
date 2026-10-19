@@ -555,7 +555,7 @@ static void simple_threads(const char *path)
           p.ntrk, SIMPLE_THREADS + 1);
 
     for (int i = 0; i < SIMPLE_THREADS; i++) {
-        char want[16];
+        char want[32];
         snprintf(want, sizeof(want), "worker-%d", i);
         const struct rtrack *tr = find_thread_track(&p, args[i].tid);
         if (!tr) {
