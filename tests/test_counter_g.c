@@ -1,7 +1,7 @@
 /* The _g counter calls act on the default trace and match their explicit
  * counterparts.
  *
- * Covers: pf_thread_track_g() returns the calling thread's track and the same
+ * Covers: pf_track_thread_uuid_g() returns the calling thread's track and the same
  * uuid as the thread's first _g call; pf_track_counter_g() nests a counter
  * under that thread track and finds an existing counter by name; the counter
  * set calls accept samples without a trace argument; the calls return 0 or
@@ -39,7 +39,7 @@ int main(void)
     printf("test_counter_g\n");
 
     /* With no default trace, every _g call returns 0 and does nothing. */
-    check(pf_thread_track_g() == 0, "no default trace: thread track is 0");
+    check(pf_track_thread_uuid_g() == 0, "no default trace: thread track is 0");
     check(pf_track_counter_g(0, "x", PF_UNIT_COUNT) == 0,
           "no default trace: counter track is 0");
     pf_counter_set_int_g(1, 1);
@@ -55,8 +55,8 @@ int main(void)
         return 1;
     }
 
-    uint64_t thr = pf_thread_track_g();
-    check(thr != 0, "pf_thread_track_g registers the calling thread");
+    uint64_t thr = pf_track_thread_uuid_g();
+    check(thr != 0, "pf_track_thread_uuid_g registers the calling thread");
     int ti = find_uuid(t, thr);
     check(ti >= 0 && t->tracks[ti].kind == TRACK_THREAD,
           "the returned uuid is a thread track");
@@ -64,7 +64,7 @@ int main(void)
     /* A first _g slice call must hit the same cached track. */
     pf_slice_begin_g("probe");
     pf_slice_end_g();
-    check(pf_thread_track_g() == thr,
+    check(pf_track_thread_uuid_g() == thr,
           "repeat calls return the same cached uuid");
 
     uint64_t ctr = pf_track_counter_g(thr, "depth", PF_UNIT_COUNT);

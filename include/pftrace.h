@@ -428,21 +428,12 @@ PF_API void pf_instant_event_g_impl(const char *name);
 PF_API void pf_thread_name(const char *name);
 
 /**
- * pf_thread_track_g() - Get the calling thread's track uuid.
- *
- * Registers the thread's track on the first call, as the other _g calls
- * do, then returns the same cached uuid. Use it as the @parent_uuid of
- * pf_track_counter() to nest a counter under the calling thread.
- *
- * Return: The thread track's track_uuid, or 0 if there is no default trace.
- */
-PF_API uint64_t pf_thread_track_g(void);
-
-/**
  * pf_track_thread_uuid_g() - Get the calling thread's track uuid from TLS.
  *
  * Reads the uuid cached in this thread's TLS slot on the default trace. The
- * track is registered on the first call, as with the other _g calls.
+ * track is registered on the first call, as with the other _g calls. Use it
+ * as the @parent_uuid of pf_track_counter() to nest a counter under the
+ * calling thread.
  *
  * Return: The thread track's track_uuid, or 0 if there is no default trace.
  */

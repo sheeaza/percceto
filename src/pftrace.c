@@ -699,12 +699,6 @@ void pf_thread_name(const char *name)
         track_rename(t, tl_slot.uuid, tl_slot.name);
 }
 
-uint64_t pf_thread_track_g(void)
-{
-    struct pf_trace *t = default_trace();
-    return t ? thread_track(t) : 0;
-}
-
 uint64_t pf_track_thread_uuid_g(void)
 {
     struct pf_trace *t = default_trace();

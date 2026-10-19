@@ -173,7 +173,6 @@ static void test_thread_uuid_g(void)
     for (int i = 0; i < 1000; i++)
         same &= pf_track_thread_uuid_g() == a;
     check(same, "same thread gets the same cached uuid");
-    check(pf_thread_track_g() == a, "matches pf_thread_track_g()");
     pf_trace_close(t);
 }
 
