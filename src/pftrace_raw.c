@@ -16,7 +16,7 @@
  * the events that reference them. */
 
 #define RAW_MAGIC "PFRAWv1"
-#define RAW_VERSION 3u
+#define RAW_VERSION 4u
 #define RAW_CHUNK_NAMES 1u
 #define RAW_CHUNK_TRACKS 2u
 #define RAW_CHUNK_EVENTS 3u
@@ -61,6 +61,12 @@ int raw_write_header(struct pf_trace *t)
      * a timestamp into wall time. Two's complement in the 8 bytes. */
     raw_put_u64(&t->out, (uint64_t)(int64_t)(now_ns(CLOCK_REALTIME) -
                                              now_ns(t->cfg.clock_id)));
+    /* BOOTTIME minus the trace clock, sampled the same way. Zero when the
+     * trace clock is BOOTTIME itself. */
+    int64_t boot_off = 0;
+    if (t->cfg.clock_id != CLOCK_BOOTTIME)
+        boot_off = (int64_t)(now_ns(CLOCK_BOOTTIME) - now_ns(t->cfg.clock_id));
+    raw_put_u64(&t->out, (uint64_t)boot_off);
     return out_flush(t);
 #endif
 }

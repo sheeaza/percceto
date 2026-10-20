@@ -145,7 +145,7 @@ static int parse_raw(const char *path, struct parsed *p)
     fclose(f);
 
     int rc = -1;
-    if (size < 32 || memcmp(buf, "PFRAWv1\0", 8) != 0) {
+    if (size < 40 || memcmp(buf, "PFRAWv1\0", 8) != 0) {
         fprintf(stderr, "bad magic or short header\n");
         goto out;
     }
@@ -158,7 +158,7 @@ static int parse_raw(const char *path, struct parsed *p)
     if (!p->ev)
         goto out;
 
-    size_t off = 32;
+    size_t off = 40;
     while (off < (size_t)size) {
         size_t left = (size_t)size - off;
         if (left < 8) {
@@ -367,7 +367,7 @@ static bool event_matches(const struct parsed *p, size_t k,
 static void check_contents(const struct parsed *p, const struct ids *ids,
                            size_t want_events)
 {
-    CHECK(p->version == 3, "version %u", p->version);
+    CHECK(p->version == 4, "version %u", p->version);
     CHECK(p->record_size == REC_BYTES, "record_size %u", p->record_size);
     CHECK(p->clock_id == (uint32_t)CLOCK_BOOTTIME, "clock_id %u", p->clock_id);
     CHECK(p->flags == 0, "flags %u", p->flags);
@@ -662,13 +662,13 @@ static void header_bytes(const char *path)
     static uint8_t buf[4096];
     size_t n = fread(buf, 1, sizeof(buf), f);
     fclose(f);
-    CHECK(n > 32 + 8 + 104, "header: file too short (%zu bytes)", n);
-    if (n <= 32 + 8 + 104)
+    CHECK(n > 40 + 8 + 104, "header: file too short (%zu bytes)", n);
+    if (n <= 40 + 8 + 104)
         return;
 
     uint8_t want[24] = { 0 };
     memcpy(want, "PFRAWv1", 8);
-    le_bytes(want + 8, 3, 4);
+    le_bytes(want + 8, 4, 4);
     le_bytes(want + 12, 48, 4);
     le_bytes(want + 16, (uint32_t)CLOCK_BOOTTIME, 4);
     CHECK(memcmp(buf, want, 24) == 0, "header bytes differ from the spec");
@@ -680,14 +680,21 @@ static void header_bytes(const char *path)
     CHECK(offset > 1000000000000000000LL, "clock offset %lld ns",
           (long long)offset);
 
+    /* Bytes 32..39 are BOOTTIME minus the trace clock. The trace clock here
+     * is BOOTTIME, so it is zero. */
+    int64_t boot_offset;
+    memcpy(&boot_offset, buf + 32, 8);
+    CHECK(boot_offset == 0, "boottime offset %lld ns, want 0",
+          (long long)boot_offset);
+
     /* The first chunk is TRACKS: three 104-byte entries. */
-    CHECK(rd32(buf + 32) == CHUNK_TRACKS, "first chunk kind %u, want %d",
-          rd32(buf + 32), CHUNK_TRACKS);
-    uint32_t tlen = rd32(buf + 36);
+    CHECK(rd32(buf + 40) == CHUNK_TRACKS, "first chunk kind %u, want %d",
+          rd32(buf + 40), CHUNK_TRACKS);
+    uint32_t tlen = rd32(buf + 44);
     CHECK(tlen == 3 * 104, "TRACKS len %u, want %u", tlen, 3u * 104u);
 
     /* Then NAMES. Its first entry is "compute", the first name emitted. */
-    size_t off = 32 + 8 + tlen;
+    size_t off = 40 + 8 + tlen;
     CHECK(off + 8 + 12 + 7 <= n, "header: file ends before NAMES");
     if (off + 8 + 12 + 7 > n)
         return;

@@ -21,8 +21,9 @@ SEQ_CLEARED = 1  # SEQ_INCREMENTAL_STATE_CLEARED in include/pftrace.h
 RAW_SLICE_BEGIN, RAW_SLICE_END, RAW_INSTANT, RAW_COUNTER = 1, 2, 3, 4
 
 
-def raw_file(*chunks, clock=7, offset=0):
-    header = struct.pack("<8sIIIIq", b"PFRAWv1\0", 3, 48, clock, 0, offset)
+def raw_file(*chunks, clock=7, offset=0, boottime=0):
+    header = struct.pack("<8sIIIIqq", b"PFRAWv1\0", 4, 48, clock, 0, offset,
+                         boottime)
     body = b"".join(struct.pack("<II", kind, len(payload)) + payload
                     for kind, payload in chunks)
     return header + body
@@ -50,7 +51,8 @@ def convert_bytes(data, keep_clock=False):
     out = io.BytesIO()
     reader = pb.RawReader(io.BytesIO(data))
     conv = pb.Converter(out)
-    conv.clock_snapshot(reader.clock_id, reader.clock_offset_ns)
+    conv.clock_snapshot(reader.clock_id, reader.clock_offset_ns,
+                        reader.boottime_offset_ns)
     for kind, payload, offset in reader.chunks():
         if kind == pb.CHUNK_NAMES:
             conv.names_chunk(payload)
@@ -79,12 +81,32 @@ class ConvertTest(unittest.TestCase):
                          [(pb.ClockSnapshot.Clock.BOOTTIME, 0),
                           (pb.ClockSnapshot.Clock.REALTIME, offset)])
 
-    def test_clock_snapshot_realtime_is_one_entry(self):
-        packets, _, _ = convert_bytes(raw_file(clock=0, offset=0),
+    def test_clock_snapshot_realtime_links_boottime(self):
+        # Trace clock is REALTIME, so boot time is far below wall time: the
+        # offset is negative, and the snapshot shifts every reading up to keep
+        # the timestamps unsigned.
+        boot = -1_700_000_000_000_000_000
+        packets, _, _ = convert_bytes(raw_file(clock=0, offset=0,
+                                               boottime=boot),
                                       keep_clock=True)
         snap = packets[0].clock_snapshot
         self.assertEqual(snap.primary_trace_clock, pb.ClockSnapshot.Clock.REALTIME)
-        self.assertEqual(len(snap.clocks), 1)
+        readings = {c.clock_id: c.timestamp for c in snap.clocks}
+        self.assertEqual(readings, {pb.ClockSnapshot.Clock.REALTIME: -boot,
+                                    pb.ClockSnapshot.Clock.BOOTTIME: 0})
+
+    def test_clock_snapshot_monotonic_names_all_three(self):
+        realtime, boot = 1_700_000_000_000_000_000, 5_000_000_000
+        packets, _, _ = convert_bytes(raw_file(clock=1, offset=realtime,
+                                               boottime=boot),
+                                      keep_clock=True)
+        snap = packets[0].clock_snapshot
+        self.assertEqual(snap.primary_trace_clock,
+                         pb.ClockSnapshot.Clock.MONOTONIC)
+        self.assertEqual([(c.clock_id, c.timestamp) for c in snap.clocks],
+                         [(pb.ClockSnapshot.Clock.MONOTONIC, 0),
+                          (pb.ClockSnapshot.Clock.REALTIME, realtime),
+                          (pb.ClockSnapshot.Clock.BOOTTIME, boot)])
 
     def test_slices_and_instant_keep_order_and_names(self):
         names = (pb.CHUNK_NAMES, name_entry(NAME_PTR, "compute"))

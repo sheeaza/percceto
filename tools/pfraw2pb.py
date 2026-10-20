@@ -29,7 +29,7 @@ from perfetto.protos.perfetto.trace.perfetto_trace_pb2 import (
 )
 
 MAGIC = b"PFRAWv1\0"
-VERSION = 3
+VERSION = 4
 
 
 # On-disk layouts, little-endian and unpadded, as in docs/raw_format.md.
@@ -42,6 +42,7 @@ class Header(ctypes.LittleEndianStructure):
         ("clock_id", ctypes.c_uint32),
         ("flags", ctypes.c_uint32),
         ("clock_offset_ns", ctypes.c_int64),  # REALTIME - clock (ns)
+        ("boottime_offset_ns", ctypes.c_int64),  # BOOTTIME - clock (ns)
     ]
 
 
@@ -180,6 +181,7 @@ class RawReader:
             raise RawFormatError(f"reserved flags set: {hdr.flags:#x}")
         self.clock_id = hdr.clock_id
         self.clock_offset_ns = hdr.clock_offset_ns
+        self.boottime_offset_ns = hdr.boottime_offset_ns
 
     def chunks(self):
         head_size = ctypes.sizeof(ChunkHeader)
@@ -238,33 +240,40 @@ class Converter:
         if batch.packet:
             self._out.write(batch.SerializeToString())
 
-    def clock_snapshot(self, clock_id, offset_ns):
+    def clock_snapshot(self, clock_id, offset_ns, boottime_offset_ns):
         """Writes the ClockSnapshot the C writer emits at each restart. The raw
-        header keeps only REALTIME minus the trace clock, so the trace clock
-        reads 0 and REALTIME reads the offset. Perfetto maps time by the
-        difference of the two readings, so this gives the writer's mapping."""
+        header keeps the trace clock's offsets to REALTIME and to BOOTTIME.
+        Perfetto maps time by the differences between readings, so each reading
+        is set relative to the trace clock, which reads 0. An offset can be
+        negative (boot time is far below wall time when the trace clock is
+        REALTIME), so every reading is shifted up by one common base to keep the
+        timestamps unsigned. The differences, and so the mapping, are unchanged."""
         if clock_id not in RAW_CLOCK_TO_PERFETTO:
             raise RawFormatError(f"clock_id {clock_id} is not a supported clock")
-        if offset_ns < 0:
-            raise RawFormatError(f"clock offset {offset_ns} is negative")
         primary = RAW_CLOCK_TO_PERFETTO[clock_id]
         # Every event packet names this clock, see events_chunk().
         self._clock = primary
+        readings = {primary: 0}
+        if primary != ClockSnapshot.Clock.REALTIME:
+            readings[ClockSnapshot.Clock.REALTIME] = offset_ns
+        # Perfetto links BOOTTIME to the trace clock for a proto trace, so the
+        # snapshot always names it. See pftrace_pb.c emit_clock_snapshot().
+        if primary != ClockSnapshot.Clock.BOOTTIME:
+            readings[ClockSnapshot.Clock.BOOTTIME] = boottime_offset_ns
+        base = max(0, -min(readings.values()))
         batch = Trace()
         # Not via _packet(): the snapshot has no incremental state, so the
         # first-packet flag stays with the first track descriptor.
         packet = batch.packet.add()
         packet.trusted_packet_sequence_id = 1
         snap = packet.clock_snapshot
-        clock = snap.clocks.add()
-        clock.clock_id = primary
-        clock.timestamp = 0
-        if primary != ClockSnapshot.Clock.REALTIME:
-            clock = snap.clocks.add()
-            clock.clock_id = ClockSnapshot.Clock.REALTIME
-            clock.timestamp = offset_ns
+        for clock, ts in readings.items():
+            entry = snap.clocks.add()
+            entry.clock_id = clock
+            entry.timestamp = ts + base
         snap.primary_trace_clock = primary
         self._flush(batch)
+
 
     def names_chunk(self, payload):
         p = 0
@@ -472,7 +481,8 @@ def convert(src, dst):
     with open(src, "rb") as fin, open(dst, "wb") as fout:
         reader = RawReader(fin)
         conv = Converter(fout)
-        conv.clock_snapshot(reader.clock_id, reader.clock_offset_ns)
+        conv.clock_snapshot(reader.clock_id, reader.clock_offset_ns,
+                            reader.boottime_offset_ns)
         for kind, payload, offset in reader.chunks():
             try:
                 if kind == CHUNK_NAMES:
