@@ -16,7 +16,7 @@
  * the events that reference them. */
 
 #define RAW_MAGIC "PFRAWv1"
-#define RAW_VERSION 2u
+#define RAW_VERSION 3u
 #define RAW_CHUNK_NAMES 1u
 #define RAW_CHUNK_TRACKS 2u
 #define RAW_CHUNK_EVENTS 3u
@@ -55,9 +55,12 @@ int raw_write_header(struct pf_trace *t)
     pb_put_bytes(&t->out, RAW_MAGIC, sizeof(RAW_MAGIC)); /* 8, with NUL */
     raw_put_u32(&t->out, RAW_VERSION);
     raw_put_u32(&t->out, (uint32_t)sizeof(struct pf_rec));
-    raw_put_u32(&t->out, (uint32_t)CLOCK_BOOTTIME);
+    raw_put_u32(&t->out, (uint32_t)t->cfg.clock_id);
     raw_put_u32(&t->out, 0); /* flags, reserved */
-    raw_put_u64(&t->out, 0); /* reserved */
+    /* REALTIME minus the trace clock, read back to back, so a reader can turn
+     * a timestamp into wall time. Two's complement in the 8 bytes. */
+    raw_put_u64(&t->out, (uint64_t)(int64_t)(now_ns(CLOCK_REALTIME) -
+                                             now_ns(t->cfg.clock_id)));
     return out_flush(t);
 #endif
 }

@@ -21,8 +21,8 @@ SEQ_CLEARED = 1  # SEQ_INCREMENTAL_STATE_CLEARED in include/pftrace.h
 RAW_SLICE_BEGIN, RAW_SLICE_END, RAW_INSTANT, RAW_COUNTER = 1, 2, 3, 4
 
 
-def raw_file(*chunks):
-    header = struct.pack("<8sIIIIQ", b"PFRAWv1\0", 2, 48, 7, 0, 0)
+def raw_file(*chunks, clock=7, offset=0):
+    header = struct.pack("<8sIIIIq", b"PFRAWv1\0", 3, 48, clock, 0, offset)
     body = b"".join(struct.pack("<II", kind, len(payload)) + payload
                     for kind, payload in chunks)
     return header + body
@@ -43,12 +43,14 @@ def event(ts, track, u, etype, flags=0, a0=0, a1=0):
     return struct.pack("<QQQII2Q", ts, track, u, etype, flags, a0, a1)
 
 
-def convert_bytes(data):
+def convert_bytes(data, keep_clock=False):
     """Runs the converter over an in-memory raw file. Returns (packets,
-    stats, torn), where packets are generated TracePacket messages."""
+    stats, torn), where packets are generated TracePacket messages. The
+    ClockSnapshot packet is left out unless keep_clock is true."""
     out = io.BytesIO()
     reader = pb.RawReader(io.BytesIO(data))
     conv = pb.Converter(out)
+    conv.clock_snapshot(reader.clock_id, reader.clock_offset_ns)
     for kind, payload, offset in reader.chunks():
         if kind == pb.CHUNK_NAMES:
             conv.names_chunk(payload)
@@ -56,13 +58,33 @@ def convert_bytes(data):
             conv.tracks_chunk(payload)
         elif kind == pb.CHUNK_EVENTS:
             conv.events_chunk(payload)
-    return Trace.FromString(out.getvalue()).packet, conv.stats, reader.torn_bytes
+    packets = Trace.FromString(out.getvalue()).packet
+    if not keep_clock:
+        packets = [p for p in packets if not p.HasField("clock_snapshot")]
+    return packets, conv.stats, reader.torn_bytes
 
 
 class ConvertTest(unittest.TestCase):
     def thread_tracks(self):
         return pb.CHUNK_TRACKS, track_entry(1, 0, pb.TRACK_THREAD, 42, 7, 0,
                                             "main")
+
+    def test_clock_snapshot_boottime_with_realtime_offset(self):
+        offset = 1_700_000_000_000_000_000
+        packets, _, _ = convert_bytes(raw_file(clock=7, offset=offset),
+                                      keep_clock=True)
+        snap = packets[0].clock_snapshot
+        self.assertEqual(snap.primary_trace_clock, pb.ClockSnapshot.Clock.BOOTTIME)
+        self.assertEqual([(c.clock_id, c.timestamp) for c in snap.clocks],
+                         [(pb.ClockSnapshot.Clock.BOOTTIME, 0),
+                          (pb.ClockSnapshot.Clock.REALTIME, offset)])
+
+    def test_clock_snapshot_realtime_is_one_entry(self):
+        packets, _, _ = convert_bytes(raw_file(clock=0, offset=0),
+                                      keep_clock=True)
+        snap = packets[0].clock_snapshot
+        self.assertEqual(snap.primary_trace_clock, pb.ClockSnapshot.Clock.REALTIME)
+        self.assertEqual(len(snap.clocks), 1)
 
     def test_slices_and_instant_keep_order_and_names(self):
         names = (pb.CHUNK_NAMES, name_entry(NAME_PTR, "compute"))

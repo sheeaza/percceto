@@ -85,6 +85,21 @@ int main(void)
         pf_trace_close(t);
     }
 
+    /* Not a pass/fail check: a REALTIME snapshot, left in the working
+     * directory so its timestamps can be compared with syslog in Perfetto. */
+    pf_config_init(&cfg);
+    cfg.path = ".";
+    cfg.clock_id = CLOCK_REALTIME;
+    t = pf_trace_open(&cfg);
+    if (t) {
+        pf_slice_begin_g("realtime_probe");
+        pf_slice_end_g();
+        char file[256];
+        int rc = pf_trace_dump(t, "clock_realtime", file, sizeof file);
+        printf("REALTIME dump: %s (rc %d)\n", rc == 0 ? file : "none", rc);
+        pf_trace_close(t);
+    }
+
     if (failures) {
         printf("%d failure(s)\n", failures);
         return 1;

@@ -408,7 +408,7 @@ static void emit_event(struct pf_trace *t, uint32_t type, uint64_t track_uuid,
      * rather than inside this one. Events can then reach the ring in a
      * different order than their timestamps, which is fine: Perfetto sorts
      * by timestamp. */
-    uint64_t ts = now_ns();
+    uint64_t ts = now_ns(t->cfg.clock_id);
 
     struct pf_rec_res res;
     if (!pf_ring_reserve(&t->ring, &res))
@@ -803,11 +803,21 @@ void pf_config_init(struct pf_config *cfg)
     cfg->watermark_pct = 75;
     cfg->drain_interval_ms = 100;
     cfg->max_tracks = 256;
+    cfg->clock_id = CLOCK_BOOTTIME;
+}
+
+/* The clocks a trace can be stamped with. Each one is a builtin clock in
+ * ClockSnapshot, so Perfetto can name it as the primary trace clock. */
+static bool clock_ok(clockid_t clk)
+{
+    return clk == CLOCK_REALTIME || clk == CLOCK_MONOTONIC ||
+           clk == CLOCK_BOOTTIME;
 }
 
 struct pf_trace *pf_trace_open(const struct pf_config *cfg)
 {
-    if (!cfg || !cfg->path || cfg->watermark_pct > 99 || !open_name_ok(cfg)) {
+    if (!cfg || !cfg->path || cfg->watermark_pct > 99 || !open_name_ok(cfg) ||
+        !clock_ok(cfg->clock_id)) {
         errno = EINVAL;
         return NULL;
     }

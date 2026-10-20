@@ -367,7 +367,7 @@ static bool event_matches(const struct parsed *p, size_t k,
 static void check_contents(const struct parsed *p, const struct ids *ids,
                            size_t want_events)
 {
-    CHECK(p->version == 2, "version %u", p->version);
+    CHECK(p->version == 3, "version %u", p->version);
     CHECK(p->record_size == REC_BYTES, "record_size %u", p->record_size);
     CHECK(p->clock_id == (uint32_t)CLOCK_BOOTTIME, "clock_id %u", p->clock_id);
     CHECK(p->flags == 0, "flags %u", p->flags);
@@ -666,12 +666,19 @@ static void header_bytes(const char *path)
     if (n <= 32 + 8 + 104)
         return;
 
-    uint8_t want[32] = { 0 };
+    uint8_t want[24] = { 0 };
     memcpy(want, "PFRAWv1", 8);
-    le_bytes(want + 8, 2, 4);
+    le_bytes(want + 8, 3, 4);
     le_bytes(want + 12, 48, 4);
     le_bytes(want + 16, (uint32_t)CLOCK_BOOTTIME, 4);
-    CHECK(memcmp(buf, want, 32) == 0, "header bytes differ from the spec");
+    CHECK(memcmp(buf, want, 24) == 0, "header bytes differ from the spec");
+
+    /* Bytes 24..31 are REALTIME minus the trace clock, in ns. Wall time is
+     * far past the boot clock's zero, so the offset is large and positive. */
+    int64_t offset;
+    memcpy(&offset, buf + 24, 8);
+    CHECK(offset > 1000000000000000000LL, "clock offset %lld ns",
+          (long long)offset);
 
     /* The first chunk is TRACKS: three 104-byte entries. */
     CHECK(rd32(buf + 32) == CHUNK_TRACKS, "first chunk kind %u, want %d",

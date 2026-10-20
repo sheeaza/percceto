@@ -22,14 +22,15 @@ import sys
 from collections import Counter
 
 from perfetto.protos.perfetto.trace.perfetto_trace_pb2 import (
+    ClockSnapshot,
     Trace,
     TrackDescriptor,
     TrackEvent,
 )
 
 MAGIC = b"PFRAWv1\0"
-VERSION = 2
-HEADER = struct.Struct("<8sIIIIQ")  # magic, version, record_size, clock, flags, reserved
+VERSION = 3
+HEADER = struct.Struct("<8sIIIIq")  # magic, version, record_size, clock, flags, REALTIME - clock (ns)
 CHUNK_HEADER = struct.Struct("<II")  # kind, len
 NAME_HEADER = struct.Struct("<QI")  # ptr, len
 TRACK_ENTRY = struct.Struct("<QQIiiIII64s")  # 104 bytes
@@ -43,6 +44,8 @@ CHUNK_NAMES = 1
 CHUNK_TRACKS = 2
 CHUNK_EVENTS = 3
 
+RF_HAS_VALUE = 0x1
+# raw format's own values, so they map to Perfetto's enum explicitly.
 # Event type numbers in the raw file, from docs/raw_format.md. They are the
 # raw format's own values, so they map to Perfetto's enum explicitly.
 RAW_TYPE_TO_PERFETTO = {
@@ -50,6 +53,13 @@ RAW_TYPE_TO_PERFETTO = {
     2: TrackEvent.TYPE_SLICE_END,
     3: TrackEvent.TYPE_INSTANT,
     4: TrackEvent.TYPE_COUNTER,
+}
+
+# Linux clock ids the raw header can carry, mapped to Perfetto's builtin clocks.
+RAW_CLOCK_TO_PERFETTO = {
+    0: ClockSnapshot.Clock.REALTIME,  # CLOCK_REALTIME
+    1: ClockSnapshot.Clock.MONOTONIC,  # CLOCK_MONOTONIC
+    7: ClockSnapshot.Clock.BOOTTIME,  # CLOCK_BOOTTIME
 }
 
 RF_HAS_VALUE = 0x1
@@ -96,7 +106,7 @@ class RawReader:
         head = f.read(HEADER.size)
         if len(head) != HEADER.size:
             raise RawFormatError("file shorter than the 32-byte header")
-        magic, version, record_size, clock_id, flags, _ = HEADER.unpack(head)
+        magic, version, record_size, clock_id, flags, clock_offset_ns = HEADER.unpack(head)
         if magic != MAGIC:
             raise RawFormatError("bad magic: not a raw pftrace file")
         if version != VERSION:
@@ -106,6 +116,7 @@ class RawReader:
         if flags != 0:
             raise RawFormatError(f"reserved flags set: {flags:#x}")
         self.clock_id = clock_id
+        self.clock_offset_ns = clock_offset_ns
 
     def chunks(self):
         offset = HEADER.size
@@ -159,6 +170,32 @@ class Converter:
     def _flush(self, batch):
         if batch.packet:
             self._out.write(batch.SerializeToString())
+
+    def clock_snapshot(self, clock_id, offset_ns):
+        """Writes the ClockSnapshot the C writer emits at each restart. The raw
+        header keeps only REALTIME minus the trace clock, so the trace clock
+        reads 0 and REALTIME reads the offset. Perfetto maps time by the
+        difference of the two readings, so this gives the writer's mapping."""
+        if clock_id not in RAW_CLOCK_TO_PERFETTO:
+            raise RawFormatError(f"clock_id {clock_id} is not a supported clock")
+        if offset_ns < 0:
+            raise RawFormatError(f"clock offset {offset_ns} is negative")
+        primary = RAW_CLOCK_TO_PERFETTO[clock_id]
+        batch = Trace()
+        # Not via _packet(): the snapshot has no incremental state, so the
+        # first-packet flag stays with the first track descriptor.
+        packet = batch.packet.add()
+        packet.trusted_packet_sequence_id = 1
+        snap = packet.clock_snapshot
+        clock = snap.clocks.add()
+        clock.clock_id = primary
+        clock.timestamp = 0
+        if primary != ClockSnapshot.Clock.REALTIME:
+            clock = snap.clocks.add()
+            clock.clock_id = ClockSnapshot.Clock.REALTIME
+            clock.timestamp = offset_ns
+        snap.primary_trace_clock = primary
+        self._flush(batch)
 
     def names_chunk(self, payload):
         p = 0
@@ -361,6 +398,7 @@ def convert(src, dst):
     with open(src, "rb") as fin, open(dst, "wb") as fout:
         reader = RawReader(fin)
         conv = Converter(fout)
+        conv.clock_snapshot(reader.clock_id, reader.clock_offset_ns)
         for kind, payload, offset in reader.chunks():
             try:
                 if kind == CHUNK_NAMES:

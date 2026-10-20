@@ -254,10 +254,10 @@ struct pf_trace {
 
 /* --- Shared helpers, defined in pftrace.c ------------------------------ */
 
-static inline uint64_t now_ns(void)
+static inline uint64_t now_ns(clockid_t clk)
 {
     struct timespec ts;
-    clock_gettime(CLOCK_BOOTTIME, &ts);
+    clock_gettime(clk, &ts);
     return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
 }
 

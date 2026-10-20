@@ -33,7 +33,7 @@ reader (the offline Python parser).
 +---------------------------+
 ```
 
-There is no index and no trailer in version 2. The reader scans chunks from
+There is no index and no trailer in version 3. The reader scans chunks from
 the start.
 
 ### File header
@@ -41,11 +41,11 @@ the start.
 | Offset | Size | Field        | Value                                   |
 |--------|------|--------------|-----------------------------------------|
 | 0      | 8    | magic        | ASCII `PFRAWv1\0`                       |
-| 8      | 4    | version      | `2`                                     |
+| 8      | 4    | version      | `3`                                     |
 | 12     | 4    | record_size  | `48` (bytes per event record)           |
-| 16     | 4    | clock_id     | `CLOCK_BOOTTIME` as defined by the writer's `<time.h>` (`7` on Linux) |
-| 20     | 4    | flags        | `0` in version 2, reserved              |
-| 24     | 8    | reserved     | `0`                                     |
+| 16     | 4    | clock_id     | The trace clock as defined by the writer's `<time.h>`: `CLOCK_REALTIME`, `CLOCK_MONOTONIC` or `CLOCK_BOOTTIME` (`7` on Linux for boot time) |
+| 20     | 4    | flags        | `0` in version 3, reserved              |
+| 24     | 8    | clock_offset | `CLOCK_REALTIME` minus the trace clock, in ns, as a signed 64-bit value. Sampled back to back when the header is written, so `wall = ts + clock_offset` gives Unix time in ns. `0` when the trace clock is `CLOCK_REALTIME`. |
 
 Total: 32 bytes. The header never changes after it is written.
 
@@ -72,7 +72,7 @@ Chunks are written with one `write()` each, on an fd opened with `O_APPEND`.
 | 2     | TRACKS | sequence of track entries                        |
 | 3     | EVENTS | `len / 48` event records, back to back           |
 
-Any other `kind` value is an error in version 2.
+Any other `kind` value is an error in version 3.
 
 #### NAMES payload
 

@@ -4,6 +4,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <time.h>
 
 #if defined(__GNUC__) || defined(__clang__)
 #define PF_API __attribute__((visibility("default")))
@@ -84,6 +85,10 @@ enum pf_format {
  *      rather than ring space.
  * @process_name: Name of the process track. %NULL uses the program's comm
  *      name, if the OS gives one. Copied, so it may be a computed string.
+ * @clock_id: Clock every event timestamp is read from: %CLOCK_BOOTTIME,
+ *      %CLOCK_MONOTONIC or %CLOCK_REALTIME. pf_config_init() sets
+ *      %CLOCK_BOOTTIME. Note that %CLOCK_REALTIME is 0, so a config that
+ *      was never passed to pf_config_init() selects it.
  */
 struct pf_config {
     const char *path;
@@ -95,6 +100,7 @@ struct pf_config {
     unsigned drain_interval_ms;
     unsigned max_tracks;
     const char *process_name;
+    clockid_t clock_id;
 };
 
 /**

@@ -21,6 +21,17 @@
 #define FN_PACKET_INTERNED_DATA 12
 #define FN_PACKET_SEQUENCE_FLAGS 13
 #define FN_PACKET_TRACK_DESCRIPTOR 60
+#define FN_PACKET_CLOCK_SNAPSHOT 6
+#define FN_CLOCK_SNAPSHOT_CLOCKS 1
+#define FN_CLOCK_SNAPSHOT_PRIMARY 2
+#define FN_CLOCK_ID 1
+#define FN_CLOCK_TIMESTAMP 2
+
+/* BuiltinClock ids from ClockSnapshot; the trace clock is always one of
+ * these, see pf_trace_open(). */
+#define BUILTIN_CLOCK_REALTIME 1
+#define BUILTIN_CLOCK_MONOTONIC 3
+#define BUILTIN_CLOCK_BOOTTIME 6
 
 #define SEQ_INCREMENTAL_STATE_CLEARED 1u
 #define SEQ_NEEDS_INCREMENTAL_STATE 2u
@@ -121,12 +132,56 @@ static int emit_track(struct pf_trace *t, const struct track_def *td,
         break;
     }
 
-    pb_put_varint_field(packet, FN_PACKET_TIMESTAMP, now_ns());
+    pb_put_varint_field(packet, FN_PACKET_TIMESTAMP, now_ns(t->cfg.clock_id));
     pb_put_varint_field(packet, FN_PACKET_TRUSTED_SEQ_ID, 1);
     if (extra_flags)
         pb_put_varint_field(packet, FN_PACKET_SEQUENCE_FLAGS, extra_flags);
     pb_put_submessage_field(packet, FN_PACKET_TRACK_DESCRIPTOR, desc);
 
+    return stage_packet(t, packet);
+}
+
+static uint32_t builtin_clock(clockid_t clk)
+{
+    if (clk == CLOCK_REALTIME)
+        return BUILTIN_CLOCK_REALTIME;
+    if (clk == CLOCK_MONOTONIC)
+        return BUILTIN_CLOCK_MONOTONIC;
+    return BUILTIN_CLOCK_BOOTTIME;
+}
+
+/* Adds one Clock entry, a builtin id and a reading, to the snapshot. */
+static void put_clock_entry(struct pb_buf *snap, struct pb_buf *clock,
+                            uint32_t id, uint64_t ts)
+{
+    pb_buf_reset(clock);
+    pb_put_varint_field(clock, FN_CLOCK_ID, id);
+    pb_put_varint_field(clock, FN_CLOCK_TIMESTAMP, ts);
+    pb_put_submessage_field(snap, FN_CLOCK_SNAPSHOT_CLOCKS, clock);
+}
+
+/* Stages a ClockSnapshot naming the trace clock as primary. Its REALTIME
+ * reading, taken back to back with the trace clock's, lets Perfetto map the
+ * timestamps to wall time. Caller holds out_lock. */
+static int emit_clock_snapshot(struct pf_trace *t)
+{
+    clockid_t clk = t->cfg.clock_id;
+    struct pb_buf *clock = &t->pb.scratch_a;
+    struct pb_buf *snap = &t->pb.scratch_b;
+    struct pb_buf *packet = &t->pb.scratch_c;
+
+    uint64_t trace_ts = now_ns(clk);
+    uint64_t real_ts = now_ns(CLOCK_REALTIME);
+
+    pb_buf_reset(snap);
+    pb_buf_reset(packet);
+    put_clock_entry(snap, clock, builtin_clock(clk), trace_ts);
+    if (clk != CLOCK_REALTIME)
+        put_clock_entry(snap, clock, BUILTIN_CLOCK_REALTIME, real_ts);
+    pb_put_varint_field(snap, FN_CLOCK_SNAPSHOT_PRIMARY, builtin_clock(clk));
+
+    pb_put_varint_field(packet, FN_PACKET_TRUSTED_SEQ_ID, 1);
+    pb_put_submessage_field(packet, FN_PACKET_CLOCK_SNAPSHOT, snap);
     return stage_packet(t, packet);
 }
 
@@ -136,7 +191,8 @@ static int emit_track(struct pf_trace *t, const struct track_def *td,
  * a snapshot dump self-contained: interning restarts from scratch and
  * every track is re-declared, so the appended window can be read without
  * reference to anything written earlier. Continuous mode passes false
- * after the first drain and emits only newly registered tracks.
+ * after the first drain and emits only newly registered tracks. A restart
+ * also writes the ClockSnapshot, so every dump names its own clock.
  *
  * Caller holds out_lock. */
 static int emit_track_header(struct pf_trace *t, bool restart)
@@ -146,8 +202,11 @@ static int emit_track_header(struct pf_trace *t, bool restart)
     pthread_mutex_unlock(&t->track_lock);
 
     unsigned first = restart ? 0 : t->tracks_emitted;
-    if (restart)
+    if (restart) {
         intern_table_reset(&t->name_table);
+        if (emit_clock_snapshot(t) != 0)
+            return -1;
+    }
 
     for (unsigned i = 0; i < count; i++) {
         struct track_def td;
@@ -165,7 +224,8 @@ static int emit_track_header(struct pf_trace *t, bool restart)
      * reader keeps stale interning from the previous window. */
     if (restart && count == 0) {
         pb_buf_reset(&t->pb.scratch_c);
-        pb_put_varint_field(&t->pb.scratch_c, FN_PACKET_TIMESTAMP, now_ns());
+        pb_put_varint_field(&t->pb.scratch_c, FN_PACKET_TIMESTAMP,
+                            now_ns(t->cfg.clock_id));
         pb_put_varint_field(&t->pb.scratch_c, FN_PACKET_TRUSTED_SEQ_ID, 1);
         pb_put_varint_field(&t->pb.scratch_c, FN_PACKET_SEQUENCE_FLAGS,
                             SEQ_INCREMENTAL_STATE_CLEARED);
