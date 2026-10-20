@@ -220,3 +220,16 @@ set_tests_properties(name_literal_variable name_literal_stack_buffer
                      name_literal_empty
   PROPERTIES WILL_FAIL TRUE
 )
+
+# The C++ wrapper must compile as C++11. Object-only, so nothing is linked or
+# run and the library is not needed. It is part of the default build: a header
+# that stops compiling under C++11 breaks the build.
+add_library(pftrace_hpp_compile OBJECT test_pftrace_hpp.cpp)
+set_target_properties(pftrace_hpp_compile PROPERTIES
+  CXX_STANDARD 11
+  CXX_STANDARD_REQUIRED ON
+  CXX_EXTENSIONS OFF
+)
+target_include_directories(pftrace_hpp_compile PRIVATE
+  ${PROJECT_SOURCE_DIR}/include
+)

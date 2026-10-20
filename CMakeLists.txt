@@ -4,7 +4,7 @@ cmake_minimum_required(VERSION 3.10)
 # covers every target, including the compiler checks project() itself runs.
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-project(pftrace C)
+project(pftrace C CXX)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -31,8 +31,11 @@ add_compile_options(-Wall -Wextra -Werror)
 # The SHELL: prefix keeps each flag/path pair together. Without it CMake
 # de-duplicates the repeated bare "-isystem" token and the second path
 # onward is emitted with no flag at all.
+#
+# C only: for C++ these dirs duplicate the defaults, and GCC's #include_next
+# in libstdc++ then fails to find stdlib.h.
 foreach(dir IN LISTS CMAKE_C_IMPLICIT_INCLUDE_DIRECTORIES)
-  add_compile_options("SHELL:-isystem ${dir}")
+  add_compile_options("$<$<COMPILE_LANGUAGE:C>:SHELL:-isystem ${dir}>")
 endforeach()
 
 find_package(Threads REQUIRED)
