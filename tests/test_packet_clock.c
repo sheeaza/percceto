@@ -24,6 +24,9 @@
 #define CLOCK_ID_REALTIME 1
 #define CLOCK_ID_MONOTONIC 3
 #define CLOCK_ID_BOOTTIME 6
+#define FN_PACKET_CLOCK_SNAPSHOT 6
+#define FN_CLOCK_SNAPSHOT_CLOCKS 1
+#define FN_CLOCK_ID 1
 
 static int failures;
 
@@ -140,6 +143,51 @@ static int check_dump(const unsigned char *buf, size_t len, uint64_t want)
 
 static unsigned char buf[1 << 20];
 
+/* True if the ClockSnapshot in @b names clock @id among its readings. */
+static bool snapshot_has_clock(const unsigned char *b, size_t len, uint64_t id)
+{
+    size_t p = 0;
+    struct field f;
+    while (p < len) {
+        if (!next_field(b, len, &p, &f))
+            return false;
+        if (f.wt != 2 || f.num != FN_CLOCK_SNAPSHOT_CLOCKS)
+            continue;
+        size_t q = 0;
+        struct field c;
+        while (q < f.size) {
+            if (!next_field(f.bytes, f.size, &q, &c))
+                return false;
+            if (c.wt == 0 && c.num == FN_CLOCK_ID && c.val == id)
+                return true;
+        }
+    }
+    return false;
+}
+
+/* True if some ClockSnapshot packet in the dump has a BOOTTIME reading. */
+static bool dump_has_boottime(const unsigned char *buf, size_t len)
+{
+    size_t p = 0;
+    struct field top;
+    while (p < len) {
+        if (!next_field(buf, len, &p, &top))
+            return false;
+        if (!top.bytes || top.num != FN_TRACE_PACKET)
+            continue;
+        size_t q = 0;
+        struct field f;
+        while (q < top.size) {
+            if (!next_field(top.bytes, top.size, &q, &f))
+                return false;
+            if (f.wt == 2 && f.num == FN_PACKET_CLOCK_SNAPSHOT &&
+                snapshot_has_clock(f.bytes, f.size, CLOCK_ID_BOOTTIME))
+                return true;
+        }
+    }
+    return false;
+}
+
 /* Dumps a snapshot taken with @clock_id and checks every packet's clock. */
 static void run_clock(clockid_t clock_id, uint64_t want, const char *name)
 {
@@ -184,6 +232,7 @@ static void run_clock(clockid_t clock_id, uint64_t want, const char *name)
     int timed = check_dump(buf, n, want);
     CHECK(timed >= 0, "%s dump does not parse", name);
     CHECK(timed > 0, "%s dump has no timestamped packets", name);
+    CHECK(dump_has_boottime(buf, n), "%s snapshot has no BOOTTIME entry", name);
     printf("  %s: %d timestamped packets\n", name, timed);
 }
 

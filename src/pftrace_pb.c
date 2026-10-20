@@ -173,7 +173,10 @@ static void put_clock_entry(struct pb_buf *snap, struct pb_buf *clock,
 
 /* Stages a ClockSnapshot naming the trace clock as primary. Its REALTIME
  * reading, taken back to back with the trace clock's, lets Perfetto map the
- * timestamps to wall time. Caller holds out_lock. */
+ * timestamps to wall time. A BOOTTIME reading is added too: trace_processor
+ * always links BOOTTIME to the trace clock for a proto trace, and a snapshot
+ * with no BOOTTIME entry leaves that link missing and reports it. Caller holds
+ * out_lock. */
 static int emit_clock_snapshot(struct pf_trace *t)
 {
     clockid_t clk = t->cfg.clock_id;
@@ -189,6 +192,9 @@ static int emit_clock_snapshot(struct pf_trace *t)
     put_clock_entry(snap, clock, builtin_clock(clk), trace_ts);
     if (clk != CLOCK_REALTIME)
         put_clock_entry(snap, clock, BUILTIN_CLOCK_REALTIME, real_ts);
+    if (clk != CLOCK_BOOTTIME)
+        put_clock_entry(snap, clock, BUILTIN_CLOCK_BOOTTIME,
+                        now_ns(CLOCK_BOOTTIME));
     pb_put_varint_field(snap, FN_CLOCK_SNAPSHOT_PRIMARY, builtin_clock(clk));
 
     pb_put_varint_field(packet, FN_PACKET_TRUSTED_SEQ_ID, 1);
