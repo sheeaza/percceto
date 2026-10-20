@@ -29,12 +29,15 @@ foreach(backend ${PFTRACE_BACKENDS})
   add_test(NAME noalloc_${backend} COMMAND test_noalloc_${backend}
     WORKING_DIRECTORY ${run_dir})
 
-  # Event arguments rendered into names by the protobuf drain.
+  # Event arguments rendered into names by the protobuf drain. Runs in its
+  # backend's own directory: its dump directory is reset on start, so two
+  # backends sharing one directory would delete each other's files under -j.
   add_executable(test_args_pb_${backend} test_args_pb.c)
   target_link_libraries(test_args_pb_${backend}
     PRIVATE pftrace_${backend} Threads::Threads
   )
-  add_test(NAME args_pb_${backend} COMMAND test_args_pb_${backend})
+  add_test(NAME args_pb_${backend} COMMAND test_args_pb_${backend}
+    WORKING_DIRECTORY ${run_dir})
 
   # The ring holds at least min_ring_bytes, at the slot-count boundary.
   add_executable(test_min_ring_${backend} test_min_ring.c)
