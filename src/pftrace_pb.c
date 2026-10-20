@@ -153,7 +153,6 @@ static int emit_track(struct pf_trace *t, const struct track_def *td,
         break;
     }
 
-    put_packet_timestamp(packet, t->cfg.clock_id, now_ns(t->cfg.clock_id));
     pb_put_varint_field(packet, FN_PACKET_TRUSTED_SEQ_ID, 1);
     if (extra_flags)
         pb_put_varint_field(packet, FN_PACKET_SEQUENCE_FLAGS, extra_flags);
