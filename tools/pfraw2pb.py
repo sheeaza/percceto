@@ -216,6 +216,9 @@ class Converter:
         self._iids = {}  # ptr -> iid, for names already written
         self._tracks = {}  # uuid -> parsed track entry
         self._first = True
+        # Until clock_snapshot() names the trace clock, packets use BOOTTIME,
+        # the clock Perfetto assumes for a packet with no clock id.
+        self._clock = ClockSnapshot.Clock.BOOTTIME
         self.stats = Counter()
 
     def _packet(self, batch, seq_flags=0):
@@ -245,6 +248,8 @@ class Converter:
         if offset_ns < 0:
             raise RawFormatError(f"clock offset {offset_ns} is negative")
         primary = RAW_CLOCK_TO_PERFETTO[clock_id]
+        # Every event packet names this clock, see events_chunk().
+        self._clock = primary
         batch = Trace()
         # Not via _packet(): the snapshot has no incremental state, so the
         # first-packet flag stays with the first track descriptor.
@@ -343,6 +348,7 @@ class Converter:
 
             packet = self._packet(batch, SEQ_NEEDS_INCREMENTAL_STATE)
             packet.timestamp = ts
+            packet.timestamp_clock_id = self._clock
             ev = packet.track_event
             ev.type = RAW_TYPE_TO_PERFETTO[etype]
             ev.track_uuid = track

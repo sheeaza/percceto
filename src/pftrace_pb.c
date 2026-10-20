@@ -16,6 +16,7 @@
 
 /* TracePacket */
 #define FN_PACKET_TIMESTAMP 8
+#define FN_PACKET_TIMESTAMP_CLOCK_ID 58
 #define FN_PACKET_TRUSTED_SEQ_ID 10
 #define FN_PACKET_TRACK_EVENT 11
 #define FN_PACKET_INTERNED_DATA 12
@@ -32,6 +33,26 @@
 #define BUILTIN_CLOCK_REALTIME 1
 #define BUILTIN_CLOCK_MONOTONIC 3
 #define BUILTIN_CLOCK_BOOTTIME 6
+
+static uint32_t builtin_clock(clockid_t clk)
+{
+    if (clk == CLOCK_REALTIME)
+        return BUILTIN_CLOCK_REALTIME;
+    if (clk == CLOCK_MONOTONIC)
+        return BUILTIN_CLOCK_MONOTONIC;
+    return BUILTIN_CLOCK_BOOTTIME;
+}
+
+/* Writes a packet's timestamp with its clock. Perfetto reads a packet with no
+ * timestamp_clock_id as BOOTTIME, so a REALTIME or MONOTONIC reading must name
+ * its clock or the packet cannot be related to the trace clock. */
+static void put_packet_timestamp(struct pb_buf *packet, clockid_t clk,
+                                 uint64_t ts)
+{
+    pb_put_varint_field(packet, FN_PACKET_TIMESTAMP, ts);
+    pb_put_varint_field(packet, FN_PACKET_TIMESTAMP_CLOCK_ID,
+                        builtin_clock(clk));
+}
 
 #define SEQ_INCREMENTAL_STATE_CLEARED 1u
 #define SEQ_NEEDS_INCREMENTAL_STATE 2u
@@ -132,22 +153,13 @@ static int emit_track(struct pf_trace *t, const struct track_def *td,
         break;
     }
 
-    pb_put_varint_field(packet, FN_PACKET_TIMESTAMP, now_ns(t->cfg.clock_id));
+    put_packet_timestamp(packet, t->cfg.clock_id, now_ns(t->cfg.clock_id));
     pb_put_varint_field(packet, FN_PACKET_TRUSTED_SEQ_ID, 1);
     if (extra_flags)
         pb_put_varint_field(packet, FN_PACKET_SEQUENCE_FLAGS, extra_flags);
     pb_put_submessage_field(packet, FN_PACKET_TRACK_DESCRIPTOR, desc);
 
     return stage_packet(t, packet);
-}
-
-static uint32_t builtin_clock(clockid_t clk)
-{
-    if (clk == CLOCK_REALTIME)
-        return BUILTIN_CLOCK_REALTIME;
-    if (clk == CLOCK_MONOTONIC)
-        return BUILTIN_CLOCK_MONOTONIC;
-    return BUILTIN_CLOCK_BOOTTIME;
 }
 
 /* Adds one Clock entry, a builtin id and a reading, to the snapshot. */
@@ -224,8 +236,8 @@ static int emit_track_header(struct pf_trace *t, bool restart)
      * reader keeps stale interning from the previous window. */
     if (restart && count == 0) {
         pb_buf_reset(&t->pb.scratch_c);
-        pb_put_varint_field(&t->pb.scratch_c, FN_PACKET_TIMESTAMP,
-                            now_ns(t->cfg.clock_id));
+        put_packet_timestamp(&t->pb.scratch_c, t->cfg.clock_id,
+                             now_ns(t->cfg.clock_id));
         pb_put_varint_field(&t->pb.scratch_c, FN_PACKET_TRUSTED_SEQ_ID, 1);
         pb_put_varint_field(&t->pb.scratch_c, FN_PACKET_SEQUENCE_FLAGS,
                             SEQ_INCREMENTAL_STATE_CLEARED);
@@ -522,7 +534,7 @@ static int emit_record(struct pf_trace *t, const uint8_t *rec)
             pb_put_varint_field(ev, FN_EVENT_COUNTER_VALUE, raw_value);
     }
 
-    pb_put_varint_field(packet, FN_PACKET_TIMESTAMP, ts);
+    put_packet_timestamp(packet, t->cfg.clock_id, ts);
     pb_put_varint_field(packet, FN_PACKET_TRUSTED_SEQ_ID, 1);
     pb_put_varint_field(packet, FN_PACKET_SEQUENCE_FLAGS,
                         SEQ_NEEDS_INCREMENTAL_STATE);

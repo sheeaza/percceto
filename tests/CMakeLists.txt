@@ -39,6 +39,13 @@ foreach(backend ${PFTRACE_BACKENDS})
   add_test(NAME args_pb_${backend} COMMAND test_args_pb_${backend}
     WORKING_DIRECTORY ${run_dir})
 
+  add_executable(test_packet_clock_${backend} test_packet_clock.c)
+  target_link_libraries(test_packet_clock_${backend}
+    PRIVATE pftrace_${backend} Threads::Threads
+  )
+  add_test(NAME packet_clock_${backend} COMMAND test_packet_clock_${backend}
+    WORKING_DIRECTORY ${run_dir})
+
   # The ring holds at least min_ring_bytes, at the slot-count boundary.
   add_executable(test_min_ring_${backend} test_min_ring.c)
   target_link_libraries(test_min_ring_${backend}
