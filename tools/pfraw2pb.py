@@ -15,9 +15,9 @@ Usage:
     pfraw2pb.py input.pfraw [-o output.pftrace]
 """
 import argparse
+import ctypes
 import logging
 import re
-import struct
 import sys
 from collections import Counter
 
@@ -30,15 +30,77 @@ from perfetto.protos.perfetto.trace.perfetto_trace_pb2 import (
 
 MAGIC = b"PFRAWv1\0"
 VERSION = 3
-HEADER = struct.Struct("<8sIIIIq")  # magic, version, record_size, clock, flags, REALTIME - clock (ns)
-CHUNK_HEADER = struct.Struct("<II")  # kind, len
-NAME_HEADER = struct.Struct("<QI")  # ptr, len
-TRACK_ENTRY = struct.Struct("<QQIiiIII64s")  # 104 bytes
-EVENT = struct.Struct("<QQQII2Q")  # 48 bytes: ts, track, u, type, flags, args
 
-RECORD_SIZE = EVENT.size
-TRACK_SIZE = TRACK_ENTRY.size
+
+# On-disk layouts, little-endian and unpadded, as in docs/raw_format.md.
+class Header(ctypes.LittleEndianStructure):
+    _pack_ = 1
+    _fields_ = [
+        ("magic", ctypes.c_uint8 * 8),  # a c_char array would stop at the NUL
+        ("version", ctypes.c_uint32),
+        ("record_size", ctypes.c_uint32),
+        ("clock_id", ctypes.c_uint32),
+        ("flags", ctypes.c_uint32),
+        ("clock_offset_ns", ctypes.c_int64),  # REALTIME - clock (ns)
+    ]
+
+
+class ChunkHeader(ctypes.LittleEndianStructure):
+    _pack_ = 1
+    _fields_ = [
+        ("kind", ctypes.c_uint32),
+        ("length", ctypes.c_uint32),
+    ]
+
+
+class NameHeader(ctypes.LittleEndianStructure):
+    _pack_ = 1
+    _fields_ = [
+        ("ptr", ctypes.c_uint64),
+        ("length", ctypes.c_uint32),
+    ]
+
+
+class TrackEntry(ctypes.LittleEndianStructure):
+    _pack_ = 1
+    _fields_ = [
+        ("uuid", ctypes.c_uint64),
+        ("parent", ctypes.c_uint64),
+        ("kind", ctypes.c_uint32),
+        ("pid", ctypes.c_int32),
+        ("tid", ctypes.c_int32),
+        ("unit", ctypes.c_uint32),
+        ("has_name", ctypes.c_uint32),
+        ("name_len", ctypes.c_uint32),
+        ("name", ctypes.c_char * 64),
+    ]
+
+
+class Event(ctypes.LittleEndianStructure):
+    _pack_ = 1
+    _fields_ = [
+        ("ts", ctypes.c_uint64),
+        ("track", ctypes.c_uint64),
+        ("u", ctypes.c_uint64),
+        ("type", ctypes.c_uint32),
+        ("flags", ctypes.c_uint32),
+        ("a0", ctypes.c_uint64),
+        ("a1", ctypes.c_uint64),
+    ]
+
+
+RECORD_SIZE = ctypes.sizeof(Event)
+TRACK_SIZE = ctypes.sizeof(TrackEntry)
 assert RECORD_SIZE == 48 and TRACK_SIZE == 104
+
+
+class _Bits(ctypes.Union):
+    _fields_ = [("bits", ctypes.c_uint64), ("double", ctypes.c_double)]
+
+
+def bits_to_double(bits):
+    """Reads a 64-bit word as an IEEE double, the way the ring stores it."""
+    return _Bits(bits=bits).double
 
 CHUNK_NAMES = 1
 CHUNK_TRACKS = 2
@@ -103,37 +165,39 @@ class RawReader:
     def __init__(self, f):
         self._f = f
         self.torn_bytes = 0
-        head = f.read(HEADER.size)
-        if len(head) != HEADER.size:
+        size = ctypes.sizeof(Header)
+        head = f.read(size)
+        if len(head) != size:
             raise RawFormatError("file shorter than the 32-byte header")
-        magic, version, record_size, clock_id, flags, clock_offset_ns = HEADER.unpack(head)
-        if magic != MAGIC:
+        hdr = Header.from_buffer_copy(head)
+        if bytes(hdr.magic) != MAGIC:
             raise RawFormatError("bad magic: not a raw pftrace file")
-        if version != VERSION:
-            raise RawFormatError(f"unsupported version {version}")
-        if record_size != RECORD_SIZE:
-            raise RawFormatError(f"record_size {record_size}, want {RECORD_SIZE}")
-        if flags != 0:
-            raise RawFormatError(f"reserved flags set: {flags:#x}")
-        self.clock_id = clock_id
-        self.clock_offset_ns = clock_offset_ns
+        if hdr.version != VERSION:
+            raise RawFormatError(f"unsupported version {hdr.version}")
+        if hdr.record_size != RECORD_SIZE:
+            raise RawFormatError(f"record_size {hdr.record_size}, want {RECORD_SIZE}")
+        if hdr.flags != 0:
+            raise RawFormatError(f"reserved flags set: {hdr.flags:#x}")
+        self.clock_id = hdr.clock_id
+        self.clock_offset_ns = hdr.clock_offset_ns
 
     def chunks(self):
-        offset = HEADER.size
+        head_size = ctypes.sizeof(ChunkHeader)
+        offset = ctypes.sizeof(Header)
         while True:
-            head = self._f.read(CHUNK_HEADER.size)
+            head = self._f.read(head_size)
             if not head:
                 return
-            if len(head) < CHUNK_HEADER.size:
+            if len(head) < head_size:
                 self.torn_bytes = len(head)
                 return
-            kind, length = CHUNK_HEADER.unpack(head)
-            payload = self._f.read(length)
-            if len(payload) < length:
-                self.torn_bytes = CHUNK_HEADER.size + len(payload)
+            chunk = ChunkHeader.from_buffer_copy(head)
+            payload = self._f.read(chunk.length)
+            if len(payload) < chunk.length:
+                self.torn_bytes = head_size + len(payload)
                 return
-            yield kind, payload, offset
-            offset += CHUNK_HEADER.size + length
+            yield chunk.kind, payload, offset
+            offset += head_size + chunk.length
 
 
 # --- Converting ------------------------------------------------------------
@@ -199,11 +263,13 @@ class Converter:
 
     def names_chunk(self, payload):
         p = 0
+        head_size = ctypes.sizeof(NameHeader)
         while p < len(payload):
-            if len(payload) - p < NAME_HEADER.size:
+            if len(payload) - p < head_size:
                 raise RawFormatError("truncated name entry")
-            ptr, nlen = NAME_HEADER.unpack_from(payload, p)
-            p += NAME_HEADER.size
+            hdr = NameHeader.from_buffer_copy(payload, p)
+            ptr, nlen = hdr.ptr, hdr.length
+            p += head_size
             if len(payload) - p < nlen:
                 raise RawFormatError("name runs past its chunk")
             name = payload[p:p + nlen].decode("utf-8", errors="replace")
@@ -220,14 +286,14 @@ class Converter:
             raise RawFormatError("tracks chunk is not a multiple of 104 bytes")
         batch = Trace()
         for off in range(0, len(payload), TRACK_SIZE):
-            (uuid, parent, kind, pid, tid, unit, has_name, name_len,
-             raw_name) = TRACK_ENTRY.unpack_from(payload, off)
-            if name_len > 64:
+            entry = TrackEntry.from_buffer_copy(payload, off)
+            if entry.name_len > 64:
                 raise RawFormatError("track name longer than 64 bytes")
-            name = raw_name[:name_len].decode("utf-8", errors="replace")
-            track = {"kind": kind, "uuid": uuid, "parent": parent, "pid": pid,
-                     "tid": tid, "unit": unit, "has_name": bool(has_name),
-                     "name": name}
+            name = entry.name[:entry.name_len].decode("utf-8", errors="replace")
+            track = {"kind": entry.kind, "uuid": entry.uuid, "parent": entry.parent,
+                     "pid": entry.pid, "tid": entry.tid, "unit": entry.unit,
+                     "has_name": bool(entry.has_name), "name": name}
+            uuid = entry.uuid
             prev = self._tracks.get(uuid)
             if prev is not None:
                 # A rename: only the name may change.
@@ -266,7 +332,10 @@ class Converter:
             raise RawFormatError(
                 f"events chunk is not a multiple of {RECORD_SIZE} bytes")
         batch = Trace()
-        for ts, track, u, etype, flags, a0, a1 in EVENT.iter_unpack(payload):
+        for off in range(0, len(payload), RECORD_SIZE):
+            rec = Event.from_buffer_copy(payload, off)
+            ts, track, u, etype, flags = rec.ts, rec.track, rec.u, rec.type, rec.flags
+            a0, a1 = rec.a0, rec.a1
             if track not in self._tracks:
                 raise RawFormatError(f"event refers to undefined track {track}")
             if etype not in RAW_TYPE_TO_PERFETTO:
@@ -281,8 +350,7 @@ class Converter:
             nargs = (flags & RF_NARGS_MASK) >> RF_NARGS_SHIFT
             if flags & RF_HAS_VALUE:
                 if flags & RF_VALUE_IS_DOUBLE:
-                    ev.double_counter_value = struct.unpack(
-                        "<d", struct.pack("<Q", u))[0]
+                    ev.double_counter_value = bits_to_double(u)
                 else:
                     # The ring stores the two's-complement bits of an int64.
                     ev.counter_value = u - (1 << 64) if u & INT64_SIGN else u
@@ -388,7 +456,7 @@ def _render_arg(fmt, flags, width, prec, lenmod, conv, bits, is_double):
     # Float conversions.
     if not is_double:
         raise bad(f"%{conv} given an int")
-    value = struct.unpack("<d", struct.pack("<Q", bits))[0]
+    value = bits_to_double(bits)
     return ("%" + flags + width + spec_prec + conv) % value
 
 
