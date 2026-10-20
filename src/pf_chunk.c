@@ -95,7 +95,11 @@ int pf_pool_init(struct pf_trace *t)
     }
 
     t->pool_mem = calloc(count, chunk_bytes);
-    t->writers = calloc(t->cfg.max_threads, sizeof(*t->writers));
+    /* aligned_alloc, not calloc: the writers need a cache-line boundary, and
+     * sizeof is a multiple of 64, as aligned_alloc requires. Zeroed by hand. */
+    t->writers = aligned_alloc(64, t->cfg.max_threads * sizeof(*t->writers));
+    if (t->writers)
+        memset(t->writers, 0, t->cfg.max_threads * sizeof(*t->writers));
     if (!t->pool_mem || !t->writers) {
         free(t->pool_mem);
         free(t->writers);
