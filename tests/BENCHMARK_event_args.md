@@ -202,9 +202,28 @@ does not have this problem.
   slots don't divide a power of two evenly, so the slot counts can't match
   exactly. Not attempted.
 
+## Clock read cost on bare metal
+
+The 8.5 µs clock read above is from the VM. Measured on a bare-metal host
+(Intel i7-12700, `systemd-detect-virt` = none, clocksource `tsc`):
+
+| Measurement | Cost |
+|---|---|
+| vDSO `clock_gettime(CLOCK_MONOTONIC)`, the path `now_ns()` uses | 13 ns/call |
+| `clock_cost_ns()` in `tests/bench_args.c` (direct syscall) | 105–118 ns/call |
+
+The 13 ns figure is the one that matters for the library. `clock_cost_ns()`
+calls `syscall(SYS_clock_gettime)` directly and so skips the vDSO. It measures
+the syscall path, so it overstates the library's cost and is an upper bound.
+
+A 13 ns read is about the same as the per-event encode cost, so the library
+does not need a direct TSC read. The 8.5 µs figure is a property of that VM's
+clock source, not of the library. The producer numbers in this document are
+still with the clock stubbed; with a 13 ns read added, they would shift by
+about that much.
+
 ## Caveats
 
 - The clock is stubbed, so the producer numbers exclude the real clock read.
-  On this machine that read is about 8.5 µs. On a host with a fast clock read
-  the real producer cost is different from these numbers.
+  On the VM it is about 8.5 µs; on bare metal it is about 13 ns (see above).
 - The benchmark runs on a single machine, in a sandbox.

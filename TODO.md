@@ -63,19 +63,6 @@ refusals when the ring is full.
 suggest a value tuned per backend could reduce drops under contention. This is
 the cheapest item to test.
 
-## 5. Clock read on every event, on a virtual machine
-
-Status: **open, not started.** Every event reads the clock. On the VM used for
-`tests/BENCHMARK_event_args.md`, `clock_gettime` costs about 8.5 µs per call, so
-the clock dominates producer cost there. That hides the effect of the record
-size, which is why the benchmark stubs the clock. On a normal host a vDSO read
-should be tens of nanoseconds; that is unmeasured here.
-
-Next: time the clock on the real host with the `clock_cost_ns()` loop in
-`tests/bench_args.c`. If it is cheap, nothing changes. If it is not, options
-are a direct TSC read calibrated at open and converted to nanoseconds in the
-drain. That changes the timestamp contract, so it needs a decision first.
-
 ## Notes
 
 - Profiling: `perf c2c` would confirm cache-line contention, but it needs
