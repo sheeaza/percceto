@@ -158,12 +158,30 @@ int out_flush(struct pf_trace *t)
     return 0;
 }
 
-/* Drains the ring to the output file. Caller holds out_lock. */
+/* Writes the committed chunks to the output file, in commit order. Caller
+ * holds out_lock.
+ *
+ * Continuous: the committed FIFO is detached, so producers keep committing
+ * while it is written, and its chunks go back to the pool afterwards.
+ * Snapshot: the FIFO is walked in place under the pool lock, so producers that
+ * need a chunk wait for the dump to finish. Nothing is taken from it. */
 static int drain_locked(struct pf_trace *t)
 {
-    if (t->cfg.format == PF_FORMAT_RAW)
-        return raw_drain_locked(t);
-    return pb_drain_locked(t);
+    int (*write_chunks)(struct pf_trace *, const struct pf_chunk *) =
+        t->cfg.format == PF_FORMAT_RAW ? raw_drain_locked : pb_drain_locked;
+
+    if (t->cfg.mode == PF_MODE_SNAPSHOT) {
+        pf_pool_lock(t);
+        pf_writer_flush_own_locked(t);
+        int rc = write_chunks(t, t->committed_head);
+        pf_pool_unlock(t);
+        return rc;
+    }
+
+    struct pf_chunk *head = pf_committed_take(t);
+    int rc = write_chunks(t, head);
+    pf_chunks_release(t, head);
+    return rc;
 }
 
 /* --- Output files ------------------------------------------------------
@@ -240,7 +258,7 @@ static int snapshot_leaf(struct pf_trace *t, const char *name, char *leaf,
     return 0;
 }
 
-/* Writes the ring into a new file named @name in the trace's directory,
+/* Writes the committed chunks into a new file named @name in the trace's directory,
  * replacing any file already there. The file is self-contained: interning
  * restarts and tracks are re-declared, and a raw file gets its own header.
  * Caller holds out_lock. */
@@ -298,10 +316,10 @@ static int dump_locked(struct pf_trace *t, const char *name, char *file,
 }
 
 /* --- Drain thread -------------------------------------------------------
- * Continuous mode only. It writes the ring out whenever it crosses the
- * watermark or the interval elapses. Snapshot mode starts no thread: the
- * ring keeps its own tail on a known record boundary (see pf_ring_reserve),
- * and a dump is taken on demand by pf_trace_dump. */
+ * Continuous mode only. It writes the committed chunks out whenever enough
+ * have committed to pass the watermark or the interval elapses. Snapshot mode
+ * starts no thread: the committed chunks are the window, and a dump is taken
+ * on demand by pf_trace_dump. */
 
 /* Waits for a wake signal, the drain interval, or shutdown.
  *
@@ -352,23 +370,14 @@ static void *drain_thread_fn(void *arg)
     return NULL;
 }
 
-/* Nudges the drain thread once the ring passes the watermark.
+/* Wakes the drain thread once committed chunks pass the watermark. Called by
+ * a producer that has just committed a chunk, with pool_lock released.
  *
- * Continuous mode only. Snapshot mode needs no wake for correctness:
- * pf_ring_reserve keeps @tail on a recoverable boundary itself, as part of
- * the same atomic step that moves @head, so there is no window for a
- * producer to slip past a decision made out here. Nothing on the hot path
- * has to prompt it.
- *
- * The exchange on wake_pending means a burst of events past the watermark
- * costs one futex between drains, not one per event. */
-static void maybe_wake_drain(struct pf_trace *t)
+ * The exchange on wake_pending means a burst of commits past the watermark
+ * costs one futex between drains, not one per chunk. */
+void pf_drain_wake(struct pf_trace *t)
 {
     if (t->cfg.mode != PF_MODE_CONTINUOUS)
-        return;
-
-    uint64_t occupied = pf_ring_occupancy_slots(&t->ring);
-    if (occupied < t->watermark_slots)
         return;
 
     if (atomic_exchange_explicit(&t->wake_pending, 1, memory_order_acq_rel) !=
@@ -381,16 +390,9 @@ static void maybe_wake_drain(struct pf_trace *t)
 }
 
 /* --- Event emission (hot path) ------------------------------------------
- * Reserve a slot, fill it, submit it. No allocation and no I/O, in any
- * backend.
- *
- * Whether it takes a lock is the backend's business, and the one thing
- * they genuinely differ on. The ringbuf_mpsc ring takes none:
- * concurrent producers own disjoint slots, so their writes proceed in
- * parallel and only the claim itself is serialized, by one atomic. The
- * ringbuf_zcopy ring must serialize claims with a mutex -- held across the
- * claim alone, never the fill or the submit -- which is the cost that
- * backend exists to measure. See tests/BENCHMARK_ring_backends.md.
+ * Write one record into the calling thread's chunk. No shared state is read
+ * or written here, and the only branch that is not the common case is the
+ * rotation once per chunk_slots events. See docs/chunk_buffers_design.md.
  *
  * Four stores and no string work at all: the name is stored by address,
  * and the drain thread is what eventually reads the characters. */
@@ -400,21 +402,27 @@ static void emit_event(struct pf_trace *t, uint32_t type, uint64_t track_uuid,
                        bool value_is_double, unsigned nargs, uint64_t a0,
                        bool a0_dbl, uint64_t a1, bool a1_dbl)
 {
-    /* Timestamp before reserving, not after. The reservation can spin
-     * briefly when producers collide, and a timestamp taken afterwards
-     * would include that delay -- attributing contention in the tracer to
-     * the code being traced. Taken first, it is the caller's moment, and
-     * the cost of the reservation lands between this event and the next
-     * rather than inside this one. Events can then reach the ring in a
-     * different order than their timestamps, which is fine: Perfetto sorts
-     * by timestamp. */
+    /* Timestamp before anything else, so the cost of finding a chunk lands
+     * between this event and the next rather than inside this one. Chunks
+     * are per thread, so records reach the drain in commit order, which is
+     * not timestamp order across threads. Perfetto sorts by timestamp. */
     uint64_t ts = now_ns(t->cfg.clock_id);
 
-    struct pf_rec_res res;
-    if (!pf_ring_reserve(&t->ring, &res))
-        return; /* no space, or a peer mid-fill; counted as dropped */
+    /* The dumping thread would wait on the pool lock it holds. */
+    if (pf_tls_dumping) {
+        atomic_fetch_add_explicit(&t->dropped, 1, memory_order_relaxed);
+        return;
+    }
 
-    struct pf_rec *r = (struct pf_rec *)res.rec;
+    struct pf_writer *w = pf_writer_for(t);
+    if (!w) {
+        atomic_fetch_add_explicit(&t->dropped, 1, memory_order_relaxed);
+        return;
+    }
+    if (w->used == t->chunk_slots && !pf_writer_rotate(t, w))
+        return; /* no chunk free; pf_writer_rotate counted the drop */
+
+    struct pf_rec *r = &w->cur->recs[w->used++];
     r->ts = ts;
     r->track = track_uuid;
     /* Mutually exclusive by construction -- see the layout comment. */
@@ -429,12 +437,13 @@ static void emit_event(struct pf_trace *t, uint32_t type, uint64_t track_uuid,
                (nargs > 0 && a0_dbl ? RF_ARG0_IS_DOUBLE : 0u) |
                (nargs > 1 && a1_dbl ? RF_ARG1_IS_DOUBLE : 0u);
     /* Always written, so an event without args carries zeros, not whatever
-     * the slot held before. */
+     * the record held before. */
     r->arg[0] = nargs > 0 ? a0 : 0;
     r->arg[1] = nargs > 1 ? a1 : 0;
 
-    pf_ring_submit(&t->ring, &res);
-    maybe_wake_drain(t);
+    atomic_store_explicit(
+        &w->events, atomic_load_explicit(&w->events, memory_order_relaxed) + 1,
+        memory_order_relaxed);
 }
 
 void pf_slice_begin_impl(struct pf_trace *t, uint64_t track_uuid,
@@ -797,7 +806,9 @@ int pf_trace_flush_g(const char *name, char *file, size_t size)
 void pf_config_init(struct pf_config *cfg)
 {
     memset(cfg, 0, sizeof(*cfg));
-    cfg->min_ring_bytes = 8u * 1024u * 1024u;
+    cfg->buffer_bytes = 8u * 1024u * 1024u;
+    cfg->chunk_slots = 256;
+    cfg->max_threads = 256;
     cfg->mode = PF_MODE_SNAPSHOT;
     cfg->format = PF_FORMAT_PROTOBUF;
     cfg->watermark_pct = 75;
@@ -817,7 +828,8 @@ static bool clock_ok(clockid_t clk)
 struct pf_trace *pf_trace_open(const struct pf_config *cfg)
 {
     if (!cfg || !cfg->path || cfg->watermark_pct > 99 || !open_name_ok(cfg) ||
-        !clock_ok(cfg->clock_id)) {
+        !clock_ok(cfg->clock_id) || cfg->chunk_slots == 0 ||
+        cfg->max_threads == 0) {
         errno = EINVAL;
         return NULL;
     }
@@ -829,8 +841,8 @@ struct pf_trace *pf_trace_open(const struct pf_config *cfg)
     t->fd = -1;
     t->dirfd = -1;
     t->cfg = *cfg;
-    if (t->cfg.min_ring_bytes == 0)
-        t->cfg.min_ring_bytes = 8u * 1024u * 1024u;
+    if (t->cfg.buffer_bytes == 0)
+        t->cfg.buffer_bytes = 8u * 1024u * 1024u;
     if (t->cfg.watermark_pct == 0)
         t->cfg.watermark_pct = 75;
     if (t->cfg.drain_interval_ms == 0)
@@ -843,26 +855,14 @@ struct pf_trace *pf_trace_open(const struct pf_config *cfg)
     if (!t->tracks)
         goto free_trace;
 
-    /* Rounded up, so the ring holds at least min_ring_bytes. A floor here
-     * could leave the count one slot short when it is already a power of
-     * two. The library then rounds the count up, never down. */
-    if (pf_ring_init(&t->ring, PF_PAYLOAD_BYTES,
-                     pf_min_slots(t->cfg.min_ring_bytes),
-                     t->cfg.mode == PF_MODE_SNAPSHOT) != 0)
+    if (pf_pool_init(t) != 0)
         goto free_tracks;
-
-    /* The rounded-up capacity, not what was asked for: backends round
-     * up to a power of two, a page multiple or a whole number of slots,
-     * and a watermark derived from the request would be a different
-     * fraction of the ring than it claims to be. */
-    size_t slots = pf_ring_capacity_slots(&t->ring);
-    t->watermark_slots = slots * t->cfg.watermark_pct / 100u;
 
     /* Held for the life of the trace, since every snapshot dump opens its
      * file in this directory. Opening it here means a bad path fails at open. */
     t->dirfd = open(t->cfg.path, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
     if (t->dirfd < 0)
-        goto destroy_ring;
+        goto destroy_pool;
 
     /* Continuous only: its one file. O_APPEND so every write lands at the end,
      * which is what lets a continuous trace stay readable while it is still
@@ -909,6 +909,7 @@ struct pf_trace *pf_trace_open(const struct pf_config *cfg)
     if (t->cfg.mode == PF_MODE_CONTINUOUS &&
         pthread_create(&t->drain_thread, NULL, drain_thread_fn, t) != 0)
         goto destroy_sync;
+    pf_registry_add(t);
     g_default_trace = t;
     return t;
 
@@ -923,8 +924,8 @@ destroy_sync:
     close(t->fd);
 close_dir:
     close(t->dirfd);
-destroy_ring:
-    pf_ring_destroy(&t->ring);
+destroy_pool:
+    pf_pool_destroy(t);
 free_tracks:
     free(t->tracks);
 free_trace:
@@ -940,9 +941,11 @@ static int dump_public(struct pf_trace *t, const char *name, char *file,
         errno = EINVAL;
         return -1;
     }
+    pf_tls_dumping = true;
     pthread_mutex_lock(&t->out_lock);
     int rc = dump_locked(t, name, file, size, sync);
     pthread_mutex_unlock(&t->out_lock);
+    pf_tls_dumping = false;
     return rc;
 }
 
@@ -959,10 +962,11 @@ int pf_trace_flush(struct pf_trace *t, const char *name, char *file,
 
 void pf_trace_stats(const struct pf_trace *t, struct pf_stats *out)
 {
-    /* Casting away const to read atomics: these are counters, and
-     * reading them does not modify the trace in any observable way. */
+    /* Casting away const to take the lock and read the counters: reading them
+     * does not modify the trace in any observable way. */
     struct pf_trace *m = (struct pf_trace *)t;
-    pf_ring_stats(&m->ring, &out->events, &out->dropped);
+    out->events = pf_writers_events(m);
+    out->dropped = atomic_load_explicit(&m->dropped, memory_order_relaxed);
     out->bytes_written =
         atomic_load_explicit(&m->bytes_written, memory_order_relaxed);
 }
@@ -977,13 +981,20 @@ void pf_trace_close(struct pf_trace *t)
     if (g_default_trace == t)
         g_default_trace = NULL;
 
+    pf_registry_remove(t);
+
     if (t->cfg.mode == PF_MODE_CONTINUOUS) {
         pthread_mutex_lock(&t->drain_lock);
         t->stop = true;
         pthread_cond_signal(&t->drain_cv);
         pthread_mutex_unlock(&t->drain_lock);
         pthread_join(t->drain_thread, NULL);
+    }
 
+    /* Partial chunks go out with everything else. Threads must have stopped
+     * emitting: a producer that is mid-chunk here would race this commit. */
+    pf_writers_commit_all(t);
+    if (t->cfg.mode == PF_MODE_CONTINUOUS) {
         /* Write whatever is still buffered, so the file holds every event. A
          * snapshot trace writes nothing here: its buffered window goes out only
          * through an explicit pf_trace_dump. */
@@ -996,7 +1007,7 @@ void pf_trace_close(struct pf_trace *t)
         close(t->fd);
     close(t->dirfd);
     staging_free(t);
-    pf_ring_destroy(&t->ring);
+    pf_pool_destroy(t);
     free(t->tracks);
 
     pthread_cond_destroy(&t->drain_cv);

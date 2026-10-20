@@ -27,12 +27,12 @@ enum pf_unit {
 
 /**
  * enum pf_mode - When buffered events reach the output file.
- * @PF_MODE_SNAPSHOT: Never write unless asked. The ring overwrites its
+ * @PF_MODE_SNAPSHOT: Never write unless asked. The buffer overwrites its
  *      oldest events indefinitely; pf_trace_dump() captures the window
  *      leading up to the call. Use this to debug a perf drop the program
  *      detects itself.
- * @PF_MODE_CONTINUOUS: Write automatically. Once the ring passes
- *      &pf_config.watermark_pct a background thread drains it, so the
+ * @PF_MODE_CONTINUOUS: Write automatically. Once &pf_config.watermark_pct of the chunks are committed, a background
+ *      thread drains them, so the
  *      output file accumulates every event rather than a window. Events
  *      are dropped (and counted in &pf_stats.dropped) only if producers
  *      outrun that thread.
@@ -46,7 +46,7 @@ enum pf_mode {
  * enum pf_format - What the output file contains.
  * @PF_FORMAT_PROTOBUF: Perfetto protobuf, encoded by the drain thread. The
  *      file opens directly in the Perfetto UI.
- * @PF_FORMAT_RAW: Fixed-size ring records plus name and track sidecars,
+ * @PF_FORMAT_RAW: Fixed-size records plus name and track sidecars,
  *      copied with little encoding work. Converted to protobuf offline by
  *      the reader described in docs/raw_format.md. Requires a new or empty
  *      output file, and a little-endian host.
@@ -65,24 +65,30 @@ enum pf_format {
  *      for the life of the trace. Opened with O_APPEND, so an existing file
  *      is extended rather than truncated. Snapshot: must be %NULL, since
  *      each pf_trace_dump() names its own file.
- * @min_ring_bytes: Least in-RAM ring buffer size to allocate. The ring is
- *      sized in slots, @min_ring_bytes divided by the slot size, and that
- *      count is rounded up to a power of two, so the ring can be larger:
- *      for a slot size that is not a power of two, the allocation can be up
- *      to about twice this. 0 selects 8 MiB. This is the only sizeable
+ * @buffer_bytes: Total in-RAM buffering. Divided into chunks of
+ *      @chunk_slots records each; the count is rounded down. Must hold at
+ *      least two chunks. 0 selects 8 MiB. This is the only sizeable
  *      allocation the library makes, and it happens once, at open.
+ * @chunk_slots: Records per chunk. A thread fills one chunk at a time and
+ *      hands it over when it is full, so this sets how often a thread takes
+ *      shared state. 0 is rejected at open. pf_config_init() selects 256.
+ * @max_threads: Threads that may emit into this trace over its life. A
+ *      thread past the limit drops its events and counts them. Writer slots are
+ *      not reclaimed when a thread exits. 0 is rejected at open. pf_config_init()
+ *      selects 256.
  * @mode: Snapshot or continuous; see &enum pf_mode.
  * @format: Protobuf or raw output; see &enum pf_format. Fixed for the
  *      life of the trace, so a file never mixes the two.
- * @watermark_pct: Ring fill percentage that triggers an automatic drain,
- *      1-99. 0 selects 75. Ignored unless @mode is %PF_MODE_CONTINUOUS.
- * @drain_interval_ms: Upper bound on how long a buffered event waits
- *      before the drain thread considers writing it. 0 selects 100.
+ * @watermark_pct: Percentage of chunks that must be committed before the
+ *      drain thread is woken, 1-99. 0 selects 75. Ignored unless @mode is
+ *      %PF_MODE_CONTINUOUS.
+ * @drain_interval_ms: Upper bound on how long a committed chunk waits
+ *      before the drain thread writes it. 0 selects 100.
  *      Ignored unless @mode is %PF_MODE_CONTINUOUS.
  * @max_tracks: Capacity of the track table. 0 selects 256. The process
  *      track pf_trace_open() registers takes one entry. Tracks are
  *      re-emitted at the head of every dump, so they cost file space
- *      rather than ring space.
+ *      rather than buffer space.
  * @process_name: Name of the process track. %NULL uses the program's comm
  *      name, if the OS gives one. Copied, so it may be a computed string.
  * @clock_id: Clock every event timestamp is read from: %CLOCK_BOOTTIME,
@@ -93,7 +99,9 @@ enum pf_format {
 struct pf_config {
     const char *path;
     const char *name;
-    size_t min_ring_bytes;
+    size_t buffer_bytes;
+    size_t chunk_slots;
+    unsigned max_threads;
     enum pf_mode mode;
     enum pf_format format;
     unsigned watermark_pct;
@@ -105,17 +113,16 @@ struct pf_config {
 
 /**
  * struct pf_stats - Cumulative counters, for checking a trace is honest.
- * @events: Events successfully published to the ring.
+ * @events: Records committed to chunks. Excludes the tail still in each thread's chunk.
  * @bytes_written: Bytes handed to write() across all dumps.
  * @dropped: Events discarded rather than recorded, which means the output
  *      file has a gap. Never counts the events %PF_MODE_SNAPSHOT
  *      intentionally overwrites -- those are that mode working as
  *      intended. In the default build this only happens in
- *      %PF_MODE_CONTINUOUS, when the ring fills with data the drain
- *      thread has not yet written: either the ring or the drain interval
- *      is too small. A library built against a slot-indexed ring backend
- *      can also drop in either mode, rarely, when a producer holds a slot
- *      long enough to exhaust another's retries.
+ *      %PF_MODE_CONTINUOUS, when every chunk is committed or in use and the drain
+ *      thread has not yet written them: either the buffer or the drain
+ *      interval is too small. A thread past &pf_config.max_threads drops
+ *      every event it emits.
  */
 struct pf_stats {
     uint64_t events;
@@ -134,7 +141,7 @@ struct pf_stats {
 PF_API void pf_config_init(struct pf_config *cfg);
 
 /**
- * pf_trace_open() - Allocate the ring and open the output file.
+ * pf_trace_open() - Allocate the chunk pool and open the output file.
  * @cfg: Trace parameters. Copied, so it need not outlive this call. The
  *      strings it points to, &pf_config.path and &pf_config.name, are read
  *      here, except that the directory is held open for the life of the
@@ -169,7 +176,7 @@ PF_API struct pf_trace *pf_trace_open(const struct pf_config *cfg);
  *      file. Set only when the dump succeeds.
  * @size: Size of @file in bytes.
  *
- * Writes the ring's contents to the output file, preceded by the track
+ * Writes the committed chunks to the output file, preceded by the track
  * table so the result stands alone as a trace. In %PF_MODE_SNAPSHOT this
  * is the only thing that produces output -- call it when the program
  * notices the problem worth debugging.
@@ -218,9 +225,9 @@ PF_API void pf_trace_stats(const struct pf_trace *t, struct pf_stats *out);
  *
  * In %PF_MODE_CONTINUOUS, stops and joins the drain thread and writes any
  * remaining buffered events, so the file holds every event. In
- * %PF_MODE_SNAPSHOT it writes nothing: events still in the ring are lost
+ * %PF_MODE_SNAPSHOT it writes nothing: events still in the buffer are lost
  * unless pf_trace_dump() was called first. Then closes the file and
- * unmaps the ring. Not safe to call concurrently with any other function
+ * frees the buffers. Not safe to call concurrently with any other function
  * on @t.
  */
 PF_API void pf_trace_close(struct pf_trace *t);
@@ -272,7 +279,7 @@ PF_API uint64_t pf_track_counter(struct pf_trace *t, uint64_t parent_uuid,
  * PF_NAME_LITERAL() - Assert at compile time that @s is a string literal.
  * @s: The candidate name.
  *
- * Event names are stored in the ring as a borrowed pointer and read much
+ * Event names are stored in the chunks as a borrowed pointer and read much
  * later, on the drain thread, so they must outlive the trace. A string
  * literal always does. This rejects anything else where the mistake is
  * cheap to fix -- at the call site, during compilation -- rather than
@@ -295,10 +302,9 @@ PF_API uint64_t pf_track_counter(struct pf_trace *t, uint64_t parent_uuid,
  * @track_uuid: Track to begin the slice on.
  * @name: Slice name. Must be a string literal -- see PF_NAME_LITERAL().
  *
- * Copies its arguments into the ring and returns; no allocation and no
- * I/O. Takes no lock in the default build, where only a drain can
- * contend with it; a library built against an alternative ring backend
- * may serialize the claim with a short mutex. The name itself is not
+ * Writes into this thread's chunk and returns; no allocation and no I/O.
+ * Takes no lock on the common path. The thread takes the pool lock once
+ * per chunk_slots events, to exchange a full chunk for an empty one. The name itself is not
  * copied, only its address, which is why it has to be a literal.
  *
  * Slices on a given track must be ended in stack (LIFO) order via
@@ -362,8 +368,8 @@ PF_API void pf_instant_event_impl(struct pf_trace *t, uint64_t track_uuid,
  * Each argument is an int or a double, chosen at compile time from its
  * type. Anything else (a pointer, a string) fails to compile.
  *
- * Every event pays for PF_MAX_ARGS slots in the ring, whether or not it
- * has arguments. Raising PF_MAX_ARGS costs ring capacity for all events.
+ * Every record pays for PF_MAX_ARGS argument words in its chunk, whether or not
+ * it has arguments. Raising PF_MAX_ARGS costs buffer space for all events.
  */
 #define PF_MAX_ARGS 2
 

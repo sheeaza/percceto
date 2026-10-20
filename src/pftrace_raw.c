@@ -145,9 +145,8 @@ static int raw_flush(struct pf_trace *t)
 
 /* Queues one record for the raw file. The name is queued as a definition
  * the first time the drain sees its pointer. Caller holds out_lock. */
-static int raw_emit_record(struct pf_trace *t, const uint8_t *rec)
+static int raw_emit_record(struct pf_trace *t, const struct pf_rec *r)
 {
-    const struct pf_rec *r = (const struct pf_rec *)rec;
     bool has_value = (r->flags & RF_HAS_VALUE) != 0;
     const char *name = has_value ? NULL : r->u.name;
 
@@ -163,20 +162,20 @@ static int raw_emit_record(struct pf_trace *t, const uint8_t *rec)
     }
 
     /* The record is copied as is; see struct pf_rec for the layout. */
-    pb_put_bytes(&t->raw.events, rec, PF_PAYLOAD_BYTES);
+    pb_put_bytes(&t->raw.events, r, PF_PAYLOAD_BYTES);
     if (t->raw.events.len >= PF_OUT_FLUSH_THRESHOLD)
         return raw_flush(t);
     return 0;
 }
 
 /* Caller holds out_lock. */
-int raw_drain_locked(struct pf_trace *t)
+int raw_drain_locked(struct pf_trace *t, const struct pf_chunk *head)
 {
-    struct pf_ring_reader rd;
-    pf_ring_read_begin(&t->ring, &rd);
+    struct pf_walk w;
+    pf_walk_begin(&w, head);
 
-    const uint8_t *rec;
-    while ((rec = pf_ring_next(&t->ring, &rd)) != NULL) {
+    const struct pf_rec *rec;
+    while ((rec = pf_walk_next(&w)) != NULL) {
         if (raw_emit_record(t, rec) != 0)
             return -1;
     }

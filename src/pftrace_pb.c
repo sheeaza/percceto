@@ -478,9 +478,8 @@ static bool format_name(char *out, size_t cap, const char *fmt,
 }
 
 /* Caller holds out_lock. */
-static int emit_record(struct pf_trace *t, const uint8_t *rec)
+static int emit_record(struct pf_trace *t, const struct pf_rec *r)
 {
-    const struct pf_rec *r = (const struct pf_rec *)rec;
     uint64_t ts = r->ts;
     uint64_t track_uuid = r->track;
     uint32_t type = r->type;
@@ -551,21 +550,19 @@ static int emit_record(struct pf_trace *t, const uint8_t *rec)
     return rc;
 }
 
-/* Drains the ring as protobuf packets. Caller holds out_lock. */
-int pb_drain_locked(struct pf_trace *t)
+/* Drains the committed chunks as protobuf packets. Caller holds out_lock. */
+int pb_drain_locked(struct pf_trace *t, const struct pf_chunk *head)
 {
     bool restart = !t->header_written || t->cfg.mode == PF_MODE_SNAPSHOT;
     if (emit_track_header(t, restart) != 0)
         return -1;
     t->header_written = true;
 
-    struct pf_ring_reader rd;
-    pf_ring_read_begin(&t->ring, &rd);
+    struct pf_walk w;
+    pf_walk_begin(&w, head);
 
-    const uint8_t *rec;
-    while ((rec = pf_ring_next(&t->ring, &rd)) != NULL) {
-        /* Every backend hands back a record no producer can rewrite while we
-         * encode it, so it is encoded in place. */
+    const struct pf_rec *rec;
+    while ((rec = pf_walk_next(&w)) != NULL) {
         if (emit_record(t, rec) != 0)
             return -1;
     }

@@ -166,7 +166,7 @@ class ConvertTest(unittest.TestCase):
     def test_negative_counter_value_is_signed(self):
         tracks = (pb.CHUNK_TRACKS, track_entry(5, 0, pb.TRACK_COUNTER, 0, 0,
                                                UNIT_COUNT, "depth"))
-        minus_three = (1 << 64) - 3  # two's-complement bits, as the ring stores
+        minus_three = (1 << 64) - 3  # two's-complement bits, as the record stores
         events = (pb.CHUNK_EVENTS,
                   event(1, 5, minus_three, RAW_COUNTER, pb.RF_HAS_VALUE))
         packets, _, _ = convert_bytes(raw_file(tracks, events))

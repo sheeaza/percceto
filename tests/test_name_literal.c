@@ -1,6 +1,6 @@
 /* The compile-time half of the name contract.
  *
- * Event names are stored in the ring as a borrowed pointer and read later
+ * Event names are stored in the chunks as a borrowed pointer and read later
  * on the drain thread, so a name that does not outlive the trace is a
  * dangling read -- and one that nothing at runtime can detect, because the
  * dereference happens on another thread at an unbounded delay. The macro

@@ -2,7 +2,7 @@
 """Converts a raw pftrace dump (docs/raw_format.md) to a Perfetto protobuf
 trace.
 
-This is the offline half of PF_FORMAT_RAW: the drain copies ring records as
+This is the offline half of PF_FORMAT_RAW: the drain copies records as
 they are, and this turns them into the same Trace the protobuf writer
 produces. The protobuf classes come from the perfetto package, which
 ships the generated schema.
@@ -100,7 +100,7 @@ class _Bits(ctypes.Union):
 
 
 def bits_to_double(bits):
-    """Reads a 64-bit word as an IEEE double, the way the ring stores it."""
+    """Reads a 64-bit word as an IEEE double, the way the buffer stores it."""
     return _Bits(bits=bits).double
 
 CHUNK_NAMES = 1
@@ -367,7 +367,7 @@ class Converter:
                 if flags & RF_VALUE_IS_DOUBLE:
                     ev.double_counter_value = bits_to_double(u)
                 else:
-                    # The ring stores the two's-complement bits of an int64.
+                    # The buffer stores the two's-complement bits of an int64.
                     ev.counter_value = u - (1 << 64) if u & INT64_SIGN else u
             elif nargs:
                 # The name is a format; its args are rendered per event, so

@@ -1,7 +1,7 @@
 /* End-to-end stress for the two modes, driving enough events through a
- * deliberately small ring that it wraps many times over.
+ * deliberately small buffer that it wraps many times over.
  *
- * The example only exercises the happy path: its event count fits the ring,
+ * The example only exercises the happy path: its event count fits the buffer,
  * so nothing is ever overwritten and the interesting behaviour never
  * happens. The claims worth testing are the ones that only appear under
  * wrap pressure:
@@ -9,7 +9,7 @@
  *   snapshot   -- keeps a bounded window and the window is the RECENT one,
  *                 so a dump taken after a stall contains the events just
  *                 before it, not the start of the program;
- *   continuous -- loses nothing even though the ring turns over repeatedly,
+ *   continuous -- loses nothing even though the buffer turns over repeatedly,
  *                 because the drain thread keeps up.
  */
 
@@ -24,8 +24,8 @@
 #include "dump_dir.h"
 #include "pftrace.h"
 
-/* Prefix for this build's output files. Set per backend by CMake so the
- * same source can be linked against each ring and run concurrently under
+/* Prefix for this build's output files. Set by CMake for each build so the
+ * same source can be linked against each build and run concurrently under
  * ctest without the variants overwriting one another's traces.
  *
  * The default build leaves it empty, which keeps the filenames the ones
@@ -46,7 +46,7 @@ static int failures;
         }                        \
     } while (0)
 
-#define RING_BYTES (64 * 1024)
+#define BUFFER_BYTES (64 * 1024)
 #define EVENTS 200000
 
 struct worker_arg {
@@ -66,13 +66,13 @@ static void *worker_fn(void *p)
     return NULL;
 }
 
-/* Snapshot mode under wrap pressure. The ring holds far less than the
+/* Snapshot mode under wrap pressure. The buffer holds far less than the
  * event stream, so the dump must contain a recent window -- and must
  * contain the marker emitted immediately before the dump. */
 static void test_snapshot_window(void)
 {
-    printf("snapshot window (%d events through a %dKiB ring):\n", EVENTS,
-           RING_BYTES / 1024);
+    printf("snapshot window (%d events through a %dKiB buffer):\n", EVENTS,
+           BUFFER_BYTES / 1024);
 
     const char *dir = PF_TRACE_PREFIX "stress_snapshot.d";
     dir_reset(dir);
@@ -81,7 +81,7 @@ static void test_snapshot_window(void)
     pf_config_init(&cfg);
     cfg.path = dir;
     cfg.mode = PF_MODE_SNAPSHOT;
-    cfg.min_ring_bytes = RING_BYTES;
+    cfg.buffer_bytes = BUFFER_BYTES;
     cfg.drain_interval_ms = 5;
 
     struct pf_trace *t = pf_trace_open(&cfg);
@@ -92,7 +92,7 @@ static void test_snapshot_window(void)
     uint64_t track = pf_track_thread(t, 4321, 1, "main");
 
     /* "early" appears only at the very start, so if it survives to the
-     * dump the ring is not actually recycling. */
+     * dump the buffer is not actually recycling. */
     pf_instant_event(t, track, "early_marker");
 
     for (unsigned i = 0; i < EVENTS; i++) {
@@ -115,7 +115,7 @@ static void test_snapshot_window(void)
 
     /* The whole point: the file is a bounded window, not the full stream. */
     CHECK(s.bytes_written > 0, "dump produced output");
-    CHECK(s.bytes_written < (uint64_t)RING_BYTES * 2,
+    CHECK(s.bytes_written < (uint64_t)BUFFER_BYTES * 2,
           "dump is a bounded window, not the whole run: %" PRIu64 " bytes",
           s.bytes_written);
 
@@ -164,7 +164,7 @@ static void test_continuous_gapless(void)
     cfg.path = ".";
     cfg.name = path;
     cfg.mode = PF_MODE_CONTINUOUS;
-    cfg.min_ring_bytes = 1024 * 1024;
+    cfg.buffer_bytes = 1024 * 1024;
     cfg.watermark_pct = 50;
     cfg.drain_interval_ms = 2;
 
@@ -202,11 +202,11 @@ static void test_continuous_gapless(void)
           "every attempted event is either published or counted dropped: "
           "%" PRIu64 " + %" PRIu64 " != %" PRIu64,
           s.events, s.dropped, expected);
-    /* The file must be far larger than the ring: proof it drained
+    /* The file must be far larger than the buffer: proof it drained
      * repeatedly rather than holding a single window. */
-    CHECK(s.bytes_written > cfg.min_ring_bytes,
-          "wrote more than one ringful (%" PRIu64 " bytes vs %zu ring)",
-          s.bytes_written, cfg.min_ring_bytes);
+    CHECK(s.bytes_written > cfg.buffer_bytes,
+          "wrote more than one bufferful (%" PRIu64 " bytes vs %zu buffer)",
+          s.bytes_written, cfg.buffer_bytes);
 
     pf_trace_close(t);
     printf("  ok\n");
@@ -228,8 +228,8 @@ static void test_continuous_paced(void)
     cfg.name = path;
     cfg.mode = PF_MODE_CONTINUOUS;
     /* Generous headroom: under TSan or a loaded CI runner the drain thread
-     * can fall behind for a moment, and a 1 MiB ring then fills and drops. */
-    cfg.min_ring_bytes = 4 * 1024 * 1024;
+     * can fall behind for a moment, and a 1 MiB buffer then fills and drops. */
+    cfg.buffer_bytes = 4 * 1024 * 1024;
     cfg.watermark_pct = 75;
     cfg.drain_interval_ms = 10;
 
@@ -310,7 +310,7 @@ static void test_continuous_paced(void)
 
 /* A name far longer than a record must still reach the file intact.
  *
- * Names are no longer copied into the ring -- the record holds a pointer
+ * Names are no longer copied into the buffer -- the record holds a pointer
  * and the drain thread reads the characters -- so there is no 255-byte
  * field to overflow and nothing to truncate. What is still worth pinning
  * is that a name much larger than the 40-byte record encodes correctly
@@ -328,7 +328,7 @@ static void test_long_names(void)
     pf_config_init(&cfg);
     cfg.path = dir;
     cfg.mode = PF_MODE_SNAPSHOT;
-    cfg.min_ring_bytes = 128 * 1024;
+    cfg.buffer_bytes = 128 * 1024;
 
     struct pf_trace *t = pf_trace_open(&cfg);
     CHECK(t != NULL, "open");

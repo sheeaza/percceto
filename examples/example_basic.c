@@ -60,7 +60,7 @@ static void report(const char *label, struct pf_trace *t)
            (unsigned long long)s.dropped);
 }
 
-/* Snapshot mode: events accumulate in RAM and are overwritten as the ring
+/* Snapshot mode: events accumulate in RAM and are overwritten as the buffer
  * wraps. Nothing reaches disk until the program decides something went
  * wrong, at which point the buffer holds the window leading up to it. */
 static int run_snapshot(void)
@@ -70,7 +70,7 @@ static int run_snapshot(void)
     cfg.path = ".";
     cfg.process_name = "demo_app";
     cfg.mode = PF_MODE_SNAPSHOT;
-    cfg.min_ring_bytes = 256 * 1024;
+    cfg.buffer_bytes = 256 * 1024;
 
     struct pf_trace *t = pf_trace_open(&cfg);
     if (!t) {
@@ -81,7 +81,7 @@ static int run_snapshot(void)
     struct tracks tr = setup_tracks(t);
 
     /* Plenty of work, most of it overwritten -- exactly what this mode is
-     * for. Only the tail end survives in the ring. */
+     * for. Only the tail end survives in the buffer. */
     do_work(t, &tr, 40);
 
     /* Pretend the program noticed a stall here. */
@@ -106,7 +106,7 @@ static int run_snapshot(void)
     return 0;
 }
 
-/* Continuous mode: a background thread drains the ring past the watermark,
+/* Continuous mode: a background thread drains the chunks past the watermark,
  * so the file accumulates everything rather than a window. */
 static int run_continuous(void)
 {
@@ -119,7 +119,7 @@ static int run_continuous(void)
     cfg.name = name;
     cfg.process_name = "demo_app";
     cfg.mode = PF_MODE_CONTINUOUS;
-    cfg.min_ring_bytes = 128 * 1024;
+    cfg.buffer_bytes = 128 * 1024;
     cfg.watermark_pct = 75;
     cfg.drain_interval_ms = 20;
 
@@ -131,7 +131,7 @@ static int run_continuous(void)
 
     struct tracks tr = setup_tracks(t);
 
-    /* Far more events than the ring holds, so this only comes out
+    /* Far more events than the buffer holds, so this only comes out
      * gapless because the drain thread keeps up. */
     do_work(t, &tr, 60);
 
@@ -145,7 +145,7 @@ static int run_continuous(void)
     pf_trace_stats(t, &s);
     report("continuous", t);
     if (s.dropped)
-        printf("  NOTE: %llu events dropped -- ring or interval too small\n",
+        printf("  NOTE: %llu events dropped -- buffer or interval too small\n",
                (unsigned long long)s.dropped);
 
     pf_trace_close(t);

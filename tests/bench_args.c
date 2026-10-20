@@ -90,8 +90,7 @@ static double produce(struct pf_trace *t, uint64_t trk, bool args,
 
 /* Snapshot mode, protobuf: produce, then time the dump, which is where
  * the drain encodes. Returns ns per event for production and for the dump. */
-static void snapshot_section(bool args, const char *label,
-                             size_t min_ring_bytes)
+static void snapshot_section(bool args, const char *label, size_t buffer_bytes)
 {
     const char *dir = "bench_args.d";
     dir_reset(dir);
@@ -101,9 +100,9 @@ static void snapshot_section(bool args, const char *label,
     cfg.mode = PF_MODE_SNAPSHOT;
     cfg.format = PF_FORMAT_PROTOBUF;
     cfg.path = dir;
-    cfg.min_ring_bytes = min_ring_bytes;
+    cfg.buffer_bytes = buffer_bytes;
 
-    /* Open is timed: it is where the ring is warmed. */
+    /* Open is timed: it is where the chunk pool is allocated. */
     uint64_t o0 = real_ns();
     struct pf_trace *t = pf_trace_open(&cfg);
     double open_ms = (double)(real_ns() - o0) / 1e6;
@@ -143,7 +142,7 @@ int main(void)
     printf("clock.real_read %.1f ns/call\n", clock_cost_ns());
 
     snapshot_section(false, "noargs_cold", 256u << 20);
-    /* A ring that stays in cache, so the writes do not go to RAM. */
+    /* A buffer that stays in cache, so the writes do not go to RAM. */
     snapshot_section(false, "noargs_cached", 256u << 10);
 
 #ifdef PF_MAX_ARGS

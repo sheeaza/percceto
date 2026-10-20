@@ -81,14 +81,14 @@ int main(void)
     check(pf_track_counter_g(999999, "depth", PF_UNIT_COUNT) == 0,
           "a non-track parent returns 0");
 
-    /* Each _g sample is one event in the ring. */
+    /* Each _g sample is one event. */
     struct pf_stats before, after;
     pf_trace_stats(t, &before);
     pf_counter_set_int_g(ctr, 7);
     pf_counter_set_double_g(ctr, 2.5);
     pf_trace_stats(t, &after);
     check(after.events == before.events + 2,
-          "both _g samples are published to the ring");
+          "both _g samples are counted as emitted");
 
     pf_trace_close(t);
 

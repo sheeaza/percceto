@@ -11,7 +11,7 @@ wire format with no dependencies; the verify_trace tests in tools/CMakeLists.txt
 this one only when the module is importable.
 
 Checks are relative to what the file contains rather than hard-coded
-counts, because a ring-buffered trace's size depends on the mode: a
+counts, because a buffer-buffered trace's size depends on the mode: a
 snapshot holds a bounded recent window, while a continuous trace holds
 everything. Pass --expect-complete for a trace that should balance
 exactly (continuous mode, read from the start).
@@ -103,7 +103,7 @@ def main():
     print(f"interned event names (current generation): {interned_names}")
 
     # Every event must resolve against data present in this same file --
-    # the property that actually breaks if a ring overwrites a descriptor
+    # the property that actually breaks if a buffer overwrites a descriptor
     # or an InternedData packet before it is written out.
     assert unknown_track == 0, f"{unknown_track} events referenced an undeclared track"
     assert unresolved_name == 0, f"{unresolved_name} events used an unresolvable name_iid"

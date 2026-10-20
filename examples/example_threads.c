@@ -65,7 +65,7 @@ static int run(void)
     cfg.name = name;
     cfg.process_name = "demo_threads";
     cfg.mode = PF_MODE_CONTINUOUS;
-    cfg.min_ring_bytes = 256 * 1024;
+    cfg.buffer_bytes = 256 * 1024;
     cfg.watermark_pct = 75;
     cfg.drain_interval_ms = 20;
 
@@ -120,7 +120,7 @@ static int run(void)
            (unsigned long long)s.events, (unsigned long long)s.bytes_written,
            (unsigned long long)s.dropped);
     if (s.dropped)
-        printf("  NOTE: %llu events dropped -- ring or interval too small\n",
+        printf("  NOTE: %llu events dropped -- buffer or interval too small\n",
                (unsigned long long)s.dropped);
 
     pf_trace_close(t);

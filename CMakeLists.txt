@@ -58,17 +58,13 @@ enable_testing()
 # RINGBUF_BUILD_TSAN; off makes configure and build faster.
 option(PFTRACE_BUILD_SANITIZED "Build ASan/UBSan and TSan variants" ON)
 
-# Ring backends. Every test, example and tool that links the library is built
-# once per backend, against libpftrace_<backend>.a, and each backend runs in its
-# own directory under the build root, so the trace files it writes do not
-# collide with the other backend's.
-set(PFTRACE_BACKENDS mpsc zcopy)
-foreach(backend ${PFTRACE_BACKENDS})
-  file(MAKE_DIRECTORY ${CMAKE_BINARY_DIR}/${backend})
-endforeach()
+# Benchmarks. Off by default: CI and ordinary builds skip them.
+option(PFTRACE_BUILD_BENCH "Build the benchmarks" OFF)
 
-# Ring-backend benchmarks. Off by default: CI and ordinary builds skip them.
-option(PFTRACE_BUILD_BENCH "Build the ring-backend benchmarks" OFF)
+# Tests and examples run here, so the trace files they write stay out of the
+# build tree. The dump_trace and verify_trace tests read them from here too.
+set(PFTRACE_RUN_DIR ${CMAKE_BINARY_DIR}/run)
+file(MAKE_DIRECTORY ${PFTRACE_RUN_DIR})
 
 # Each directory owns the targets built from its own sources. Build the
 # library first: everything downstream links it.

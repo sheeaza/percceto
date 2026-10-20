@@ -90,7 +90,7 @@ static void check_mode(const char *label, enum pf_mode mode, bool dump)
     if (mode == PF_MODE_CONTINUOUS)
         cfg.name = "trace.pftrace";
     cfg.mode = mode;
-    cfg.min_ring_bytes = 512 * 1024;
+    cfg.buffer_bytes = 512 * 1024;
     cfg.watermark_pct = 50;
     cfg.drain_interval_ms = 2;
 
@@ -118,7 +118,7 @@ static void check_mode(const char *label, enum pf_mode mode, bool dump)
 
     atomic_store(&armed, true);
 
-    /* Enough events to wrap the ring several times over, so continuous
+    /* Enough events to wrap the buffer several times over, so continuous
      * mode drains repeatedly and snapshot mode trims repeatedly, all
      * while armed. */
     const unsigned n = 200000;

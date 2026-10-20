@@ -4,7 +4,7 @@
  * tools/verify_trace.py is the stronger check -- it parses with Google's
  * own generated code from the real Perfetto schema -- but it needs the
  * perfetto Python package, which is not installable in every environment.
- * This covers the properties that actually break when a ring buffer is
+ * This covers the properties that actually break when a buffer is
  * involved: truncated or torn packets, events referring to tracks whose
  * descriptors were overwritten, unresolvable interning iids, and
  * out-of-order timestamps. */
@@ -430,15 +430,15 @@ int main(int argc, char **argv)
     printf("slices still open at end of trace: %" PRIu64 "\n", still_open);
 
     /* Slice ends with no begin, and timestamps that step backwards, are
-     * both expected in a ring-buffered trace and are reported rather than
+     * both expected in a buffered trace and are reported rather than
      * failed:
      *
-     *   - A window starts wherever the ring had recycled to, so the first
+     *   - A window starts wherever the buffer had recycled to, so the first
      *     events on a track can be ends whose begins are long gone. Only
      *     a continuous trace read from its start should balance exactly.
      *
-     *   - Events are timestamped before claiming ring space, so two
-     *     threads can land in the ring in the opposite order to their
+     *   - Events are timestamped before writing it to the buffer, so two
+     *     threads can land in the buffer in the opposite order to their
      *     timestamps. Perfetto sorts by timestamp, so this is harmless;
      *     what would not be is a timestamp that is wildly wrong, which
      *     shows up as a regression far larger than a scheduling window. */

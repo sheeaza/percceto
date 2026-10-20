@@ -33,13 +33,13 @@ static uint64_t now_ns(void)
 
 int main(void)
 {
-    /* Producer cost with no draining at all: snapshot mode, ring big
+    /* Producer cost with no draining at all: snapshot mode, buffer big
      * enough that the trim thread stays idle. This is the pure
      * reserve+fill+submit path.
      *
      * Sized so the whole run fits without wrapping: N events of
      * PF_REC_BYTES each, times the number of measured loops, with room to
-     * spare. A ring that wraps mid-run would charge the loop for
+     * spare. A buffer that wraps mid-run would charge the loop for
      * eviction work and report it as per-event cost -- which is
      * exactly what made an earlier version of this benchmark appear to
      * show named events costing twice what they do. */
@@ -50,7 +50,7 @@ int main(void)
     pf_config_init(&cfg);
     cfg.path = dir;
     cfg.mode = PF_MODE_SNAPSHOT;
-    cfg.min_ring_bytes = 512 * 1024 * 1024;
+    cfg.buffer_bytes = 512 * 1024 * 1024;
 
     struct pf_trace *t = pf_trace_open(&cfg);
     if (!t) {
@@ -87,13 +87,13 @@ int main(void)
 
     pf_trace_close(t);
 
-    /* Drain cost: fill a ring without draining, then time one dump.
-     * Snapshot mode trims, so use a ring large enough to hold the lot. */
+    /* Drain cost: fill a buffer without draining, then time one dump.
+     * Snapshot mode trims, so use a buffer large enough to hold the lot. */
     dir_reset(dir);
     pf_config_init(&cfg);
     cfg.path = dir;
     cfg.mode = PF_MODE_SNAPSHOT;
-    cfg.min_ring_bytes = 64 * 1024 * 1024;
+    cfg.buffer_bytes = 64 * 1024 * 1024;
     cfg.drain_interval_ms = 60000; /* keep the trim thread out of the way */
 
     t = pf_trace_open(&cfg);
