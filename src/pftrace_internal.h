@@ -282,11 +282,6 @@ struct pf_trace {
 
 /* --- Chunk pool and writers, defined in pf_chunk.c ---------------------- */
 
-/* Set on a thread while it runs pf_trace_dump(). Its own emits are dropped
- * and counted: a dump holds the pool lock, so an emit that needed a chunk
- * would wait on itself. */
-extern __thread bool pf_tls_dumping;
-
 /* Allocates the pool and writer table. The pool is the trace's only sizeable
  * allocation. Returns 0, or -1 with errno set. */
 int pf_pool_init(struct pf_trace *t);

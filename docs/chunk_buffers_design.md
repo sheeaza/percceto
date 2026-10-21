@@ -28,7 +28,6 @@ sorts by timestamp on import.
 
     emit:
       ts = now()
-      if this thread is dumping: drop, count, return
       w = writer for this trace (TLS cache; bound on first use)
       if w->used == chunk_slots: rotate (slow path, once per chunk)
       r = &w->cur->recs[w->used++]; fill the record
@@ -59,8 +58,7 @@ Rotate takes the pool lock:
   lock stays held for the whole dump, so a producer that needs a chunk waits.
 
 The dumping thread first commits its own partial chunk, so a dump includes its
-latest events. The dumping thread is also flagged, and its own emits during the
-dump are dropped and counted, so it cannot wait on the lock it holds.
+latest events.
 
 ## Threads
 

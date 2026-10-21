@@ -11,7 +11,6 @@
 
 #include "pftrace_internal.h"
 
-__thread bool pf_tls_dumping;
 __thread struct pf_trace *pf_tls_trace;
 __thread uint64_t pf_tls_gen;
 __thread struct pf_writer *pf_tls_writer;

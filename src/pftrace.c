@@ -408,12 +408,6 @@ static void emit_event(struct pf_trace *t, uint32_t type, uint64_t track_uuid,
      * not timestamp order across threads. Perfetto sorts by timestamp. */
     uint64_t ts = now_ns(t->cfg.clock_id);
 
-    /* The dumping thread would wait on the pool lock it holds. */
-    if (pf_tls_dumping) {
-        atomic_fetch_add_explicit(&t->dropped, 1, memory_order_relaxed);
-        return;
-    }
-
     struct pf_writer *w = pf_writer_for(t);
     if (!w) {
         atomic_fetch_add_explicit(&t->dropped, 1, memory_order_relaxed);
@@ -941,11 +935,9 @@ static int dump_public(struct pf_trace *t, const char *name, char *file,
         errno = EINVAL;
         return -1;
     }
-    pf_tls_dumping = true;
     pthread_mutex_lock(&t->out_lock);
     int rc = dump_locked(t, name, file, size, sync);
     pthread_mutex_unlock(&t->out_lock);
-    pf_tls_dumping = false;
     return rc;
 }
 
