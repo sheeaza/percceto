@@ -105,16 +105,18 @@ divides the chunk offset by `chunk_bytes` to find its bit, and that division is
 the likely cause; not profiled. The free list's pop is already O(1), so the
 bitmap gains nothing in speed. Reverted.
 
-## 7. Let a thread bind to more than one trace (low priority)
+## ~~7. Let a thread bind to more than one trace (low priority)~~ (done)
 
-Writers are done: `pf_tls` has one slot per open trace, indexed by the trace's
-index, so a thread holds a writer in every trace it emits to. Binding a second
-trace no longer releases the first. The cost is a cap of `PF_MAX_TRACES` (8)
-open traces. The simple API keeps the thread's track uuid in one TLS slot
-(`tl_slot` in `pftrace.c`), so the uuid is still for one trace only.
+~~Done. `pf_tls` has one slot per open trace, indexed by the trace's index, so a
+thread holds a writer in every trace it emits to. Binding a second trace no
+longer releases the first.~~
 
-Option: give `tl_slot` the same per-trace indexing, so a thread has a uuid in
-each trace it uses. Measure with `bench_chunk` before and after.
+~~Trade-off: the cap is `PF_MAX_TRACES` (8) open traces, and opening a ninth fails
+with `ENOSPC`. The lookup costs about the same as the single slot at 8 threads
+(within noise). At 1 thread it may cost 0.5–1 ns per event, which is about the
+size of the noise, so this is not settled. The simple API's thread track uuid is
+still one TLS slot (`tl_slot` in `pftrace.c`), so the uuid is for one trace
+only; that is left as it is.~~
 
 ## Notes
 
