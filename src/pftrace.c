@@ -614,23 +614,14 @@ uint64_t pf_track_counter(struct pf_trace *t, uint64_t parent_uuid, const char *
  * pf_trace_close_g(). pf_trace_open() and pf_trace_close() never touch it.
  * It is expected to be created once by the main thread
  * and live for the whole process, so it is never swapped while threads
- * use it. Each thread caches the uuid of its own track in a single TLS
- * slot. The hot path is one pointer load, one TLS read and a flag check.
- * Syscalls (gettid, getpid) run once per thread, on first use.
+ * use it. Each thread caches the uuid of its own track in its pf_tls slot for
+ * that trace. The hot path is one pointer load, one TLS read and a flag check.
+ * Syscalls (gettid, getpid) run once per thread per trace, on first use.
  *
  * Renames are kept in the slot, so a name set before registration applies
  * at registration, and one set after re-emits the descriptor. */
 
 static struct pf_trace *g_default_trace;
-
-struct thread_slot {
-    bool registered;
-    uint64_t uuid;
-    bool has_name;
-    char name[PF_TRACK_NAME_MAX];
-};
-
-static __thread struct thread_slot tl_slot;
 
 static struct pf_trace *default_trace(void)
 {
@@ -638,13 +629,17 @@ static struct pf_trace *default_trace(void)
 }
 
 /* Cache miss: register this thread's track on @t. Name precedence: the
- * name set by pf_thread_name(), then the OS thread name, then "thread-<tid>". */
+ * name set by pf_thread_name(), then the OS thread name, then "thread-<tid>".
+ * Binds the thread to @t first, so the track lives in the slot that holds
+ * the thread's writer. */
 static uint64_t thread_track_register(struct pf_trace *t)
 {
     char os_name[PF_TRACK_NAME_MAX];
     char fallback[32];
-    const char *name = tl_slot.has_name ? tl_slot.name : NULL;
+    const char *name = pf_tls.has_name ? pf_tls.name : NULL;
     int32_t tid = (int32_t)gettid();
+
+    pf_writer_for(t);
 
     if (!name && pthread_getname_np(pthread_self(), os_name, sizeof(os_name)) == 0 && os_name[0])
         name = os_name;
@@ -653,16 +648,17 @@ static uint64_t thread_track_register(struct pf_trace *t)
         name = fallback;
     }
 
-    tl_slot.uuid = track_add(t, TRACK_THREAD, t->process_uuid, (int32_t)getpid(), tid, name,
-                             PF_UNIT_UNSPECIFIED);
-    tl_slot.registered = true;
-    return tl_slot.uuid;
+    struct pf_tls_slot *s = &pf_tls.slots[t->index];
+    s->track_uuid = track_add(t, TRACK_THREAD, t->process_uuid, (int32_t)getpid(), tid, name,
+                              PF_UNIT_UNSPECIFIED);
+    return s->track_uuid;
 }
 
 static uint64_t thread_track(struct pf_trace *t)
 {
-    if (tl_slot.registered)
-        return tl_slot.uuid;
+    struct pf_tls_slot *s = &pf_tls.slots[t->index];
+    if (s->trace == t && s->track_uuid)
+        return s->track_uuid;
     return thread_track_register(t);
 }
 
@@ -708,13 +704,16 @@ void pf_thread_name(const char *name)
     if (!name)
         return;
     size_t n = strnlen(name, PF_TRACK_NAME_MAX - 1);
-    memcpy(tl_slot.name, name, n);
-    tl_slot.name[n] = '\0';
-    tl_slot.has_name = true;
+    memcpy(pf_tls.name, name, n);
+    pf_tls.name[n] = '\0';
+    pf_tls.has_name = true;
 
     struct pf_trace *t = default_trace();
-    if (t && tl_slot.registered)
-        track_rename(t, tl_slot.uuid, tl_slot.name);
+    if (!t)
+        return;
+    struct pf_tls_slot *s = &pf_tls.slots[t->index];
+    if (s->trace == t && s->track_uuid)
+        track_rename(t, s->track_uuid, pf_tls.name);
 }
 
 uint64_t pf_track_thread_uuid_g(void)

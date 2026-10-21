@@ -57,6 +57,7 @@ static void unbind(struct pf_trace *t)
     struct pf_writer *w = s->writer;
     s->trace = NULL;
     s->writer = NULL;
+    s->track_uuid = 0;
 
     if (w) {
         struct pf_chunk *spare = NULL;

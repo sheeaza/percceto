@@ -68,6 +68,21 @@ int main(void)
 
     pf_trace_close_g();
 
+    /* A second default trace registers this thread's track again. Its track
+     * table must hold the track; before, the first trace's uuid was reused and
+     * nothing was registered in the second. */
+    pf_config_init(&cfg);
+    cfg.path = ".";
+    if (pf_trace_open_g(&cfg) != 0) {
+        check(0, "reopen default trace");
+    } else {
+        t = pf_trace_default_g();
+        check(pf_track_thread_uuid_g() != 0, "thread track id after reopen");
+        int r = find_track(t, TRACK_THREAD, (int32_t)gettid());
+        check(r >= 0, "reopened default trace registers this thread's track");
+        pf_trace_close_g();
+    }
+
     /* A name set in the config is the process track's name. */
     pf_config_init(&cfg);
     cfg.path = ".";

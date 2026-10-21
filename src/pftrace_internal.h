@@ -344,10 +344,18 @@ void pf_drain_wake(struct pf_trace *t);
 struct pf_tls_slot {
     struct pf_trace *trace;
     struct pf_writer *writer;
+    /* The thread's track in @trace, for the simple API. 0 until registered.
+     * Cleared with the slot, so a rebind registers again. */
+    uint64_t track_uuid;
 };
 
+/* Per-thread state that is not tied to one trace. */
 struct pf_thread_state {
     struct pf_tls_slot slots[PF_MAX_TRACES];
+    /* Name set by pf_thread_name, applied when the thread's track is
+     * registered in a trace. */
+    bool has_name;
+    char name[PF_TRACK_NAME_MAX];
 };
 
 extern __thread struct pf_thread_state pf_tls;
