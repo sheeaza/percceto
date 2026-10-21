@@ -2,6 +2,7 @@
  *
  * - Open refuses a buffer that cannot hold two chunks, and a zero-size chunk.
  * - A thread past max_threads drops each event it emits, and counts it.
+ * - A thread that exits gives its writer slot back, so a later thread can bind it.
  * - A single producer in continuous mode loses nothing except what the
  *   counters report, and every emitted event is accounted for: committed,
  *   dropped, or still in the producer's chunk at the moment of the read.
@@ -110,6 +111,38 @@ static void test_writer_limit(void)
     pf_trace_stats(t, &s);
     CHECK(s.dropped == 10, "second thread should drop 10 events, dropped %llu",
           (unsigned long long)s.dropped);
+    pf_trace_close(t);
+}
+
+/* Threads come and go, one at a time, against two writer slots. Each exiting
+ * thread gives its slot back, so six threads all bind and none drops an event.
+ * Stats still count every event, including those from a reused slot. */
+static void test_slot_reuse(void)
+{
+    struct pf_config cfg;
+    setup(&cfg, PF_MODE_SNAPSHOT, ".");
+    cfg.buffer_bytes = 32 * CHUNK_BYTES(4);
+    cfg.max_threads = 2;
+
+    struct pf_trace *t = pf_trace_open(&cfg);
+    CHECK(t != NULL, "open failed");
+    if (!t) {
+        failures++;
+        return;
+    }
+
+    for (int i = 0; i < 6; i++) {
+        pthread_t th;
+        pthread_create(&th, NULL, emit_some, t);
+        pthread_join(th, NULL);
+    }
+
+    struct pf_stats s;
+    pf_trace_stats(t, &s);
+    CHECK(s.dropped == 0, "reused slots should drop nothing, dropped %llu",
+          (unsigned long long)s.dropped);
+    CHECK(s.events == 60, "stats should count all 60 events, counted %llu",
+          (unsigned long long)s.events);
     pf_trace_close(t);
 }
 
@@ -312,6 +345,7 @@ int main(void)
 {
     test_open_limits();
     test_writer_limit();
+    test_slot_reuse();
     test_accounting();
     test_snapshot_wrap_is_not_a_drop();
     test_snapshot_live_tail();

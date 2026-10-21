@@ -72,10 +72,10 @@ enum pf_format {
  * @chunk_slots: Records per chunk. A thread fills one chunk at a time and
  *      hands it over when it is full, so this sets how often a thread takes
  *      shared state. 0 is rejected at open. pf_config_init() selects 256.
- * @max_threads: Threads that may emit into this trace over its life. A
- *      thread past the limit drops its events and counts them. Writer slots are
- *      not reclaimed when a thread exits. 0 is rejected at open. pf_config_init()
- *      selects 256.
+ * @max_threads: Threads that may be bound to this trace at once. A thread
+ *      past the limit drops its events and counts them. A thread's slot is
+ *      freed when it exits, so later threads can bind it. 0 is rejected at
+ *      open. pf_config_init() selects 256.
  * @mode: Snapshot or continuous; see &enum pf_mode.
  * @format: Protobuf or raw output; see &enum pf_format. Fixed for the
  *      life of the trace, so a file never mixes the two.

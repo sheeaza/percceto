@@ -75,9 +75,9 @@ that count are final until the chunk is recycled, which needs the pool lock.
   closing the trace still hands its records over. A thread binds one trace at a
   time: binding another unbinds the first.
 - A thread past `max_threads` drops its events and counts them. It still holds a
-  reference, so the trace stays open until it exits. Writer slots are not
-  reclaimed when a thread exits, so a trace binds at most `max_threads` threads
-  over its life.
+  reference, so the trace stays open until it exits. A thread's slot is freed
+  when it exits (after its partial chunk is committed), so a later thread can
+  bind it. `max_threads` limits threads bound at once, not over the trace's life.
 
 ## Close and lifetime
 

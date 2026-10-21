@@ -20,7 +20,8 @@ static void commit_locked(struct pf_trace *t, struct pf_writer *w);
 
 /* Gives back the calling thread's binding. The partial chunk is committed, so
  * its records reach the drain without waiting for the trace to finish. The
- * reference is dropped last, since it may be the one that finishes the trace.
+ * writer slot is then free for another thread to bind, and the reference is
+ * dropped last, since it may be the one that finishes the trace.
  * Runs at thread exit, on rebind, and from pf_trace_close on the closing thread. */
 void pf_unbind_thread(void)
 {
@@ -32,10 +33,23 @@ void pf_unbind_thread(void)
         return;
 
     if (w) {
+        struct pf_chunk *spare = NULL;
+
         pthread_mutex_lock(&t->pool_lock);
         if (w->cur && w->used > 0)
             commit_locked(t, w);
+        else {
+            spare = w->cur;
+            w->cur = NULL;
+        }
         pthread_mutex_unlock(&t->pool_lock);
+        pf_chunks_release(t, spare);
+
+        /* Bind resets the producer's fields, so the next owner starts clean.
+         * The event count is kept, so stats still count this slot's events. */
+        pthread_mutex_lock(&t->reg_lock);
+        w->bound = false;
+        pthread_mutex_unlock(&t->reg_lock);
     }
     pf_trace_unref(t);
 }
