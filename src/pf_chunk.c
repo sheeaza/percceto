@@ -311,13 +311,3 @@ void pf_chunks_release(struct pf_trace *t, struct pf_chunk *head)
     }
     pthread_mutex_unlock(&t->pool_lock);
 }
-
-void pf_pool_lock(struct pf_trace *t)
-{
-    pthread_mutex_lock(&t->pool_lock);
-}
-
-void pf_pool_unlock(struct pf_trace *t)
-{
-    pthread_mutex_unlock(&t->pool_lock);
-}

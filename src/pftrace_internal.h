@@ -311,9 +311,6 @@ void pf_chunks_release(struct pf_trace *t, struct pf_chunk *head);
  * pool_lock. */
 void pf_writer_flush_own_locked(struct pf_trace *t);
 
-void pf_pool_lock(struct pf_trace *t);
-void pf_pool_unlock(struct pf_trace *t);
-
 /* Open-trace registry. A trace is added at open and removed before close frees
  * anything. */
 void pf_registry_add(struct pf_trace *t);
