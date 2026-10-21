@@ -33,8 +33,7 @@ struct ringbuf;
  * Return: the new buffer, or NULL on allocation failure or invalid
  * arguments.
  */
-struct ringbuf *ringbuf_create(size_t slot_size, size_t min_capacity,
-                               bool overwrite_on_full);
+struct ringbuf *ringbuf_create(size_t slot_size, size_t min_capacity, bool overwrite_on_full);
 
 /**
  * ringbuf_destroy - free a ring buffer

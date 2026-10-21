@@ -41,8 +41,8 @@ static uint64_t hash_ptr(const char *p)
  * inserted); *is_new_out tells the caller whether this is a fresh
  * entry that still needs an InternedData record emitted. Returns false
  * only when the table is full and `key` wasn't already present. */
-bool intern_lookup_or_insert(struct intern_table *tab, const char *key,
-                             uint64_t *iid_out, bool *is_new_out)
+bool intern_lookup_or_insert(struct intern_table *tab, const char *key, uint64_t *iid_out,
+                             bool *is_new_out)
 {
     size_t idx = (size_t)(hash_ptr(key) % PF_INTERN_CAP);
     for (size_t probe = 0; probe < PF_INTERN_CAP; probe++) {
@@ -79,8 +79,7 @@ static void pb_buf_warm(struct pb_buf *b, size_t n)
 {
     static const uint8_t zeros[1024] = { 0 };
     while (b->len < n)
-        pb_put_bytes(b, zeros,
-                     sizeof(zeros) < n - b->len ? sizeof(zeros) : n - b->len);
+        pb_put_bytes(b, zeros, sizeof(zeros) < n - b->len ? sizeof(zeros) : n - b->len);
     pb_buf_reset(b);
 }
 
@@ -152,8 +151,7 @@ int out_flush(struct pf_trace *t)
         return 0;
     if (write_all(t->fd, t->out.data, t->out.len) != 0)
         return -1;
-    atomic_fetch_add_explicit(&t->bytes_written, t->out.len,
-                              memory_order_relaxed);
+    atomic_fetch_add_explicit(&t->bytes_written, t->out.len, memory_order_relaxed);
     pb_buf_reset(&t->out);
     return 0;
 }
@@ -201,8 +199,7 @@ static bool leaf_name_ok(const char *name)
  * each dump and takes no name at open. */
 static bool open_name_ok(const struct pf_config *cfg)
 {
-    return cfg->mode == PF_MODE_CONTINUOUS ? leaf_name_ok(cfg->name) :
-                                             cfg->name == NULL;
+    return cfg->mode == PF_MODE_CONTINUOUS ? leaf_name_ok(cfg->name) : cfg->name == NULL;
 }
 
 static bool dump_name_ok(const struct pf_trace *t, const char *name)
@@ -235,8 +232,7 @@ static void name_out(char *file, size_t size, const char *leaf)
  * sequence number is per trace and separates dumps that land in the same
  * millisecond. Takes the next sequence number, so the caller holds out_lock.
  * Uses no allocation. */
-static int snapshot_leaf(struct pf_trace *t, const char *name, char *leaf,
-                         size_t size)
+static int snapshot_leaf(struct pf_trace *t, const char *name, char *leaf, size_t size)
 {
     struct timespec ts;
     struct tm tm;
@@ -249,8 +245,8 @@ static int snapshot_leaf(struct pf_trace *t, const char *name, char *leaf,
     }
     strftime(stamp, sizeof(stamp), "%Y%m%dT%H%M%S", &tm);
 
-    int len = snprintf(leaf, size, "%s-%s.%03ldZ-%04u.pftrace", name, stamp,
-                       ts.tv_nsec / 1000000L, (unsigned)t->dump_seq++);
+    int len = snprintf(leaf, size, "%s-%s.%03ldZ-%04u.pftrace", name, stamp, ts.tv_nsec / 1000000L,
+                       (unsigned)t->dump_seq++);
     if (len < 0 || (size_t)len >= size) {
         errno = ENAMETOOLONG;
         return -1;
@@ -262,8 +258,8 @@ static int snapshot_leaf(struct pf_trace *t, const char *name, char *leaf,
  * replacing any file already there. The file is self-contained: interning
  * restarts and tracks are re-declared, and a raw file gets its own header.
  * Caller holds out_lock. */
-static int snapshot_write_locked(struct pf_trace *t, const char *name,
-                                 char *file, size_t size, bool sync)
+static int snapshot_write_locked(struct pf_trace *t, const char *name, char *file, size_t size,
+                                 bool sync)
 {
     char leaf[512];
     if (snapshot_leaf(t, name, leaf, sizeof(leaf)) != 0)
@@ -271,8 +267,7 @@ static int snapshot_write_locked(struct pf_trace *t, const char *name,
     if (name_fits(leaf, file, size) != 0)
         return -1;
 
-    int fd =
-        openat(t->dirfd, leaf, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+    int fd = openat(t->dirfd, leaf, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
     if (fd < 0)
         return -1;
 
@@ -300,8 +295,7 @@ static int snapshot_write_locked(struct pf_trace *t, const char *name,
 
 /* Caller holds out_lock. @sync forces the data to disk before returning.
  * Continuous mode reports the name of its open file. */
-static int dump_locked(struct pf_trace *t, const char *name, char *file,
-                       size_t size, bool sync)
+static int dump_locked(struct pf_trace *t, const char *name, char *file, size_t size, bool sync)
 {
     if (t->cfg.mode == PF_MODE_SNAPSHOT)
         return snapshot_write_locked(t, name, file, size, sync);
@@ -339,10 +333,8 @@ static bool drain_thread_wait(struct pf_trace *t)
     }
 
     pthread_mutex_lock(&t->drain_lock);
-    while (!t->stop &&
-           atomic_load_explicit(&t->wake_pending, memory_order_acquire) == 0) {
-        if (pthread_cond_timedwait(&t->drain_cv, &t->drain_lock, &deadline) ==
-            ETIMEDOUT)
+    while (!t->stop && atomic_load_explicit(&t->wake_pending, memory_order_acquire) == 0) {
+        if (pthread_cond_timedwait(&t->drain_cv, &t->drain_lock, &deadline) == ETIMEDOUT)
             break;
     }
     bool stopping = t->stop;
@@ -380,8 +372,7 @@ void pf_drain_wake(struct pf_trace *t)
     if (t->cfg.mode != PF_MODE_CONTINUOUS)
         return;
 
-    if (atomic_exchange_explicit(&t->wake_pending, 1, memory_order_acq_rel) !=
-        0)
+    if (atomic_exchange_explicit(&t->wake_pending, 1, memory_order_acq_rel) != 0)
         return; /* a wake is already pending; no second futex */
 
     pthread_mutex_lock(&t->drain_lock);
@@ -397,10 +388,9 @@ void pf_drain_wake(struct pf_trace *t)
  * Four stores and no string work at all: the name is stored by address,
  * and the drain thread is what eventually reads the characters. */
 
-static void emit_event(struct pf_trace *t, uint32_t type, uint64_t track_uuid,
-                       const char *name, bool has_value, uint64_t raw_value,
-                       bool value_is_double, unsigned nargs, uint64_t a0,
-                       bool a0_dbl, uint64_t a1, bool a1_dbl)
+static void emit_event(struct pf_trace *t, uint32_t type, uint64_t track_uuid, const char *name,
+                       bool has_value, uint64_t raw_value, bool value_is_double, unsigned nargs,
+                       uint64_t a0, bool a0_dbl, uint64_t a1, bool a1_dbl)
 {
     /* Timestamp before anything else, so the cost of finding a chunk lands
      * between this event and the next rather than inside this one. Chunks
@@ -425,71 +415,57 @@ static void emit_event(struct pf_trace *t, uint32_t type, uint64_t track_uuid,
     else
         r->u.name = name;
     r->type = type;
-    r->flags = (has_value ? RF_HAS_VALUE : 0u) |
-               (value_is_double ? RF_VALUE_IS_DOUBLE : 0u) |
-               (nargs << RF_NARGS_SHIFT) |
-               (nargs > 0 && a0_dbl ? RF_ARG0_IS_DOUBLE : 0u) |
+    r->flags = (has_value ? RF_HAS_VALUE : 0u) | (value_is_double ? RF_VALUE_IS_DOUBLE : 0u) |
+               (nargs << RF_NARGS_SHIFT) | (nargs > 0 && a0_dbl ? RF_ARG0_IS_DOUBLE : 0u) |
                (nargs > 1 && a1_dbl ? RF_ARG1_IS_DOUBLE : 0u);
     /* Always written, so an event without args carries zeros, not whatever
      * the record held before. */
     r->arg[0] = nargs > 0 ? a0 : 0;
     r->arg[1] = nargs > 1 ? a1 : 0;
 
-    atomic_store_explicit(
-        &w->events, atomic_load_explicit(&w->events, memory_order_relaxed) + 1,
-        memory_order_relaxed);
+    atomic_store_explicit(&w->events, atomic_load_explicit(&w->events, memory_order_relaxed) + 1,
+                          memory_order_relaxed);
 }
 
-void pf_slice_begin_impl(struct pf_trace *t, uint64_t track_uuid,
-                         const char *name)
+void pf_slice_begin_impl(struct pf_trace *t, uint64_t track_uuid, const char *name)
 {
-    emit_event(t, TYPE_SLICE_BEGIN, track_uuid, name, false, 0, false, 0, 0,
-               false, 0, false);
+    emit_event(t, TYPE_SLICE_BEGIN, track_uuid, name, false, 0, false, 0, 0, false, 0, false);
 }
 
-void pf_instant_event_impl(struct pf_trace *t, uint64_t track_uuid,
-                           const char *name)
+void pf_instant_event_impl(struct pf_trace *t, uint64_t track_uuid, const char *name)
 {
-    emit_event(t, TYPE_INSTANT, track_uuid, name, false, 0, false, 0, 0, false,
-               0, false);
+    emit_event(t, TYPE_INSTANT, track_uuid, name, false, 0, false, 0, 0, false, 0, false);
 }
 
 void pf_slice_end(struct pf_trace *t, uint64_t track_uuid)
 {
-    emit_event(t, TYPE_SLICE_END, track_uuid, NULL, false, 0, false, 0, 0,
-               false, 0, false);
+    emit_event(t, TYPE_SLICE_END, track_uuid, NULL, false, 0, false, 0, 0, false, 0, false);
 }
 
-void pf_slice_begin_args_impl(struct pf_trace *t, uint64_t track_uuid,
-                              const char *name, unsigned nargs, uint64_t a0,
-                              bool a0_dbl, uint64_t a1, bool a1_dbl)
+void pf_slice_begin_args_impl(struct pf_trace *t, uint64_t track_uuid, const char *name,
+                              unsigned nargs, uint64_t a0, bool a0_dbl, uint64_t a1, bool a1_dbl)
 {
-    emit_event(t, TYPE_SLICE_BEGIN, track_uuid, name, false, 0, false, nargs,
-               a0, a0_dbl, a1, a1_dbl);
+    emit_event(t, TYPE_SLICE_BEGIN, track_uuid, name, false, 0, false, nargs, a0, a0_dbl, a1,
+               a1_dbl);
 }
 
-void pf_instant_event_args_impl(struct pf_trace *t, uint64_t track_uuid,
-                                const char *name, unsigned nargs, uint64_t a0,
-                                bool a0_dbl, uint64_t a1, bool a1_dbl)
+void pf_instant_event_args_impl(struct pf_trace *t, uint64_t track_uuid, const char *name,
+                                unsigned nargs, uint64_t a0, bool a0_dbl, uint64_t a1, bool a1_dbl)
 {
-    emit_event(t, TYPE_INSTANT, track_uuid, name, false, 0, false, nargs, a0,
-               a0_dbl, a1, a1_dbl);
+    emit_event(t, TYPE_INSTANT, track_uuid, name, false, 0, false, nargs, a0, a0_dbl, a1, a1_dbl);
 }
 
-void pf_counter_set_int(struct pf_trace *t, uint64_t counter_track_uuid,
-                        int64_t value)
+void pf_counter_set_int(struct pf_trace *t, uint64_t counter_track_uuid, int64_t value)
 {
-    emit_event(t, TYPE_COUNTER, counter_track_uuid, NULL, true, (uint64_t)value,
-               false, 0, 0, false, 0, false);
+    emit_event(t, TYPE_COUNTER, counter_track_uuid, NULL, true, (uint64_t)value, false, 0, 0, false,
+               0, false);
 }
 
-void pf_counter_set_double(struct pf_trace *t, uint64_t counter_track_uuid,
-                           double value)
+void pf_counter_set_double(struct pf_trace *t, uint64_t counter_track_uuid, double value)
 {
     uint64_t bits;
     memcpy(&bits, &value, 8);
-    emit_event(t, TYPE_COUNTER, counter_track_uuid, NULL, true, bits, true, 0,
-               0, false, 0, false);
+    emit_event(t, TYPE_COUNTER, counter_track_uuid, NULL, true, bits, true, 0, 0, false, 0, false);
 }
 
 /* --- Tracks ------------------------------------------------------------ */
@@ -503,9 +479,8 @@ static void set_track_name(struct track_def *td, const char *name)
 }
 
 /* Appends a track. Caller holds track_lock. */
-static uint64_t track_add_locked(struct pf_trace *t, enum track_kind kind,
-                                 uint64_t parent_uuid, int32_t pid, int32_t tid,
-                                 const char *name, enum pf_unit unit)
+static uint64_t track_add_locked(struct pf_trace *t, enum track_kind kind, uint64_t parent_uuid,
+                                 int32_t pid, int32_t tid, const char *name, enum pf_unit unit)
 {
     if (t->track_count >= t->cfg.max_tracks)
         return 0;
@@ -522,13 +497,11 @@ static uint64_t track_add_locked(struct pf_trace *t, enum track_kind kind,
     return td->uuid;
 }
 
-static uint64_t track_add(struct pf_trace *t, enum track_kind kind,
-                          uint64_t parent_uuid, int32_t pid, int32_t tid,
-                          const char *name, enum pf_unit unit)
+static uint64_t track_add(struct pf_trace *t, enum track_kind kind, uint64_t parent_uuid,
+                          int32_t pid, int32_t tid, const char *name, enum pf_unit unit)
 {
     pthread_mutex_lock(&t->track_lock);
-    uint64_t uuid =
-        track_add_locked(t, kind, parent_uuid, pid, tid, name, unit);
+    uint64_t uuid = track_add_locked(t, kind, parent_uuid, pid, tid, name, unit);
     pthread_mutex_unlock(&t->track_lock);
     return uuid;
 }
@@ -549,8 +522,7 @@ static void track_rename(struct pf_trace *t, uint64_t uuid, const char *name)
     pthread_mutex_unlock(&t->track_lock);
 }
 
-bool track_emit_due(struct pf_trace *t, unsigned i, unsigned first,
-                    struct track_def *out)
+bool track_emit_due(struct pf_trace *t, unsigned i, unsigned first, struct track_def *out)
 {
     pthread_mutex_lock(&t->track_lock);
     struct track_def *td = &t->tracks[i];
@@ -563,11 +535,9 @@ bool track_emit_due(struct pf_trace *t, unsigned i, unsigned first,
     return due;
 }
 
-uint64_t pf_track_thread(struct pf_trace *t, int32_t pid, int32_t tid,
-                         const char *name)
+uint64_t pf_track_thread(struct pf_trace *t, int32_t pid, int32_t tid, const char *name)
 {
-    return track_add(t, TRACK_THREAD, t->process_uuid, pid, tid, name,
-                     PF_UNIT_UNSPECIFIED);
+    return track_add(t, TRACK_THREAD, t->process_uuid, pid, tid, name, PF_UNIT_UNSPECIFIED);
 }
 
 /* Whether @td's stored name is @name. Compares against the truncated form
@@ -576,8 +546,7 @@ uint64_t pf_track_thread(struct pf_trace *t, int32_t pid, int32_t tid,
 static bool track_name_eq(const struct track_def *td, const char *name)
 {
     size_t n = strnlen(name, PF_TRACK_NAME_MAX - 1);
-    return td->has_name && strlen(td->name) == n &&
-           memcmp(td->name, name, n) == 0;
+    return td->has_name && strlen(td->name) == n && memcmp(td->name, name, n) == 0;
 }
 
 /* Whether @uuid names a process or thread track, the only kinds a track may
@@ -589,8 +558,7 @@ static bool track_can_parent(struct pf_trace *t, uint64_t uuid)
     for (unsigned i = 0; i < t->track_count; i++) {
         if (t->tracks[i].uuid != uuid)
             continue;
-        ok = t->tracks[i].kind == TRACK_PROCESS ||
-             t->tracks[i].kind == TRACK_THREAD;
+        ok = t->tracks[i].kind == TRACK_PROCESS || t->tracks[i].kind == TRACK_THREAD;
         break;
     }
     pthread_mutex_unlock(&t->track_lock);
@@ -602,18 +570,15 @@ static bool track_can_parent(struct pf_trace *t, uint64_t uuid)
  * matches, so unnamed tracks are always new. A match with a different @unit
  * returns 0. Lookup and insert share one critical section, so two threads
  * registering the same name cannot both insert it. */
-static uint64_t track_find_or_add(struct pf_trace *t, enum track_kind kind,
-                                  uint64_t parent_uuid, int32_t pid,
-                                  int32_t tid, const char *name,
-                                  enum pf_unit unit)
+static uint64_t track_find_or_add(struct pf_trace *t, enum track_kind kind, uint64_t parent_uuid,
+                                  int32_t pid, int32_t tid, const char *name, enum pf_unit unit)
 {
     pthread_mutex_lock(&t->track_lock);
     uint64_t uuid = 0;
     bool found = false;
     for (unsigned i = 0; i < t->track_count && name; i++) {
         const struct track_def *td = &t->tracks[i];
-        if (td->kind != kind || td->parent_uuid != parent_uuid ||
-            !track_name_eq(td, name))
+        if (td->kind != kind || td->parent_uuid != parent_uuid || !track_name_eq(td, name))
             continue;
         /* Same name with a different unit is a conflict, not a match. */
         uuid = td->unit == unit ? td->uuid : 0;
@@ -626,8 +591,8 @@ static uint64_t track_find_or_add(struct pf_trace *t, enum track_kind kind,
     return uuid;
 }
 
-uint64_t pf_track_counter(struct pf_trace *t, uint64_t parent_uuid,
-                          const char *name, enum pf_unit unit)
+uint64_t pf_track_counter(struct pf_trace *t, uint64_t parent_uuid, const char *name,
+                          enum pf_unit unit)
 {
     /* 0 selects the process track. Any other parent must be a process or
      * thread track, not a counter. */
@@ -673,17 +638,15 @@ static uint64_t thread_track_register(struct pf_trace *t)
     const char *name = tl_slot.has_name ? tl_slot.name : NULL;
     int32_t tid = (int32_t)gettid();
 
-    if (!name &&
-        pthread_getname_np(pthread_self(), os_name, sizeof(os_name)) == 0 &&
-        os_name[0])
+    if (!name && pthread_getname_np(pthread_self(), os_name, sizeof(os_name)) == 0 && os_name[0])
         name = os_name;
     if (!name) {
         snprintf(fallback, sizeof(fallback), "thread-%d", tid);
         name = fallback;
     }
 
-    tl_slot.uuid = track_add(t, TRACK_THREAD, t->process_uuid,
-                             (int32_t)getpid(), tid, name, PF_UNIT_UNSPECIFIED);
+    tl_slot.uuid = track_add(t, TRACK_THREAD, t->process_uuid, (int32_t)getpid(), tid, name,
+                             PF_UNIT_UNSPECIFIED);
     tl_slot.registered = true;
     return tl_slot.uuid;
 }
@@ -716,22 +679,20 @@ void pf_instant_event_g_impl(const char *name)
         pf_instant_event_impl(t, thread_track(t), name);
 }
 
-void pf_slice_begin_args_g_impl(const char *name, unsigned nargs, uint64_t a0,
-                                bool a0_dbl, uint64_t a1, bool a1_dbl)
+void pf_slice_begin_args_g_impl(const char *name, unsigned nargs, uint64_t a0, bool a0_dbl,
+                                uint64_t a1, bool a1_dbl)
 {
     struct pf_trace *t = default_trace();
     if (t)
-        pf_slice_begin_args_impl(t, thread_track(t), name, nargs, a0, a0_dbl,
-                                 a1, a1_dbl);
+        pf_slice_begin_args_impl(t, thread_track(t), name, nargs, a0, a0_dbl, a1, a1_dbl);
 }
 
-void pf_instant_event_args_g_impl(const char *name, unsigned nargs, uint64_t a0,
-                                  bool a0_dbl, uint64_t a1, bool a1_dbl)
+void pf_instant_event_args_g_impl(const char *name, unsigned nargs, uint64_t a0, bool a0_dbl,
+                                  uint64_t a1, bool a1_dbl)
 {
     struct pf_trace *t = default_trace();
     if (t)
-        pf_instant_event_args_impl(t, thread_track(t), name, nargs, a0, a0_dbl,
-                                   a1, a1_dbl);
+        pf_instant_event_args_impl(t, thread_track(t), name, nargs, a0, a0_dbl, a1, a1_dbl);
 }
 
 void pf_thread_name(const char *name)
@@ -754,8 +715,7 @@ uint64_t pf_track_thread_uuid_g(void)
     return t ? thread_track(t) : 0;
 }
 
-uint64_t pf_track_counter_g(uint64_t parent_uuid, const char *name,
-                            enum pf_unit unit)
+uint64_t pf_track_counter_g(uint64_t parent_uuid, const char *name, enum pf_unit unit)
 {
     struct pf_trace *t = default_trace();
     return t ? pf_track_counter(t, parent_uuid, name, unit) : 0;
@@ -815,15 +775,13 @@ void pf_config_init(struct pf_config *cfg)
  * ClockSnapshot, so Perfetto can name it as the primary trace clock. */
 static bool clock_ok(clockid_t clk)
 {
-    return clk == CLOCK_REALTIME || clk == CLOCK_MONOTONIC ||
-           clk == CLOCK_BOOTTIME;
+    return clk == CLOCK_REALTIME || clk == CLOCK_MONOTONIC || clk == CLOCK_BOOTTIME;
 }
 
 struct pf_trace *pf_trace_open(const struct pf_config *cfg)
 {
     if (!cfg || !cfg->path || cfg->watermark_pct > 99 || !open_name_ok(cfg) ||
-        !clock_ok(cfg->clock_id) || cfg->chunk_slots == 0 ||
-        cfg->max_threads == 0) {
+        !clock_ok(cfg->clock_id) || cfg->chunk_slots == 0 || cfg->max_threads == 0) {
         errno = EINVAL;
         return NULL;
     }
@@ -863,8 +821,7 @@ struct pf_trace *pf_trace_open(const struct pf_config *cfg)
      * being written. Snapshot files are opened by each dump. */
     if (t->cfg.mode == PF_MODE_CONTINUOUS) {
         snprintf(t->file_name, sizeof(t->file_name), "%s", t->cfg.name);
-        t->fd = openat(t->dirfd, t->cfg.name,
-                       O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0644);
+        t->fd = openat(t->dirfd, t->cfg.name, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0644);
         if (t->fd < 0)
             goto close_dir;
     }
@@ -882,11 +839,9 @@ struct pf_trace *pf_trace_open(const struct pf_config *cfg)
     char comm[16] = "";
     if (!t->cfg.process_name)
         prctl(PR_GET_NAME, comm, 0, 0, 0);
-    const char *pname = t->cfg.process_name ? t->cfg.process_name :
-                        comm[0]             ? comm :
-                                              NULL;
-    t->process_uuid = track_add(t, TRACK_PROCESS, 0, (int32_t)getpid(), 0,
-                                pname, PF_UNIT_UNSPECIFIED);
+    const char *pname = t->cfg.process_name ? t->cfg.process_name : comm[0] ? comm : NULL;
+    t->process_uuid =
+        track_add(t, TRACK_PROCESS, 0, (int32_t)getpid(), 0, pname, PF_UNIT_UNSPECIFIED);
 
     pthread_mutex_init(&t->drain_lock, NULL);
     pthread_cond_init(&t->drain_cv, NULL);
@@ -928,8 +883,7 @@ free_trace:
 }
 
 /* Shared by pf_trace_dump and pf_trace_flush. */
-static int dump_public(struct pf_trace *t, const char *name, char *file,
-                       size_t size, bool sync)
+static int dump_public(struct pf_trace *t, const char *name, char *file, size_t size, bool sync)
 {
     if (!dump_name_ok(t, name)) {
         errno = EINVAL;
@@ -946,8 +900,7 @@ int pf_trace_dump(struct pf_trace *t, const char *name, char *file, size_t size)
     return dump_public(t, name, file, size, false);
 }
 
-int pf_trace_flush(struct pf_trace *t, const char *name, char *file,
-                   size_t size)
+int pf_trace_flush(struct pf_trace *t, const char *name, char *file, size_t size)
 {
     return dump_public(t, name, file, size, true);
 }
@@ -959,8 +912,7 @@ void pf_trace_stats(const struct pf_trace *t, struct pf_stats *out)
     struct pf_trace *m = (struct pf_trace *)t;
     out->events = pf_writers_events(m);
     out->dropped = atomic_load_explicit(&m->dropped, memory_order_relaxed);
-    out->bytes_written =
-        atomic_load_explicit(&m->bytes_written, memory_order_relaxed);
+    out->bytes_written = atomic_load_explicit(&m->bytes_written, memory_order_relaxed);
 }
 
 void pf_trace_close(struct pf_trace *t)

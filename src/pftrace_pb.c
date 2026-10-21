@@ -46,12 +46,10 @@ static uint32_t builtin_clock(clockid_t clk)
 /* Writes a packet's timestamp with its clock. Perfetto reads a packet with no
  * timestamp_clock_id as BOOTTIME, so a REALTIME or MONOTONIC reading must name
  * its clock or the packet cannot be related to the trace clock. */
-static void put_packet_timestamp(struct pb_buf *packet, clockid_t clk,
-                                 uint64_t ts)
+static void put_packet_timestamp(struct pb_buf *packet, clockid_t clk, uint64_t ts)
 {
     pb_put_varint_field(packet, FN_PACKET_TIMESTAMP, ts);
-    pb_put_varint_field(packet, FN_PACKET_TIMESTAMP_CLOCK_ID,
-                        builtin_clock(clk));
+    pb_put_varint_field(packet, FN_PACKET_TIMESTAMP_CLOCK_ID, builtin_clock(clk));
 }
 
 #define SEQ_INCREMENTAL_STATE_CLEARED 1u
@@ -100,9 +98,8 @@ static int stage_packet(struct pf_trace *t, const struct pb_buf *packet)
     return 0;
 }
 
-static void add_interned_entry(struct pb_buf *interned, uint32_t field_no,
-                               uint64_t iid, const char *name, size_t len,
-                               struct pb_buf *entry)
+static void add_interned_entry(struct pb_buf *interned, uint32_t field_no, uint64_t iid,
+                               const char *name, size_t len, struct pb_buf *entry)
 {
     pb_buf_reset(entry);
     pb_put_varint_field(entry, FN_IID, iid);
@@ -112,8 +109,7 @@ static void add_interned_entry(struct pb_buf *interned, uint32_t field_no,
 
 /* --- Track descriptor emission ----------------------------------------- */
 
-static int emit_track(struct pf_trace *t, const struct track_def *td,
-                      uint32_t extra_flags)
+static int emit_track(struct pf_trace *t, const struct track_def *td, uint32_t extra_flags)
 {
     struct pb_buf *inner = &t->pb.scratch_a;
     struct pb_buf *desc = &t->pb.scratch_b;
@@ -131,24 +127,21 @@ static int emit_track(struct pf_trace *t, const struct track_def *td,
     case TRACK_PROCESS:
         pb_put_varint_field(inner, FN_PROCESS_PID, (uint64_t)(uint32_t)td->pid);
         if (td->has_name)
-            pb_put_string_field(inner, FN_PROCESS_NAME, td->name,
-                                strlen(td->name));
+            pb_put_string_field(inner, FN_PROCESS_NAME, td->name, strlen(td->name));
         pb_put_submessage_field(desc, FN_TRACK_PROCESS, inner);
         break;
     case TRACK_THREAD:
         pb_put_varint_field(inner, FN_THREAD_PID, (uint64_t)(uint32_t)td->pid);
         pb_put_varint_field(inner, FN_THREAD_TID, (uint64_t)(uint32_t)td->tid);
         if (td->has_name)
-            pb_put_string_field(inner, FN_THREAD_NAME, td->name,
-                                strlen(td->name));
+            pb_put_string_field(inner, FN_THREAD_NAME, td->name, strlen(td->name));
         pb_put_submessage_field(desc, FN_TRACK_THREAD, inner);
         break;
     case TRACK_COUNTER:
         if (td->unit != PF_UNIT_UNSPECIFIED)
             pb_put_varint_field(inner, FN_COUNTER_UNIT, (uint64_t)td->unit);
         if (td->has_name)
-            pb_put_string_field(desc, FN_TRACK_NAME, td->name,
-                                strlen(td->name));
+            pb_put_string_field(desc, FN_TRACK_NAME, td->name, strlen(td->name));
         pb_put_submessage_field(desc, FN_TRACK_COUNTER, inner);
         break;
     }
@@ -162,8 +155,7 @@ static int emit_track(struct pf_trace *t, const struct track_def *td,
 }
 
 /* Adds one Clock entry, a builtin id and a reading, to the snapshot. */
-static void put_clock_entry(struct pb_buf *snap, struct pb_buf *clock,
-                            uint32_t id, uint64_t ts)
+static void put_clock_entry(struct pb_buf *snap, struct pb_buf *clock, uint32_t id, uint64_t ts)
 {
     pb_buf_reset(clock);
     pb_put_varint_field(clock, FN_CLOCK_ID, id);
@@ -193,8 +185,7 @@ static int emit_clock_snapshot(struct pf_trace *t)
     if (clk != CLOCK_REALTIME)
         put_clock_entry(snap, clock, BUILTIN_CLOCK_REALTIME, real_ts);
     if (clk != CLOCK_BOOTTIME)
-        put_clock_entry(snap, clock, BUILTIN_CLOCK_BOOTTIME,
-                        now_ns(CLOCK_BOOTTIME));
+        put_clock_entry(snap, clock, BUILTIN_CLOCK_BOOTTIME, now_ns(CLOCK_BOOTTIME));
     pb_put_varint_field(snap, FN_CLOCK_SNAPSHOT_PRIMARY, builtin_clock(clk));
 
     pb_put_varint_field(packet, FN_PACKET_TRUSTED_SEQ_ID, 1);
@@ -231,8 +222,7 @@ static int emit_track_header(struct pf_trace *t, bool restart)
             continue;
         /* The flag belongs on the first packet of the restarted
          * sequence; later packets in the same dump must not repeat it. */
-        uint32_t flags =
-            (restart && i == first) ? SEQ_INCREMENTAL_STATE_CLEARED : 0u;
+        uint32_t flags = (restart && i == first) ? SEQ_INCREMENTAL_STATE_CLEARED : 0u;
         if (emit_track(t, &td, flags) != 0)
             return -1;
     }
@@ -241,8 +231,7 @@ static int emit_track_header(struct pf_trace *t, bool restart)
      * reader keeps stale interning from the previous window. */
     if (restart && count == 0) {
         pb_buf_reset(&t->pb.scratch_c);
-        put_packet_timestamp(&t->pb.scratch_c, t->cfg.clock_id,
-                             now_ns(t->cfg.clock_id));
+        put_packet_timestamp(&t->pb.scratch_c, t->cfg.clock_id, now_ns(t->cfg.clock_id));
         pb_put_varint_field(&t->pb.scratch_c, FN_PACKET_TRUSTED_SEQ_ID, 1);
         pb_put_varint_field(&t->pb.scratch_c, FN_PACKET_SEQUENCE_FLAGS,
                             SEQ_INCREMENTAL_STATE_CLEARED);
@@ -344,8 +333,7 @@ static bool parse_spec(const char *start, struct pf_spec *s)
         return !s->plus && !s->space;
     case 'c':
     case 'p':
-        return !s->plus && !s->space && !s->zero && s->prec < 0 &&
-               s->lenmod == 0;
+        return !s->plus && !s->space && !s->zero && s->prec < 0 && s->lenmod == 0;
     case 'f':
     case 'F':
     case 'e':
@@ -362,8 +350,8 @@ static bool parse_spec(const char *start, struct pf_spec *s)
  * number of characters the result needs, or -1 if the argument's type does
  * not suit the conversion. A result of @room or more is too long; the
  * caller treats it as a failure. */
-static int render_arg(char *dst, size_t room, const struct pf_spec *s,
-                      uint64_t bits, bool is_double)
+static int render_arg(char *dst, size_t room, const struct pf_spec *s, uint64_t bits,
+                      bool is_double)
 {
     char fs[40];
     double d;
@@ -440,8 +428,8 @@ static int render_arg(char *dst, size_t room, const struct pf_spec *s,
 /* Expands @fmt with the event's args into @out, which is @cap bytes. Returns
  * false if the format does not match the args, or the result does not fit.
  * The caller then falls back to the bare format string. */
-static bool format_name(char *out, size_t cap, const char *fmt,
-                        const struct pf_rec *r, unsigned nargs)
+static bool format_name(char *out, size_t cap, const char *fmt, const struct pf_rec *r,
+                        unsigned nargs)
 {
     size_t o = 0;
     unsigned k = 0;
@@ -514,11 +502,9 @@ static int emit_record(struct pf_trace *t, const struct pf_rec *r)
     bool name_interned = false;
     if (nlen && !dynamic) {
         bool is_new = false;
-        name_interned =
-            intern_lookup_or_insert(&t->name_table, name, &name_iid, &is_new);
+        name_interned = intern_lookup_or_insert(&t->name_table, name, &name_iid, &is_new);
         if (name_interned && is_new) {
-            add_interned_entry(interned, FN_INTERNED_EVENT_NAMES, name_iid,
-                               name, nlen, entry);
+            add_interned_entry(interned, FN_INTERNED_EVENT_NAMES, name_iid, name, nlen, entry);
             have_interned = true;
         }
     }
@@ -540,8 +526,7 @@ static int emit_record(struct pf_trace *t, const struct pf_rec *r)
 
     put_packet_timestamp(packet, t->cfg.clock_id, ts);
     pb_put_varint_field(packet, FN_PACKET_TRUSTED_SEQ_ID, 1);
-    pb_put_varint_field(packet, FN_PACKET_SEQUENCE_FLAGS,
-                        SEQ_NEEDS_INCREMENTAL_STATE);
+    pb_put_varint_field(packet, FN_PACKET_SEQUENCE_FLAGS, SEQ_NEEDS_INCREMENTAL_STATE);
     if (have_interned)
         pb_put_submessage_field(packet, FN_PACKET_INTERNED_DATA, interned);
     pb_put_submessage_field(packet, FN_PACKET_TRACK_EVENT, ev);

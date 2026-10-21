@@ -71,8 +71,7 @@ static void *worker_fn(void *p)
  * contain the marker emitted immediately before the dump. */
 static void test_snapshot_window(void)
 {
-    printf("snapshot window (%d events through a %dKiB buffer):\n", EVENTS,
-           BUFFER_BYTES / 1024);
+    printf("snapshot window (%d events through a %dKiB buffer):\n", EVENTS, BUFFER_BYTES / 1024);
 
     const char *dir = PF_TRACE_PREFIX "stress_snapshot.d";
     dir_reset(dir);
@@ -107,8 +106,8 @@ static void test_snapshot_window(void)
 
     struct pf_stats s;
     pf_trace_stats(t, &s);
-    printf("  events=%" PRIu64 " written=%" PRIu64 " dropped=%" PRIu64 "\n",
-           s.events, s.bytes_written, s.dropped);
+    printf("  events=%" PRIu64 " written=%" PRIu64 " dropped=%" PRIu64 "\n", s.events,
+           s.bytes_written, s.dropped);
 
     CHECK(s.dropped == 0, "snapshot mode never drops (it overwrites)");
     CHECK(s.events == EVENTS * 2 + 2, "every event was published");
@@ -116,8 +115,7 @@ static void test_snapshot_window(void)
     /* The whole point: the file is a bounded window, not the full stream. */
     CHECK(s.bytes_written > 0, "dump produced output");
     CHECK(s.bytes_written < (uint64_t)BUFFER_BYTES * 2,
-          "dump is a bounded window, not the whole run: %" PRIu64 " bytes",
-          s.bytes_written);
+          "dump is a bounded window, not the whole run: %" PRIu64 " bytes", s.bytes_written);
 
     pf_trace_close(t);
 
@@ -133,8 +131,7 @@ static void test_snapshot_window(void)
         fclose(f);
         bool has_trigger = memmem(buf, n, "perf_drop_detected", 18) != NULL;
         bool has_early = memmem(buf, n, "early_marker", 12) != NULL;
-        printf("  trigger marker present=%d, startup marker present=%d\n",
-               has_trigger, has_early);
+        printf("  trigger marker present=%d, startup marker present=%d\n", has_trigger, has_early);
         CHECK(has_trigger, "window contains the event that triggered the dump");
         CHECK(!has_early, "window has recycled past the start of the run");
     }
@@ -180,10 +177,8 @@ static void test_continuous_gapless(void)
         char name[16];
         snprintf(name, sizeof(name), "w%u", i);
         tracks[i] = pf_track_thread(t, 4322, (int32_t)(i + 1), name);
-        args[i] =
-            (struct worker_arg){ .t = t, .track = tracks[i], .n = EVENTS / 4 };
-        CHECK(pthread_create(&th[i], NULL, worker_fn, &args[i]) == 0,
-              "spawn %u", i);
+        args[i] = (struct worker_arg){ .t = t, .track = tracks[i], .n = EVENTS / 4 };
+        CHECK(pthread_create(&th[i], NULL, worker_fn, &args[i]) == 0, "spawn %u", i);
     }
     for (unsigned i = 0; i < 4; i++)
         pthread_join(th[i], NULL);
@@ -193,8 +188,8 @@ static void test_continuous_gapless(void)
     struct pf_stats s;
     pf_trace_stats(t, &s);
     uint64_t expected = (uint64_t)(EVENTS / 4) * 4 * 3; /* begin+counter+end */
-    printf("  events=%" PRIu64 " (attempted %" PRIu64 ") written=%" PRIu64
-           " dropped=%" PRIu64 " (%.0f%%)\n",
+    printf("  events=%" PRIu64 " (attempted %" PRIu64 ") written=%" PRIu64 " dropped=%" PRIu64
+           " (%.0f%%)\n",
            s.events, expected, s.bytes_written, s.dropped,
            100.0 * (double)s.dropped / (double)expected);
 
@@ -205,8 +200,8 @@ static void test_continuous_gapless(void)
     /* The file must be far larger than the buffer: proof it drained
      * repeatedly rather than holding a single window. */
     CHECK(s.bytes_written > cfg.buffer_bytes,
-          "wrote more than one bufferful (%" PRIu64 " bytes vs %zu buffer)",
-          s.bytes_written, cfg.buffer_bytes);
+          "wrote more than one bufferful (%" PRIu64 " bytes vs %zu buffer)", s.bytes_written,
+          cfg.buffer_bytes);
 
     pf_trace_close(t);
     printf("  ok\n");
@@ -257,16 +252,13 @@ static void test_continuous_paced(void)
     struct pf_stats s;
     pf_trace_stats(t, &s);
     uint64_t expected = (uint64_t)rounds * 4;
-    printf("  events=%" PRIu64 " (attempted %" PRIu64 ") written=%" PRIu64
-           " dropped=%" PRIu64 "\n",
+    printf("  events=%" PRIu64 " (attempted %" PRIu64 ") written=%" PRIu64 " dropped=%" PRIu64 "\n",
            s.events, expected, s.bytes_written, s.dropped);
 
-    CHECK(s.dropped == 0,
-          "a realistic event rate must not drop anything (%" PRIu64 " lost)",
+    CHECK(s.dropped == 0, "a realistic event rate must not drop anything (%" PRIu64 " lost)",
           s.dropped);
     CHECK(s.events == expected, "every event published");
-    CHECK(s.bytes_written > 1024 * 1024,
-          "drained repeatedly rather than buffering one window");
+    CHECK(s.bytes_written > 1024 * 1024, "drained repeatedly rather than buffering one window");
 
     pf_trace_close(t);
 
@@ -300,8 +292,7 @@ static void test_continuous_paced(void)
                 }
             }
             printf("  distinct counter values present: %u/97\n", found);
-            CHECK(found == 97,
-                  "every counter value survived to the file (%u/97)", found);
+            CHECK(found == 97, "every counter value survived to the file (%u/97)", found);
             free(buf);
         }
     }
@@ -359,8 +350,7 @@ static void test_long_names(void)
 
     struct pf_stats s;
     pf_trace_stats(t, &s);
-    CHECK(s.events == 100, "50 begin/end pairs published, got %" PRIu64,
-          s.events);
+    CHECK(s.events == 100, "50 begin/end pairs published, got %" PRIu64, s.events);
 
     pf_trace_close(t);
 
@@ -376,8 +366,8 @@ static void test_long_names(void)
         static char buf[1024 * 1024];
         size_t n = fread(buf, 1, sizeof(buf), f);
         fclose(f);
-        CHECK(memmem(buf, n, LONG_NAME, want) != NULL,
-              "the full %zu-byte name reached the file", want);
+        CHECK(memmem(buf, n, LONG_NAME, want) != NULL, "the full %zu-byte name reached the file",
+              want);
     }
     /* tools/CMakeLists.txt reads this trace by its fixed name. */
     CHECK(rename(file, PF_TRACE_PREFIX "stress_names.pftrace") == 0,

@@ -434,18 +434,15 @@ static bool q_init(struct queue *q, const struct scenario *s)
 
     if (variant_is_mpsc(s->variant)) {
         q->mpsc = ringbuf_mpsc_create(s->slot_size, s->capacity,
-                                      s->overwrite ? RINGBUF_DROP_OLDEST :
-                                                     RINGBUF_DROP_NEWEST);
+                                      s->overwrite ? RINGBUF_DROP_OLDEST : RINGBUF_DROP_NEWEST);
         return q->mpsc != NULL;
     }
 
     q->zc = ringbuf_zcopy_create(s->slot_size, s->capacity,
-                                 s->overwrite ? RINGBUF_DROP_OLDEST :
-                                                RINGBUF_DROP_NEWEST);
+                                 s->overwrite ? RINGBUF_DROP_OLDEST : RINGBUF_DROP_NEWEST);
     if (!q->zc)
         return false;
-    if (s->variant != VARIANT_ZCOPY_RAW_PUSH &&
-        pthread_mutex_init(&q->push_lock, NULL) != 0) {
+    if (s->variant != VARIANT_ZCOPY_RAW_PUSH && pthread_mutex_init(&q->push_lock, NULL) != 0) {
         ringbuf_zcopy_destroy(q->zc);
         q->zc = NULL;
         return false;
@@ -942,9 +939,8 @@ static double bench_single(const struct scenario *s, double *cpu_ns_per_op)
  */
 static void print_header(void)
 {
-    printf("  %-21s %9s %9s %9s %8s %8s %8s %9s %8s %7s\n", "impl",
-           "store-Mm/s", "recv-Mm/s", "cpu-ns/rx", "cpu/wall", "prod-ns",
-           "cons-ns", "stor-rt/k", "pop-rt/k", "ctxsw/k");
+    printf("  %-21s %9s %9s %9s %8s %8s %8s %9s %8s %7s\n", "impl", "store-Mm/s", "recv-Mm/s",
+           "cpu-ns/rx", "cpu/wall", "prod-ns", "cons-ns", "stor-rt/k", "pop-rt/k", "ctxsw/k");
 }
 
 /**
@@ -959,19 +955,16 @@ static void print_header(void)
  */
 static void print_row(const char *label, const struct result *r, bool show_drop)
 {
-    double cpu_per_rx =
-        r->received ? r->cpu_ns_per_msg * r->msgs_per_sec / r->recv_per_sec :
-                      0.0;
+    double cpu_per_rx = r->received ? r->cpu_ns_per_msg * r->msgs_per_sec / r->recv_per_sec : 0.0;
 
-    printf("  %-21s %9.2f %9.2f %9.1f %8.2f %8.1f %8.1f %9.1f %8.1f %7.2f\n",
-           label, r->msgs_per_sec / 1e6, r->recv_per_sec / 1e6, cpu_per_rx,
-           r->cpu_per_wall, r->prod_cpu_ns_per_msg, r->cons_cpu_ns_per_msg,
-           r->push_retries_per_k, r->pop_retries_per_k, r->ctxsw_per_k);
+    printf("  %-21s %9.2f %9.2f %9.1f %8.2f %8.1f %8.1f %9.1f %8.1f %7.2f\n", label,
+           r->msgs_per_sec / 1e6, r->recv_per_sec / 1e6, cpu_per_rx, r->cpu_per_wall,
+           r->prod_cpu_ns_per_msg, r->cons_cpu_ns_per_msg, r->push_retries_per_k,
+           r->pop_retries_per_k, r->ctxsw_per_k);
 
     printf("  %-21s  ", "");
     if (show_drop)
-        printf("dropped %.2f%%, received %" PRIu64 ", ", r->drop_pct,
-               r->received);
+        printf("dropped %.2f%%, received %" PRIu64 ", ", r->drop_pct, r->received);
     printf("finish spread %.2fx%s\n", r->finish_spread,
            r->accounted ? "" : "  !! received + dropped != pushed");
 }
@@ -987,9 +980,7 @@ static void print_row(const char *label, const struct result *r, bool show_drop)
  */
 static void bench_quad(const struct scenario *proto)
 {
-    static const enum variant variants[] = { VARIANT_MPSC_RSV,
-                                             VARIANT_ZCOPY_RSV,
-                                             VARIANT_MPSC_PUSH,
+    static const enum variant variants[] = { VARIANT_MPSC_RSV, VARIANT_ZCOPY_RSV, VARIANT_MPSC_PUSH,
                                              VARIANT_ZCOPY_PUSH };
 
     print_header();
@@ -1044,8 +1035,7 @@ int main(void)
     printf("In overwrite mode compare recv-Mm/s, not store-Mm/s: evicting is"
            " cheaper than\ndelivering, so a variant can post a higher store"
            " rate just by dropping more.\n");
-    if (prod_counts[sizeof prod_counts / sizeof *prod_counts - 1] >
-        (unsigned)(g_ncpu - 1))
+    if (prod_counts[sizeof prod_counts / sizeof *prod_counts - 1] > (unsigned)(g_ncpu - 1))
         printf("NOTE: fewer cpus than the widest scenario asks for; the wide"
                " rows share cores\n  and are oversubscribed like scenario"
                " [7].\n");
@@ -1060,10 +1050,9 @@ int main(void)
            " shows up naked.\n");
     printf("  %-21s %10s %8s %10s\n", "impl", "mode", "Mmsg/s", "cpu-ns/op");
     for (unsigned m = 0; m < 2; m++) {
-        static const enum variant single[] = {
-            VARIANT_MPSC_RSV, VARIANT_ZCOPY_RSV, VARIANT_MPSC_PUSH,
-            VARIANT_ZCOPY_PUSH, VARIANT_ZCOPY_RAW_PUSH
-        };
+        static const enum variant single[] = { VARIANT_MPSC_RSV, VARIANT_ZCOPY_RSV,
+                                               VARIANT_MPSC_PUSH, VARIANT_ZCOPY_PUSH,
+                                               VARIANT_ZCOPY_RAW_PUSH };
         for (unsigned i = 0; i < sizeof single / sizeof *single; i++) {
             struct scenario s = { .variant = single[i],
                                   .overwrite = m == 1,
@@ -1158,8 +1147,7 @@ int main(void)
         bench_quad(&s);
     }
 
-    printf("\n[7] Oversubscribed: %u producers on %d producer cpus\n",
-           MAX_PRODUCERS, g_ncpu - 1);
+    printf("\n[7] Oversubscribed: %u producers on %d producer cpus\n", MAX_PRODUCERS, g_ncpu - 1);
     printf("    Both variants have a head-of-line stall to expose here, and"
            " they are not the\n    same one. A descheduled ringbuf_mpsc"
            " producer holding an unsubmitted ticket\n    blocks delivery;"

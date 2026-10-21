@@ -71,8 +71,7 @@ struct ringbuf_mutex {
  * Return: the new buffer, or NULL on allocation failure, mutex-init
  * failure, or invalid arguments.
  */
-struct ringbuf_mutex *ringbuf_mutex_create(size_t slot_size,
-                                           size_t min_capacity,
+struct ringbuf_mutex *ringbuf_mutex_create(size_t slot_size, size_t min_capacity,
                                            bool overwrite_on_full)
 {
     if (slot_size == 0)
@@ -92,14 +91,12 @@ struct ringbuf_mutex *ringbuf_mutex_create(size_t slot_size,
     size_t data_bytes = capacity * slot_size;
 
     /* C11 aligned_alloc requires the size to be a multiple of the alignment. */
-    size_t total =
-        add_checked(offsetof(struct ringbuf_mutex, slots), data_bytes);
+    size_t total = add_checked(offsetof(struct ringbuf_mutex, slots), data_bytes);
     total = align_up(total, _Alignof(struct ringbuf_mutex));
     if (total == 0)
         return NULL;
 
-    struct ringbuf_mutex *rb =
-        aligned_alloc(_Alignof(struct ringbuf_mutex), total);
+    struct ringbuf_mutex *rb = aligned_alloc(_Alignof(struct ringbuf_mutex), total);
     if (rb == NULL)
         return NULL;
 
@@ -153,8 +150,7 @@ void ringbuf_mutex_destroy(struct ringbuf_mutex *rb)
  */
 bool ringbuf_mutex_push(struct ringbuf_mutex *rb, const void *data)
 {
-    size_t write_idx =
-        atomic_load_explicit(&rb->write_idx, memory_order_relaxed);
+    size_t write_idx = atomic_load_explicit(&rb->write_idx, memory_order_relaxed);
     size_t next = write_idx + 1;
     size_t idx = write_idx & rb->mask;
 
@@ -170,8 +166,7 @@ bool ringbuf_mutex_push(struct ringbuf_mutex *rb, const void *data)
          * is the only ordering in this file doing real work. The two
          * stores inside the eviction branch below are relaxed, because
          * there both sides hold the lock. */
-        rb->cached_read =
-            atomic_load_explicit(&rb->read_idx, memory_order_acquire);
+        rb->cached_read = atomic_load_explicit(&rb->read_idx, memory_order_acquire);
         if (next - rb->cached_read > rb->capacity) {
             if (!rb->overwrite_on_full)
                 return false; /* genuinely full */
@@ -181,8 +176,7 @@ bool ringbuf_mutex_push(struct ringbuf_mutex *rb, const void *data)
              * that locks, and the only one that can block. */
             pthread_mutex_lock(&rb->lock);
 
-            size_t fresh_read =
-                atomic_load_explicit(&rb->read_idx, memory_order_relaxed);
+            size_t fresh_read = atomic_load_explicit(&rb->read_idx, memory_order_relaxed);
             if (next - fresh_read > rb->capacity) {
                 /* Still full. Retire message `fresh_read` as dropped. The
                  * lock means no pop can be mid-read of that slot, and no
@@ -196,10 +190,8 @@ bool ringbuf_mutex_push(struct ringbuf_mutex *rb, const void *data)
                  * unlock/lock edge already orders us against it. See the
                  * note on the fullness load above for the accesses that do
                  * need explicit ordering. */
-                atomic_store_explicit(&rb->read_idx, fresh_read + 1,
-                                      memory_order_relaxed);
-                atomic_fetch_add_explicit(&rb->dropped_count, 1,
-                                          memory_order_relaxed);
+                atomic_store_explicit(&rb->read_idx, fresh_read + 1, memory_order_relaxed);
+                atomic_fetch_add_explicit(&rb->dropped_count, 1, memory_order_relaxed);
                 rb->cached_read = fresh_read + 1;
             } else {
                 /* Consumer drained the slot normally while we were waiting
@@ -246,23 +238,19 @@ bool ringbuf_mutex_pop(struct ringbuf_mutex *rb, void *data)
     if (!rb->overwrite_on_full) {
         /* Lossless mode: read_idx has exactly one writer (us), so this is
          * the plain lock-free path, identical to ringbuf.c. */
-        size_t read_idx =
-            atomic_load_explicit(&rb->read_idx, memory_order_relaxed);
+        size_t read_idx = atomic_load_explicit(&rb->read_idx, memory_order_relaxed);
 
         /* Signed difference so this stays correct when the counters wrap
          * past SIZE_MAX; a plain `read_idx >= cached_write` would read as
          * "empty" forever once write_idx wrapped and read_idx had not. */
         if ((ptrdiff_t)(rb->cached_write - read_idx) <= 0) {
-            rb->cached_write =
-                atomic_load_explicit(&rb->write_idx, memory_order_acquire);
+            rb->cached_write = atomic_load_explicit(&rb->write_idx, memory_order_acquire);
             if ((ptrdiff_t)(rb->cached_write - read_idx) <= 0)
                 return false; /* genuinely empty */
         }
 
-        memcpy(data, rb->slots + (read_idx & rb->mask) * rb->slot_size,
-               rb->slot_size);
-        atomic_store_explicit(&rb->read_idx, read_idx + 1,
-                              memory_order_release);
+        memcpy(data, rb->slots + (read_idx & rb->mask) * rb->slot_size, rb->slot_size);
+        atomic_store_explicit(&rb->read_idx, read_idx + 1, memory_order_release);
         return true;
     }
 
@@ -281,16 +269,14 @@ bool ringbuf_mutex_pop(struct ringbuf_mutex *rb, void *data)
      * report empty -- never a spurious failure. */
     size_t read_idx = atomic_load_explicit(&rb->read_idx, memory_order_relaxed);
     if ((ptrdiff_t)(rb->cached_write - read_idx) <= 0) {
-        rb->cached_write =
-            atomic_load_explicit(&rb->write_idx, memory_order_acquire);
+        rb->cached_write = atomic_load_explicit(&rb->write_idx, memory_order_acquire);
         if ((ptrdiff_t)(rb->cached_write - read_idx) <= 0) {
             pthread_mutex_unlock(&rb->lock);
             return false; /* genuinely empty */
         }
     }
 
-    memcpy(data, rb->slots + (read_idx & rb->mask) * rb->slot_size,
-           rb->slot_size);
+    memcpy(data, rb->slots + (read_idx & rb->mask) * rb->slot_size, rb->slot_size);
 
     /* Release, not relaxed, and the one store under this lock that is not:
      * push's fast path reads read_idx (see its fullness load) without ever

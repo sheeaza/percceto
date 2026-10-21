@@ -147,8 +147,7 @@ static void run(unsigned threads, size_t slots, uint64_t pairs)
     double wall_s = (double)(last - first) / 1e9;
     printf("threads %u, chunk_slots %5zu: %6.1f ns/event per thread, "
            "%6.2f M events/s total, %" PRIu64 " events counted\n",
-           threads, slots, per_thread_ns, (double)emitted / wall_s / 1e6,
-           s.events);
+           threads, slots, per_thread_ns, (double)emitted / wall_s / 1e6, s.events);
     dir_reset(DIR);
 }
 
@@ -163,8 +162,7 @@ int main(void)
     for (unsigned i = 0; i < sizeof(slots) / sizeof(slots[0]); i++)
         run(1, slots[i], EVENTS_PER_THREAD);
 
-    printf("\nScaling, chunk_slots 256, %u events per thread:\n",
-           EVENTS_PER_THREAD * 2);
+    printf("\nScaling, chunk_slots 256, %u events per thread:\n", EVENTS_PER_THREAD * 2);
     for (unsigned n = 1; n <= MAX_THREADS; n *= 2)
         run(n, 256, EVENTS_PER_THREAD);
 

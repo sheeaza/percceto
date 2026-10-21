@@ -81,8 +81,7 @@ void pf_registry_remove(struct pf_trace *t)
 int pf_pool_init(struct pf_trace *t)
 {
     uint32_t slots = (uint32_t)t->cfg.chunk_slots;
-    size_t chunk_bytes =
-        sizeof(struct pf_chunk) + slots * sizeof(struct pf_rec);
+    size_t chunk_bytes = sizeof(struct pf_chunk) + slots * sizeof(struct pf_rec);
     size_t count = t->cfg.buffer_bytes / chunk_bytes;
 
     /* A writer needs a spare chunk while its full one is committed. */
@@ -107,8 +106,7 @@ int pf_pool_init(struct pf_trace *t)
     /* Each chunk is linked onto the free list. chunk_bytes is a multiple of 8,
      * so every chunk's records stay 8-byte aligned. */
     for (size_t i = count; i-- > 0;) {
-        struct pf_chunk *c =
-            (struct pf_chunk *)((char *)t->pool_mem + i * chunk_bytes);
+        struct pf_chunk *c = (struct pf_chunk *)((char *)t->pool_mem + i * chunk_bytes);
         c->next = t->free_list;
         t->free_list = c;
     }
@@ -265,8 +263,7 @@ uint64_t pf_writers_events(struct pf_trace *t)
     uint64_t total = 0;
     pthread_mutex_lock(&t->reg_lock);
     for (uint32_t i = 0; i < t->cfg.max_threads; i++)
-        total +=
-            atomic_load_explicit(&t->writers[i].events, memory_order_relaxed);
+        total += atomic_load_explicit(&t->writers[i].events, memory_order_relaxed);
     pthread_mutex_unlock(&t->reg_lock);
     return total;
 }

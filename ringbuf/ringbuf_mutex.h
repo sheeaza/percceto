@@ -49,8 +49,7 @@ struct ringbuf_mutex;
  * Return: the new buffer, or NULL on allocation failure, mutex-init
  * failure, or invalid arguments.
  */
-struct ringbuf_mutex *ringbuf_mutex_create(size_t slot_size,
-                                           size_t min_capacity,
+struct ringbuf_mutex *ringbuf_mutex_create(size_t slot_size, size_t min_capacity,
                                            bool overwrite_on_full);
 
 /**

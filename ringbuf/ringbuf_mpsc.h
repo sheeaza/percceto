@@ -262,8 +262,7 @@ void ringbuf_mpsc_destroy(struct ringbuf_mpsc *rb);
  * Return: true if a slot was claimed and @rsv filled in; false for any of
  * the three reasons above.
  */
-bool ringbuf_mpsc_reserve(struct ringbuf_mpsc *rb,
-                          struct ringbuf_mpsc_rsv *rsv);
+bool ringbuf_mpsc_reserve(struct ringbuf_mpsc *rb, struct ringbuf_mpsc_rsv *rsv);
 
 /**
  * ringbuf_mpsc_submit - publish a filled reservation to the consumer
@@ -285,8 +284,7 @@ bool ringbuf_mpsc_reserve(struct ringbuf_mpsc *rb,
  * one waiting, and until it arrives ringbuf_mpsc_pop() reports false even
  * though the buffer is not empty.
  */
-void ringbuf_mpsc_submit(struct ringbuf_mpsc *rb,
-                         const struct ringbuf_mpsc_rsv *rsv);
+void ringbuf_mpsc_submit(struct ringbuf_mpsc *rb, const struct ringbuf_mpsc_rsv *rsv);
 
 /**
  * ringbuf_mpsc_push - copy one message into the buffer

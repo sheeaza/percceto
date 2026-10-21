@@ -200,8 +200,7 @@ static int median_index(const double *v, int n)
  *
  * Return: opaque buffer pointer, or NULL on failure.
  */
-static void *q_create(enum variant v, size_t slot_size, size_t capacity,
-                      bool overwrite)
+static void *q_create(enum variant v, size_t slot_size, size_t capacity, bool overwrite)
 {
     if (v == VARIANT_MUTEX)
         return ringbuf_mutex_create(slot_size, capacity, overwrite);
@@ -474,9 +473,8 @@ struct result {
  *
  * Return: the measurements for this single run.
  */
-static struct result run_spsc(enum variant v, bool overwrite, size_t slot_size,
-                              size_t capacity, unsigned consumer_work,
-                              bool paced)
+static struct result run_spsc(enum variant v, bool overwrite, size_t slot_size, size_t capacity,
+                              unsigned consumer_work, bool paced)
 {
     void *q = q_create(v, slot_size, capacity, overwrite);
     atomic_bool done = false;
@@ -517,9 +515,8 @@ static struct result run_spsc(enum variant v, bool overwrite, size_t slot_size,
         .cons_cpu_ns_per_msg = (double)cons.cpu_ns / msgs,
         .push_retries_per_k = (double)prod.retries / k,
         .pop_retries_per_k = (double)cons.retries / k,
-        .ctxsw_per_k = (double)(prod.vol_ctxsw + prod.invol_ctxsw +
-                                cons.vol_ctxsw + cons.invol_ctxsw) /
-                       k,
+        .ctxsw_per_k =
+            (double)(prod.vol_ctxsw + prod.invol_ctxsw + cons.vol_ctxsw + cons.invol_ctxsw) / k,
         .drop_pct = 100.0 * (double)dropped / msgs,
         .received = cons.received,
         .dropped = dropped,
@@ -542,16 +539,14 @@ static struct result run_spsc(enum variant v, bool overwrite, size_t slot_size,
  * Return: the one repetition whose throughput was the median, so that all
  * of its columns describe the same run.
  */
-static struct result bench_spsc(enum variant v, bool overwrite,
-                                size_t slot_size, size_t capacity,
+static struct result bench_spsc(enum variant v, bool overwrite, size_t slot_size, size_t capacity,
                                 unsigned consumer_work, bool paced)
 {
     struct result all[REPS];
     double rate[REPS];
 
     for (int r = 0; r < REPS; r++) {
-        all[r] =
-            run_spsc(v, overwrite, slot_size, capacity, consumer_work, paced);
+        all[r] = run_spsc(v, overwrite, slot_size, capacity, consumer_work, paced);
         rate[r] = all[r].msgs_per_sec;
     }
     return all[median_index(rate, REPS)];
@@ -574,8 +569,8 @@ static struct result bench_spsc(enum variant v, bool overwrite,
  *
  * Return: median messages/sec over REPS repetitions.
  */
-static double bench_single(enum variant v, bool overwrite, size_t slot_size,
-                           size_t capacity, double *cpu_ns_per_op)
+static double bench_single(enum variant v, bool overwrite, size_t slot_size, size_t capacity,
+                           double *cpu_ns_per_op)
 {
     double rate[REPS];
     double cpu[REPS];
@@ -627,9 +622,8 @@ static double bench_single(enum variant v, bool overwrite, size_t slot_size,
  */
 static void print_spsc_header(void)
 {
-    printf("  %-16s %9s %9s %9s %8s %8s %8s %9s %8s %7s\n", "impl", "push-Mm/s",
-           "recv-Mm/s", "cpu-ns/rx", "cpu/wall", "prod-ns", "cons-ns",
-           "push-rt/k", "pop-rt/k", "ctxsw/k");
+    printf("  %-16s %9s %9s %9s %8s %8s %8s %9s %8s %7s\n", "impl", "push-Mm/s", "recv-Mm/s",
+           "cpu-ns/rx", "cpu/wall", "prod-ns", "cons-ns", "push-rt/k", "pop-rt/k", "ctxsw/k");
 }
 
 /**
@@ -642,25 +636,20 @@ static void print_spsc_header(void)
  * cannot be improved by dropping more; prod-ns and cons-ns stay per push,
  * since that is the work each thread actually performed.
  */
-static void print_spsc_row(const char *label, const struct result *r,
-                           bool show_drop)
+static void print_spsc_row(const char *label, const struct result *r, bool show_drop)
 {
-    double cpu_per_rx =
-        r->received ? r->cpu_ns_per_msg * r->msgs_per_sec / r->recv_per_sec :
-                      0.0;
+    double cpu_per_rx = r->received ? r->cpu_ns_per_msg * r->msgs_per_sec / r->recv_per_sec : 0.0;
 
-    printf("  %-16s %9.2f %9.2f %9.1f %8.2f %8.1f %8.1f %9.1f %8.1f %7.2f\n",
-           label, r->msgs_per_sec / 1e6, r->recv_per_sec / 1e6, cpu_per_rx,
-           r->cpu_per_wall, r->prod_cpu_ns_per_msg, r->cons_cpu_ns_per_msg,
-           r->push_retries_per_k, r->pop_retries_per_k, r->ctxsw_per_k);
+    printf("  %-16s %9.2f %9.2f %9.1f %8.2f %8.1f %8.1f %9.1f %8.1f %7.2f\n", label,
+           r->msgs_per_sec / 1e6, r->recv_per_sec / 1e6, cpu_per_rx, r->cpu_per_wall,
+           r->prod_cpu_ns_per_msg, r->cons_cpu_ns_per_msg, r->push_retries_per_k,
+           r->pop_retries_per_k, r->ctxsw_per_k);
 
     if (show_drop)
-        printf("  %-16s   dropped %.2f%%, received %" PRIu64 "%s\n", "",
-               r->drop_pct, r->received,
+        printf("  %-16s   dropped %.2f%%, received %" PRIu64 "%s\n", "", r->drop_pct, r->received,
                r->accounted ? "" : "  !! received + dropped != pushed");
     else if (!r->accounted)
-        printf("  %-16s   !! received %" PRIu64 " of %u\n", "", r->received,
-               TP_MESSAGES);
+        printf("  %-16s   !! received %" PRIu64 " of %u\n", "", r->received, TP_MESSAGES);
 }
 
 /**
@@ -716,8 +705,7 @@ int main(void)
         printf("  cap=%zu\n", caps[c]);
         print_spsc_header();
         for (unsigned i = 0; i < sizeof variants / sizeof *variants; i++) {
-            struct result r =
-                bench_spsc(variants[i], false, 64, caps[c], 0, false);
+            struct result r = bench_spsc(variants[i], false, 64, caps[c], 0, false);
             print_spsc_row(variant_name(variants[i]), &r, false);
         }
     }
@@ -730,8 +718,7 @@ int main(void)
         printf("  cap=%zu\n", caps[c]);
         print_spsc_header();
         for (unsigned i = 0; i < sizeof variants / sizeof *variants; i++) {
-            struct result r =
-                bench_spsc(variants[i], true, 64, caps[c], 0, false);
+            struct result r = bench_spsc(variants[i], true, 64, caps[c], 0, false);
             print_spsc_row(variant_name(variants[i]), &r, true);
         }
     }
@@ -743,8 +730,7 @@ int main(void)
         printf("  slot=%zuB\n", sizes[s]);
         print_spsc_header();
         for (unsigned i = 0; i < sizeof variants / sizeof *variants; i++) {
-            struct result r =
-                bench_spsc(variants[i], true, sizes[s], 4096, 0, false);
+            struct result r = bench_spsc(variants[i], true, sizes[s], 4096, 0, false);
             print_spsc_row(variant_name(variants[i]), &r, true);
         }
     }
@@ -763,8 +749,7 @@ int main(void)
         printf("  cap=%zu\n", caps[c]);
         print_spsc_header();
         for (unsigned i = 0; i < sizeof variants / sizeof *variants; i++) {
-            struct result r =
-                bench_spsc(variants[i], true, 64, caps[c], 200, false);
+            struct result r = bench_spsc(variants[i], true, 64, caps[c], 200, false);
             print_spsc_row(variant_name(variants[i]), &r, true);
         }
     }
@@ -782,8 +767,7 @@ int main(void)
         printf("  %s, cap 4096\n", overwrite ? "overwrite" : "lossless");
         print_spsc_header();
         for (unsigned i = 0; i < sizeof variants / sizeof *variants; i++) {
-            struct result r =
-                bench_spsc(variants[i], overwrite, 64, 4096, 0, true);
+            struct result r = bench_spsc(variants[i], overwrite, 64, 4096, 0, true);
             print_spsc_row(variant_name(variants[i]), &r, overwrite);
         }
     }

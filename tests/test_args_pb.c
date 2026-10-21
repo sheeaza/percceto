@@ -100,13 +100,10 @@ int main(void)
     size_t n = fread(buf, 1, sizeof(buf), f);
     fclose(f);
 
-    CHECK(contains(buf, n, "job 7 took 2.500000"),
-          "rendered slice name is missing");
+    CHECK(contains(buf, n, "job 7 took 2.500000"), "rendered slice name is missing");
     CHECK(contains(buf, n, "n=42 x=ff"), "rendered instant name is missing");
-    CHECK(contains(buf, n, "bad %d"),
-          "mismatched format did not fall back to the bare format");
-    CHECK(!contains(buf, n, "job %d took %f"),
-          "unrendered format leaked into the output");
+    CHECK(contains(buf, n, "bad %d"), "mismatched format did not fall back to the bare format");
+    CHECK(!contains(buf, n, "job %d took %f"), "unrendered format leaked into the output");
     CHECK(contains(buf, n, "w[       5]"), "8d width not rendered");
     CHECK(contains(buf, n, "L[3     ]"), "-6d left-justify not rendered");
     CHECK(contains(buf, n, "S[+3]"), "+d sign not rendered");

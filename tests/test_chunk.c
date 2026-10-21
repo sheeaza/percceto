@@ -136,8 +136,7 @@ static void test_accounting(void)
     struct pf_stats s;
     pf_trace_stats(t, &s);
     uint64_t accounted = s.events + s.dropped;
-    CHECK(accounted <= TOTAL, "accounted %llu of %d",
-          (unsigned long long)accounted, TOTAL);
+    CHECK(accounted <= TOTAL, "accounted %llu of %d", (unsigned long long)accounted, TOTAL);
     CHECK(TOTAL - accounted <= cfg.chunk_slots,
           "%llu events unaccounted, more than one chunk (%zu)",
           (unsigned long long)(TOTAL - accounted), cfg.chunk_slots);
@@ -164,12 +163,10 @@ static void test_snapshot_wrap_is_not_a_drop(void)
 
     struct pf_stats s;
     pf_trace_stats(t, &s);
-    CHECK(s.dropped == 0, "snapshot wrap counted %llu drops",
-          (unsigned long long)s.dropped);
+    CHECK(s.dropped == 0, "snapshot wrap counted %llu drops", (unsigned long long)s.dropped);
 
     char file[512];
-    CHECK(pf_trace_dump(t, "chunk_wrap", file, sizeof(file)) == 0,
-          "dump after wrap failed");
+    CHECK(pf_trace_dump(t, "chunk_wrap", file, sizeof(file)) == 0, "dump after wrap failed");
     pf_trace_close(t);
     unlink(file);
 }

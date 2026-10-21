@@ -189,8 +189,7 @@ PF_API struct pf_trace *pf_trace_open(const struct pf_config *cfg);
  * component. %ENAMETOOLONG means @file is too small for the name; nothing
  * is written in that case.
  */
-PF_API int pf_trace_dump(struct pf_trace *t, const char *name, char *file,
-                         size_t size);
+PF_API int pf_trace_dump(struct pf_trace *t, const char *name, char *file, size_t size);
 
 /**
  * pf_trace_flush() - Dump, then force the result to disk.
@@ -205,8 +204,7 @@ PF_API int pf_trace_dump(struct pf_trace *t, const char *name, char *file,
  *
  * Return: 0 on success, or -1 with errno set.
  */
-PF_API int pf_trace_flush(struct pf_trace *t, const char *name, char *file,
-                          size_t size);
+PF_API int pf_trace_flush(struct pf_trace *t, const char *name, char *file, size_t size);
 
 /**
  * pf_trace_stats() - Read the cumulative counters.
@@ -246,8 +244,7 @@ PF_API void pf_trace_close(struct pf_trace *t);
  *
  * Return: The new track's track_uuid, or 0 if the table is full.
  */
-PF_API uint64_t pf_track_thread(struct pf_trace *t, int32_t pid, int32_t tid,
-                                const char *name);
+PF_API uint64_t pf_track_thread(struct pf_trace *t, int32_t pid, int32_t tid, const char *name);
 
 /**
  * pf_track_counter() - Get or register a counter track.
@@ -272,8 +269,8 @@ PF_API uint64_t pf_track_thread(struct pf_trace *t, int32_t pid, int32_t tid,
  * Return: The track's track_uuid, or 0 if the table is full, @parent_uuid
  *      is not a thread track, or the unit conflicts with an existing track.
  */
-PF_API uint64_t pf_track_counter(struct pf_trace *t, uint64_t parent_uuid,
-                                 const char *name, enum pf_unit unit);
+PF_API uint64_t pf_track_counter(struct pf_trace *t, uint64_t parent_uuid, const char *name,
+                                 enum pf_unit unit);
 
 /**
  * PF_NAME_LITERAL() - Assert at compile time that @s is a string literal.
@@ -293,8 +290,7 @@ PF_API uint64_t pf_track_counter(struct pf_trace *t, uint64_t parent_uuid,
  * track table at registration, so their storage is already owned and a
  * computed name (snprintf into a buffer) is perfectly safe there.
  */
-#define PF_NAME_LITERAL(s) \
-    ((void)sizeof(char[sizeof("" s "") > 1 ? 1 : -1]), ("" s ""))
+#define PF_NAME_LITERAL(s) ((void)sizeof(char[sizeof("" s "") > 1 ? 1 : -1]), ("" s ""))
 
 /**
  * pf_slice_begin() - Begin a slice on a track.
@@ -326,8 +322,7 @@ PF_API uint64_t pf_track_counter(struct pf_trace *t, uint64_t parent_uuid,
  * The lifetime requirement is then yours to honour, and violating it is
  * undiagnosed: the drain thread may read the name long after the call.
  */
-PF_API void pf_slice_begin_impl(struct pf_trace *t, uint64_t track_uuid,
-                                const char *name);
+PF_API void pf_slice_begin_impl(struct pf_trace *t, uint64_t track_uuid, const char *name);
 
 /**
  * pf_slice_end() - End the most recently begun slice on a track.
@@ -355,8 +350,7 @@ PF_API void pf_slice_end(struct pf_trace *t, uint64_t track_uuid);
  * @name: Marker name, or %NULL. Borrowed, not copied; see
  *      pf_slice_begin_impl() for the lifetime requirement.
  */
-PF_API void pf_instant_event_impl(struct pf_trace *t, uint64_t track_uuid,
-                                  const char *name);
+PF_API void pf_instant_event_impl(struct pf_trace *t, uint64_t track_uuid, const char *name);
 
 /* --- Event arguments ----------------------------------------------------
  * A slice or instant may carry up to PF_MAX_ARGS numeric arguments. The
@@ -384,21 +378,17 @@ PF_API void pf_instant_event_impl(struct pf_trace *t, uint64_t track_uuid,
  * Passing more arguments than PF_MAX_ARGS does not compile. Passing none
  * does not either: use pf_slice_begin() for a slice with no arguments.
  */
-#define pf_slice_begin_args(t, track_uuid, name, ...)                      \
-    PF_PACK_CAT(PF_PACK_, PF_NARGS(__VA_ARGS__))(pf_slice_begin_args_impl, \
-                                                 (t), (track_uuid),        \
-                                                 PF_NAME_LITERAL(name),    \
-                                                 __VA_ARGS__)
+#define pf_slice_begin_args(t, track_uuid, name, ...)                                         \
+    PF_PACK_CAT(PF_PACK_, PF_NARGS(__VA_ARGS__))(pf_slice_begin_args_impl, (t), (track_uuid), \
+                                                 PF_NAME_LITERAL(name), __VA_ARGS__)
 
 /**
  * pf_instant_event_args() - pf_instant_event() with 1 to PF_MAX_ARGS
  * arguments. See pf_slice_begin_args().
  */
-#define pf_instant_event_args(t, track_uuid, name, ...)                      \
-    PF_PACK_CAT(PF_PACK_, PF_NARGS(__VA_ARGS__))(pf_instant_event_args_impl, \
-                                                 (t), (track_uuid),          \
-                                                 PF_NAME_LITERAL(name),      \
-                                                 __VA_ARGS__)
+#define pf_instant_event_args(t, track_uuid, name, ...)                                         \
+    PF_PACK_CAT(PF_PACK_, PF_NARGS(__VA_ARGS__))(pf_instant_event_args_impl, (t), (track_uuid), \
+                                                 PF_NAME_LITERAL(name), __VA_ARGS__)
 
 /**
  * pf_slice_begin_args_impl() - pf_slice_begin_args() without the macro.
@@ -409,15 +399,13 @@ PF_API void pf_instant_event_impl(struct pf_trace *t, uint64_t track_uuid,
  *
  * Call the macro instead; these are its expansion targets.
  */
-PF_API void pf_slice_begin_args_impl(struct pf_trace *t, uint64_t track_uuid,
-                                     const char *name, unsigned nargs,
-                                     uint64_t a0, bool a0_dbl, uint64_t a1,
+PF_API void pf_slice_begin_args_impl(struct pf_trace *t, uint64_t track_uuid, const char *name,
+                                     unsigned nargs, uint64_t a0, bool a0_dbl, uint64_t a1,
                                      bool a1_dbl);
 
 /** pf_instant_event_args_impl() - pf_instant_event_args() without the macro. */
-PF_API void pf_instant_event_args_impl(struct pf_trace *t, uint64_t track_uuid,
-                                       const char *name, unsigned nargs,
-                                       uint64_t a0, bool a0_dbl, uint64_t a1,
+PF_API void pf_instant_event_args_impl(struct pf_trace *t, uint64_t track_uuid, const char *name,
+                                       unsigned nargs, uint64_t a0, bool a0_dbl, uint64_t a1,
                                        bool a1_dbl);
 
 /* Counts a macro's arguments, up to four. Used only to pick PF_PACK_n. */
@@ -452,9 +440,9 @@ static inline uint64_t pf_arg_bits_double_(double v)
  * then the same arguments the impl takes, minus the packed ones. */
 #define PF_PACK_1(fn, t, uuid, name, a) \
     fn((t), (uuid), (name), 1, PF_ARG_BITS(a), PF_ARG_IS_DOUBLE(a), 0, 0)
-#define PF_PACK_2(fn, t, uuid, name, a, b)                          \
-    fn((t), (uuid), (name), 2, PF_ARG_BITS(a), PF_ARG_IS_DOUBLE(a), \
-       PF_ARG_BITS(b), PF_ARG_IS_DOUBLE(b))
+#define PF_PACK_2(fn, t, uuid, name, a, b)                                          \
+    fn((t), (uuid), (name), 2, PF_ARG_BITS(a), PF_ARG_IS_DOUBLE(a), PF_ARG_BITS(b), \
+       PF_ARG_IS_DOUBLE(b))
 /* More than PF_MAX_ARGS: this name is never defined, so the call fails
  * to compile at the call site. */
 #define PF_PACK_3(...) pf_too_many_args_for_PF_MAX_ARGS(__VA_ARGS__)
@@ -463,11 +451,9 @@ static inline uint64_t pf_arg_bits_double_(double v)
 /* --- Event arguments on the calling thread's track ---------------------
  * The _g forms of the argument macros above. Same rules: the format is a
  * literal, one argument per placeholder, up to PF_MAX_ARGS. */
-#define PF_PACKG_1(fn, name, a) \
-    fn((name), 1, PF_ARG_BITS(a), PF_ARG_IS_DOUBLE(a), 0, 0)
-#define PF_PACKG_2(fn, name, a, b)                                     \
-    fn((name), 2, PF_ARG_BITS(a), PF_ARG_IS_DOUBLE(a), PF_ARG_BITS(b), \
-       PF_ARG_IS_DOUBLE(b))
+#define PF_PACKG_1(fn, name, a) fn((name), 1, PF_ARG_BITS(a), PF_ARG_IS_DOUBLE(a), 0, 0)
+#define PF_PACKG_2(fn, name, a, b) \
+    fn((name), 2, PF_ARG_BITS(a), PF_ARG_IS_DOUBLE(a), PF_ARG_BITS(b), PF_ARG_IS_DOUBLE(b))
 #define PF_PACKG_3(...) pf_too_many_args_for_PF_MAX_ARGS(__VA_ARGS__)
 #define PF_PACKG_4(...) pf_too_many_args_for_PF_MAX_ARGS(__VA_ARGS__)
 
@@ -475,30 +461,28 @@ static inline uint64_t pf_arg_bits_double_(double v)
  * pf_slice_begin_args_g() - pf_slice_begin_g() with 1 to PF_MAX_ARGS
  * arguments. See pf_slice_begin_args().
  */
-#define pf_slice_begin_args_g(name, ...)           \
-    PF_PACK_CAT(PF_PACKG_, PF_NARGS(__VA_ARGS__))( \
-        pf_slice_begin_args_g_impl, PF_NAME_LITERAL(name), __VA_ARGS__)
+#define pf_slice_begin_args_g(name, ...)                                      \
+    PF_PACK_CAT(PF_PACKG_, PF_NARGS(__VA_ARGS__))(pf_slice_begin_args_g_impl, \
+                                                  PF_NAME_LITERAL(name), __VA_ARGS__)
 
 /**
  * pf_instant_event_args_g() - pf_instant_event_g() with 1 to PF_MAX_ARGS
  * arguments. See pf_slice_begin_args().
  */
-#define pf_instant_event_args_g(name, ...)         \
-    PF_PACK_CAT(PF_PACKG_, PF_NARGS(__VA_ARGS__))( \
-        pf_instant_event_args_g_impl, PF_NAME_LITERAL(name), __VA_ARGS__)
+#define pf_instant_event_args_g(name, ...)                                      \
+    PF_PACK_CAT(PF_PACKG_, PF_NARGS(__VA_ARGS__))(pf_instant_event_args_g_impl, \
+                                                  PF_NAME_LITERAL(name), __VA_ARGS__)
 
 /**
  * pf_slice_begin_args_g_impl() - pf_slice_begin_args_g() without the macro.
  * Takes the same argument encoding as pf_slice_begin_args_impl().
  */
-PF_API void pf_slice_begin_args_g_impl(const char *name, unsigned nargs,
-                                       uint64_t a0, bool a0_dbl, uint64_t a1,
-                                       bool a1_dbl);
+PF_API void pf_slice_begin_args_g_impl(const char *name, unsigned nargs, uint64_t a0, bool a0_dbl,
+                                       uint64_t a1, bool a1_dbl);
 
 /** pf_instant_event_args_g_impl() - pf_instant_event_args_g() without the macro. */
-PF_API void pf_instant_event_args_g_impl(const char *name, unsigned nargs,
-                                         uint64_t a0, bool a0_dbl, uint64_t a1,
-                                         bool a1_dbl);
+PF_API void pf_instant_event_args_g_impl(const char *name, unsigned nargs, uint64_t a0, bool a0_dbl,
+                                         uint64_t a1, bool a1_dbl);
 
 /**
  * pf_counter_set_int() - Sample a counter track with an integer value.
@@ -506,8 +490,7 @@ PF_API void pf_instant_event_args_g_impl(const char *name, unsigned nargs,
  * @counter_track_uuid: Counter track to sample.
  * @value: Value to record.
  */
-PF_API void pf_counter_set_int(struct pf_trace *t, uint64_t counter_track_uuid,
-                               int64_t value);
+PF_API void pf_counter_set_int(struct pf_trace *t, uint64_t counter_track_uuid, int64_t value);
 
 /**
  * pf_counter_set_double() - Sample a counter track with a floating-point
@@ -516,8 +499,7 @@ PF_API void pf_counter_set_int(struct pf_trace *t, uint64_t counter_track_uuid,
  * @counter_track_uuid: Counter track to sample.
  * @value: Value to record.
  */
-PF_API void pf_counter_set_double(struct pf_trace *t,
-                                  uint64_t counter_track_uuid, double value);
+PF_API void pf_counter_set_double(struct pf_trace *t, uint64_t counter_track_uuid, double value);
 
 /* --- Simple API ---------------------------------------------------------
  *
@@ -605,8 +587,7 @@ PF_API uint64_t pf_track_thread_uuid_g(void);
  * Return: The track's track_uuid, or 0 if there is no default trace or the
  *      call would fail for the reasons pf_track_counter() gives.
  */
-PF_API uint64_t pf_track_counter_g(uint64_t parent_uuid, const char *name,
-                                   enum pf_unit unit);
+PF_API uint64_t pf_track_counter_g(uint64_t parent_uuid, const char *name, enum pf_unit unit);
 
 /**
  * pf_counter_set_int_g() - pf_counter_set_int() on the default trace.

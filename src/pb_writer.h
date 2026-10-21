@@ -88,8 +88,7 @@ void pb_put_bool_field(struct pb_buf *b, uint32_t field_no, bool v);
  * @s: String bytes to encode.
  * @len: Number of bytes in @s.
  */
-void pb_put_string_field(struct pb_buf *b, uint32_t field_no, const char *s,
-                         size_t len);
+void pb_put_string_field(struct pb_buf *b, uint32_t field_no, const char *s, size_t len);
 
 /**
  * pb_put_fixed64_field() - Append a tag followed by a raw 64-bit payload.
@@ -97,8 +96,7 @@ void pb_put_string_field(struct pb_buf *b, uint32_t field_no, const char *s,
  * @field_no: Field number.
  * @raw_bits: Bits to encode, written little-endian.
  */
-void pb_put_fixed64_field(struct pb_buf *b, uint32_t field_no,
-                          uint64_t raw_bits);
+void pb_put_fixed64_field(struct pb_buf *b, uint32_t field_no, uint64_t raw_bits);
 
 /**
  * pb_put_double_field() - Append a tag followed by a double payload.
@@ -115,7 +113,6 @@ void pb_put_double_field(struct pb_buf *b, uint32_t field_no, double v);
  * @field_no: Field number.
  * @sub: Encoded submessage to embed.
  */
-void pb_put_submessage_field(struct pb_buf *b, uint32_t field_no,
-                             const struct pb_buf *sub);
+void pb_put_submessage_field(struct pb_buf *b, uint32_t field_no, const struct pb_buf *sub);
 
 #endif /* PB_WRITER_H */

@@ -26,8 +26,7 @@
  * Return: the new buffer, or NULL on allocation failure, mutex-init failure,
  * or invalid arguments.
  */
-struct ringbuf_zcopy *ringbuf_zcopy_create(size_t slot_size,
-                                           size_t min_capacity,
+struct ringbuf_zcopy *ringbuf_zcopy_create(size_t slot_size, size_t min_capacity,
                                            enum ringbuf_mode mode)
 {
     if (slot_size == 0)
@@ -54,27 +53,23 @@ struct ringbuf_zcopy *ringbuf_zcopy_create(size_t slot_size,
         return NULL;
     if (capacity > SIZE_MAX / sizeof(atomic_size_t))
         return NULL;
-    size_t tail_bytes =
-        add_checked(stamp_offset, capacity * sizeof(atomic_size_t));
+    size_t tail_bytes = add_checked(stamp_offset, capacity * sizeof(atomic_size_t));
     if (tail_bytes == 0)
         return NULL;
 
     /* C11 aligned_alloc requires the size to be a multiple of the alignment. */
-    size_t total =
-        add_checked(offsetof(struct ringbuf_zcopy, tail), tail_bytes);
+    size_t total = add_checked(offsetof(struct ringbuf_zcopy, tail), tail_bytes);
     total = align_up(total, _Alignof(struct ringbuf_zcopy));
     if (total == 0)
         return NULL;
 
-    struct ringbuf_zcopy *rb =
-        aligned_alloc(_Alignof(struct ringbuf_zcopy), total);
+    struct ringbuf_zcopy *rb = aligned_alloc(_Alignof(struct ringbuf_zcopy), total);
     if (rb == NULL)
         return NULL;
 
     /* Only overwrite mode has two writers to reconcile, so only it pays for
      * a mutex. ringbuf_zcopy_destroy mirrors this guard. */
-    if (mode == RINGBUF_DROP_OLDEST &&
-        pthread_mutex_init(&rb->lock, NULL) != 0) {
+    if (mode == RINGBUF_DROP_OLDEST && pthread_mutex_init(&rb->lock, NULL) != 0) {
         free(rb);
         return NULL;
     }
@@ -213,10 +208,8 @@ bool ringbuf_zcopy_reserve(struct ringbuf_zcopy *rb, struct ringbuf_rsv *rsv)
              * itself is unread by the stamp we just read. An argument about
              * issue order rather than thread identity, so N producers under
              * one mutex satisfy it exactly as a single producer does. */
-            atomic_store_explicit(&rb->read_idx, w - rb->capacity + 1,
-                                  memory_order_relaxed);
-            atomic_fetch_add_explicit(&rb->dropped_count, 1,
-                                      memory_order_relaxed);
+            atomic_store_explicit(&rb->read_idx, w - rb->capacity + 1, memory_order_relaxed);
+            atomic_fetch_add_explicit(&rb->dropped_count, 1, memory_order_relaxed);
 
             /* LOAD-BEARING, and it looks redundant: we are about to reserve
              * this slot ourselves, so why mark it free first? Because the
@@ -271,8 +264,7 @@ bool ringbuf_zcopy_reserve(struct ringbuf_zcopy *rb, struct ringbuf_rsv *rsv)
  * the caller's fill to pop's acquire load. ticket + 1 is what marks the slot
  * submitted and names the ticket it holds.
  */
-void ringbuf_zcopy_submit(struct ringbuf_zcopy *rb,
-                          const struct ringbuf_rsv *rsv)
+void ringbuf_zcopy_submit(struct ringbuf_zcopy *rb, const struct ringbuf_rsv *rsv)
 {
     atomic_store_explicit(&rb->stamp[rsv->ticket & rb->mask], rsv->ticket + 1,
                           memory_order_release);
@@ -339,8 +331,7 @@ static bool take_submitted(struct ringbuf_zcopy *rb, void *data, size_t r)
      *
      * r + capacity, not r + 1: the stamp names the next ticket this slot will
      * hold. Distinguishable from r + 1 because capacity >= 2. */
-    atomic_store_explicit(&rb->stamp[idx], r + rb->capacity,
-                          memory_order_release);
+    atomic_store_explicit(&rb->stamp[idx], r + rb->capacity, memory_order_release);
     return true;
 }
 
@@ -532,8 +523,7 @@ void ringbuf_zcopy_test_seed_counters(struct ringbuf_zcopy *rb, size_t start)
      * stamp[t & mask] == t for the ticket t each slot awaits. */
     for (size_t i = 0; i < rb->capacity; i++) {
         size_t offset = (i - (start & rb->mask)) & rb->mask;
-        atomic_store_explicit(&rb->stamp[i], start + offset,
-                              memory_order_relaxed);
+        atomic_store_explicit(&rb->stamp[i], start + offset, memory_order_relaxed);
     }
 }
 #endif

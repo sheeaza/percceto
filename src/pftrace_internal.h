@@ -78,8 +78,7 @@ enum pf_rec_flag {
 };
 
 /* The layout is the on-chunk wire format, so pin it. */
-_Static_assert(sizeof(struct pf_rec) == PF_PAYLOAD_BYTES,
-               "the record is exactly PF_PAYLOAD_BYTES");
+_Static_assert(sizeof(struct pf_rec) == PF_PAYLOAD_BYTES, "the record is exactly PF_PAYLOAD_BYTES");
 _Static_assert(offsetof(struct pf_rec, ts) == 0, "ts leads the record");
 _Static_assert(offsetof(struct pf_rec, track) == 8, "track follows ts");
 _Static_assert(offsetof(struct pf_rec, u) == 16, "name/value follows track");
@@ -376,16 +375,15 @@ static inline uint64_t now_ns(clockid_t clk)
 }
 
 int out_flush(struct pf_trace *t);
-bool intern_lookup_or_insert(struct intern_table *tab, const char *key,
-                             uint64_t *iid_out, bool *is_new_out);
+bool intern_lookup_or_insert(struct intern_table *tab, const char *key, uint64_t *iid_out,
+                             bool *is_new_out);
 void intern_table_reset(struct intern_table *tab);
 
 /* Copies track @i into @out if its descriptor is due: it was registered at
  * or after index @first, or it was renamed since it was last emitted. On
  * return true, the copy is marked emitted. Takes track_lock, so the caller
  * must not hold it. Caller holds out_lock. */
-bool track_emit_due(struct pf_trace *t, unsigned i, unsigned first,
-                    struct track_def *out);
+bool track_emit_due(struct pf_trace *t, unsigned i, unsigned first, struct track_def *out);
 
 /* --- The two output formats ------------------------------------------- */
 

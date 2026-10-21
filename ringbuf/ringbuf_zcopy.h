@@ -303,8 +303,7 @@ struct ringbuf_rsv {
  * Return: the new buffer, or NULL on allocation failure, mutex-init
  * failure, or invalid arguments.
  */
-struct ringbuf_zcopy *ringbuf_zcopy_create(size_t slot_size,
-                                           size_t min_capacity,
+struct ringbuf_zcopy *ringbuf_zcopy_create(size_t slot_size, size_t min_capacity,
                                            enum ringbuf_mode mode);
 
 /**
@@ -371,8 +370,7 @@ bool ringbuf_zcopy_reserve(struct ringbuf_zcopy *rb, struct ringbuf_rsv *rsv);
  * one waiting, and until it arrives ringbuf_zcopy_pop() reports false even
  * though the buffer is not empty.
  */
-void ringbuf_zcopy_submit(struct ringbuf_zcopy *rb,
-                          const struct ringbuf_rsv *rsv);
+void ringbuf_zcopy_submit(struct ringbuf_zcopy *rb, const struct ringbuf_rsv *rsv);
 
 /**
  * ringbuf_zcopy_push - reserve, copy one message in, and submit

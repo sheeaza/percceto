@@ -27,8 +27,7 @@ static void check(int ok, const char *what)
 }
 
 /* Returns the index of the first track matching @kind and @tid, or -1. */
-static int find_track(const struct pf_trace *t, enum track_kind kind,
-                      int32_t tid)
+static int find_track(const struct pf_trace *t, enum track_kind kind, int32_t tid)
 {
     for (unsigned i = 0; i < t->track_count; i++) {
         const struct track_def *td = &t->tracks[i];
@@ -55,8 +54,7 @@ int main(void)
     check(t->process_uuid != 0, "pf_trace_open registers a process track");
 
     int p = find_track(t, TRACK_PROCESS, 0);
-    check(p >= 0 && t->tracks[p].uuid == t->process_uuid &&
-              t->tracks[p].pid == (int32_t)getpid(),
+    check(p >= 0 && t->tracks[p].uuid == t->process_uuid && t->tracks[p].pid == (int32_t)getpid(),
           "process track has the uuid and pid of this process");
 
     /* The first _g call on this thread registers its thread track. */
@@ -79,8 +77,7 @@ int main(void)
         check(0, "open trace with process_name");
     } else {
         int q = find_track(t, TRACK_PROCESS, 0);
-        check(q >= 0 && t->tracks[q].has_name &&
-                  strcmp(t->tracks[q].name, "custom-proc") == 0,
+        check(q >= 0 && t->tracks[q].has_name && strcmp(t->tracks[q].name, "custom-proc") == 0,
               "process_name from config names the process track");
         pf_trace_close(t);
     }

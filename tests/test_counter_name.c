@@ -59,8 +59,7 @@ static void test_same_name_one_track(void)
                pf_track_counter(t, 0, "c", PF_UNIT_COUNT) &&
                pf_track_counter(t, 0, "d", PF_UNIT_COUNT);
     check(fits, "repeated name used one table entry, three more fit");
-    check(pf_track_counter(t, 0, "e", PF_UNIT_COUNT) == 0,
-          "table full refuses a new name");
+    check(pf_track_counter(t, 0, "e", PF_UNIT_COUNT) == 0, "table full refuses a new name");
     check(pf_track_counter(t, 0, "queue/a.depth", PF_UNIT_COUNT) == first,
           "existing name still found on a full table");
     pf_trace_close(t);

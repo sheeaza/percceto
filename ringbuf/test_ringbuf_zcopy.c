@@ -117,9 +117,7 @@ static void *lossless_producer_main(void *arg)
         uint64_t spins = 0;
         while (!ringbuf_zcopy_push(a->rb, &msg)) {
             if (++spins > MAX_SPIN) {
-                fprintf(stderr,
-                        "%s: producer stalled pushing seq %" PRIu64 "\n",
-                        a->label, seq);
+                fprintf(stderr, "%s: producer stalled pushing seq %" PRIu64 "\n", a->label, seq);
                 a->failed = true;
                 return NULL;
             }
@@ -138,16 +136,14 @@ static void *lossless_producer_main(void *arg)
 static void *lossless_consumer_main(void *arg)
 {
     struct lossless_consumer_args *a = arg;
-    for (uint64_t expected_seq = 0; expected_seq < a->num_messages;
-         expected_seq++) {
+    for (uint64_t expected_seq = 0; expected_seq < a->num_messages; expected_seq++) {
         struct message msg;
 
         uint64_t spins = 0;
         while (!ringbuf_zcopy_pop(a->rb, &msg)) {
             if (++spins > MAX_SPIN) {
-                fprintf(stderr,
-                        "%s: consumer stalled waiting for seq %" PRIu64 "\n",
-                        a->label, expected_seq);
+                fprintf(stderr, "%s: consumer stalled waiting for seq %" PRIu64 "\n", a->label,
+                        expected_seq);
                 a->failed = true;
                 return NULL;
             }
@@ -155,10 +151,8 @@ static void *lossless_consumer_main(void *arg)
         }
 
         if (msg.seq != expected_seq || !payload_ok(msg.payload, expected_seq)) {
-            fprintf(stderr,
-                    "%s: mismatch at expected seq %" PRIu64 ", got %" PRIu64
-                    "\n",
-                    a->label, expected_seq, msg.seq);
+            fprintf(stderr, "%s: mismatch at expected seq %" PRIu64 ", got %" PRIu64 "\n", a->label,
+                    expected_seq, msg.seq);
             a->failed = true;
             return NULL;
         }
@@ -174,8 +168,7 @@ static void *lossless_consumer_main(void *arg)
  *
  * Return: true if every message arrived in order with an intact payload.
  */
-static bool run_lossless_transfer(struct ringbuf_zcopy *rb, uint64_t n,
-                                  const char *label)
+static bool run_lossless_transfer(struct ringbuf_zcopy *rb, uint64_t n, const char *label)
 {
     struct lossless_producer_args pargs = {
         .rb = rb, .num_messages = n, .failed = false, .label = label
@@ -235,8 +228,7 @@ static bool run_overwrite_basic_on(struct ringbuf_zcopy *rb, const char *label)
         msg.seq = seq;
         fill_payload(msg.payload, seq);
         if (!ringbuf_zcopy_push(rb, &msg)) {
-            fprintf(stderr, "%s: push unexpectedly failed at seq %" PRIu64 "\n",
-                    label, seq);
+            fprintf(stderr, "%s: push unexpectedly failed at seq %" PRIu64 "\n", label, seq);
             return false;
         }
     }
@@ -250,14 +242,13 @@ static bool run_overwrite_basic_on(struct ringbuf_zcopy *rb, const char *label)
     for (uint64_t expected_seq = 6; expected_seq < 10; expected_seq++) {
         struct message msg;
         if (!ringbuf_zcopy_pop(rb, &msg)) {
-            fprintf(stderr, "%s: pop unexpectedly failed at seq %" PRIu64 "\n",
-                    label, expected_seq);
+            fprintf(stderr, "%s: pop unexpectedly failed at seq %" PRIu64 "\n", label,
+                    expected_seq);
             return false;
         }
         if (msg.seq != expected_seq || !payload_ok(msg.payload, expected_seq)) {
-            fprintf(stderr,
-                    "%s: mismatch, expected seq %" PRIu64 ", got %" PRIu64 "\n",
-                    label, expected_seq, msg.seq);
+            fprintf(stderr, "%s: mismatch, expected seq %" PRIu64 ", got %" PRIu64 "\n", label,
+                    expected_seq, msg.seq);
             return false;
         }
     }
@@ -279,8 +270,7 @@ static bool run_overwrite_basic_on(struct ringbuf_zcopy *rb, const char *label)
  */
 static bool run_overwrite_basic_test(void)
 {
-    struct ringbuf_zcopy *rb =
-        ringbuf_zcopy_create(sizeof(struct message), 4, RINGBUF_DROP_OLDEST);
+    struct ringbuf_zcopy *rb = ringbuf_zcopy_create(sizeof(struct message), 4, RINGBUF_DROP_OLDEST);
     if (!rb) {
         fprintf(stderr, "overwrite_basic: ringbuf_zcopy_create failed\n");
         return false;
@@ -378,9 +368,8 @@ static void *stress_consumer_main(void *arg)
                     break;
             } else {
                 if (++spins > MAX_SPIN) {
-                    fprintf(stderr,
-                            "%s: consumer stalled after %" PRIu64 " messages\n",
-                            a->label, a->received);
+                    fprintf(stderr, "%s: consumer stalled after %" PRIu64 " messages\n", a->label,
+                            a->received);
                     a->stalled = true;
                     return NULL;
                 }
@@ -416,15 +405,12 @@ static void *stress_consumer_main(void *arg)
  * Return: true if push never failed, payloads were intact, seqs strictly
  * increasing, the final message observed, and received + dropped == @n.
  */
-static bool run_overwrite_stress_on(struct ringbuf_zcopy *rb, uint64_t n,
-                                    const char *label)
+static bool run_overwrite_stress_on(struct ringbuf_zcopy *rb, uint64_t n, const char *label)
 {
     atomic_bool done = false;
-    struct stress_producer_args pargs = { .rb = rb,
-                                          .num_messages = n,
-                                          .done = &done,
-                                          .failed = false,
-                                          .label = label };
+    struct stress_producer_args pargs = {
+        .rb = rb, .num_messages = n, .done = &done, .failed = false, .label = label
+    };
     struct stress_consumer_args cargs = { .rb = rb,
                                           .done = &done,
                                           .received = 0,
@@ -453,24 +439,20 @@ static bool run_overwrite_stress_on(struct ringbuf_zcopy *rb, uint64_t n,
         return false;
     }
     if (cargs.last_seq != n - 1) {
-        fprintf(stderr,
-                "%s: did not observe final message (last_seq=%" PRIu64 ")\n",
-                label, cargs.last_seq);
+        fprintf(stderr, "%s: did not observe final message (last_seq=%" PRIu64 ")\n", label,
+                cargs.last_seq);
         return false;
     }
     /* The accounting invariant: every message is either received or dropped,
      * never both and never neither. This is what catches a pop that acted on
      * a read index sampled before it took the lock. */
     if (cargs.received + dropped != n) {
-        fprintf(stderr,
-                "%s: received(%" PRIu64 ") + dropped(%zu) != pushed(%" PRIu64
-                ")\n",
-                label, cargs.received, dropped, n);
+        fprintf(stderr, "%s: received(%" PRIu64 ") + dropped(%zu) != pushed(%" PRIu64 ")\n", label,
+                cargs.received, dropped, n);
         return false;
     }
 
-    printf("%s: PASS (received=%" PRIu64 ", dropped=%zu)\n", label,
-           cargs.received, dropped);
+    printf("%s: PASS (received=%" PRIu64 ", dropped=%zu)\n", label, cargs.received, dropped);
     return true;
 }
 
@@ -481,8 +463,7 @@ static bool run_overwrite_stress_on(struct ringbuf_zcopy *rb, uint64_t n,
  */
 static bool run_overwrite_stress_test(void)
 {
-    struct ringbuf_zcopy *rb =
-        ringbuf_zcopy_create(sizeof(struct message), 4, RINGBUF_DROP_OLDEST);
+    struct ringbuf_zcopy *rb = ringbuf_zcopy_create(sizeof(struct message), 4, RINGBUF_DROP_OLDEST);
     if (!rb) {
         fprintf(stderr, "overwrite_stress: ringbuf_zcopy_create failed\n");
         return false;
@@ -504,8 +485,7 @@ static bool run_overwrite_stress_test(void)
  */
 static bool run_reserve_basic_test(void)
 {
-    struct ringbuf_zcopy *rb =
-        ringbuf_zcopy_create(sizeof(struct message), 8, RINGBUF_DROP_NEWEST);
+    struct ringbuf_zcopy *rb = ringbuf_zcopy_create(sizeof(struct message), 8, RINGBUF_DROP_NEWEST);
     if (!rb) {
         fprintf(stderr, "reserve_basic: ringbuf_zcopy_create failed\n");
         return false;
@@ -518,8 +498,7 @@ static bool run_reserve_basic_test(void)
         struct message msg;
 
         if (!ringbuf_zcopy_reserve(rb, &rsv)) {
-            fprintf(stderr,
-                    "reserve_basic: reserve failed at seq %" PRIu64 "\n", seq);
+            fprintf(stderr, "reserve_basic: reserve failed at seq %" PRIu64 "\n", seq);
             goto out;
         }
 
@@ -527,26 +506,18 @@ static bool run_reserve_basic_test(void)
          * already in the ring. */
         fill_in_place(rsv.data, seq);
         if (ringbuf_zcopy_pop(rb, &msg)) {
-            fprintf(stderr,
-                    "reserve_basic: pop succeeded before submit at seq %" PRIu64
-                    "\n",
-                    seq);
+            fprintf(stderr, "reserve_basic: pop succeeded before submit at seq %" PRIu64 "\n", seq);
             goto out;
         }
 
         ringbuf_zcopy_submit(rb, &rsv);
 
         if (!ringbuf_zcopy_pop(rb, &msg)) {
-            fprintf(stderr,
-                    "reserve_basic: pop failed after submit at seq %" PRIu64
-                    "\n",
-                    seq);
+            fprintf(stderr, "reserve_basic: pop failed after submit at seq %" PRIu64 "\n", seq);
             goto out;
         }
         if (msg.seq != seq || !payload_ok(msg.payload, seq)) {
-            fprintf(stderr,
-                    "reserve_basic: mismatch, expected seq %" PRIu64
-                    ", got %" PRIu64 "\n",
+            fprintf(stderr, "reserve_basic: mismatch, expected seq %" PRIu64 ", got %" PRIu64 "\n",
                     seq, msg.seq);
             goto out;
         }
@@ -574,8 +545,7 @@ out:
  */
 static bool run_ooo_submit_test(void)
 {
-    struct ringbuf_zcopy *rb =
-        ringbuf_zcopy_create(sizeof(struct message), 4, RINGBUF_DROP_NEWEST);
+    struct ringbuf_zcopy *rb = ringbuf_zcopy_create(sizeof(struct message), 4, RINGBUF_DROP_NEWEST);
     if (!rb) {
         fprintf(stderr, "ooo_submit: ringbuf_zcopy_create failed\n");
         return false;
@@ -608,9 +578,7 @@ static bool run_ooo_submit_test(void)
 
     /* c is submitted, but a and b are not, so nothing may be delivered. */
     if (ringbuf_zcopy_pop(rb, &msg)) {
-        fprintf(stderr,
-                "ooo_submit: pop delivered seq %" PRIu64
-                " out of reservation order\n",
+        fprintf(stderr, "ooo_submit: pop delivered seq %" PRIu64 " out of reservation order\n",
                 msg.seq);
         goto out;
     }
@@ -624,28 +592,23 @@ static bool run_ooo_submit_test(void)
 
     /* a is now the oldest and submitted, so it is delivered -- then b blocks
      * c again, even though c has been submitted all along. */
-    if (!ringbuf_zcopy_pop(rb, &msg) || msg.seq != 10 ||
-        !payload_ok(msg.payload, 10)) {
+    if (!ringbuf_zcopy_pop(rb, &msg) || msg.seq != 10 || !payload_ok(msg.payload, 10)) {
         fprintf(stderr, "ooo_submit: expected seq 10 after submitting a\n");
         goto out;
     }
     if (ringbuf_zcopy_pop(rb, &msg)) {
-        fprintf(stderr,
-                "ooo_submit: pop delivered seq %" PRIu64
-                " while b was unsubmitted\n",
+        fprintf(stderr, "ooo_submit: pop delivered seq %" PRIu64 " while b was unsubmitted\n",
                 msg.seq);
         goto out;
     }
 
     ringbuf_zcopy_submit(rb, &b);
 
-    if (!ringbuf_zcopy_pop(rb, &msg) || msg.seq != 11 ||
-        !payload_ok(msg.payload, 11)) {
+    if (!ringbuf_zcopy_pop(rb, &msg) || msg.seq != 11 || !payload_ok(msg.payload, 11)) {
         fprintf(stderr, "ooo_submit: expected seq 11 after submitting b\n");
         goto out;
     }
-    if (!ringbuf_zcopy_pop(rb, &msg) || msg.seq != 12 ||
-        !payload_ok(msg.payload, 12)) {
+    if (!ringbuf_zcopy_pop(rb, &msg) || msg.seq != 12 || !payload_ok(msg.payload, 12)) {
         fprintf(stderr, "ooo_submit: expected seq 12 to follow\n");
         goto out;
     }
@@ -675,8 +638,7 @@ out:
  */
 static bool run_reserve_exhaust_test(void)
 {
-    struct ringbuf_zcopy *rb =
-        ringbuf_zcopy_create(sizeof(struct message), 4, RINGBUF_DROP_NEWEST);
+    struct ringbuf_zcopy *rb = ringbuf_zcopy_create(sizeof(struct message), 4, RINGBUF_DROP_NEWEST);
     if (!rb) {
         fprintf(stderr, "reserve_exhaust: ringbuf_zcopy_create failed\n");
         return false;
@@ -689,8 +651,7 @@ static bool run_reserve_exhaust_test(void)
     struct message msg;
 
     if (capacity != 4) {
-        fprintf(stderr, "reserve_exhaust: expected capacity 4, got %zu\n",
-                capacity);
+        fprintf(stderr, "reserve_exhaust: expected capacity 4, got %zu\n", capacity);
         goto out;
     }
 
@@ -721,9 +682,8 @@ static bool run_reserve_exhaust_test(void)
     /* Still full: the slot now holds a real unread message rather than an
      * in-progress fill, which is lossless mode's other reason to refuse. */
     if (ringbuf_zcopy_reserve(rb, &extra)) {
-        fprintf(stderr,
-                "reserve_exhaust: reserve succeeded after submit alone -- a "
-                "submitted message is not a free slot\n");
+        fprintf(stderr, "reserve_exhaust: reserve succeeded after submit alone -- a "
+                        "submitted message is not a free slot\n");
         goto out;
     }
 
@@ -750,16 +710,13 @@ static bool run_reserve_exhaust_test(void)
     for (uint64_t expected_seq = 1; expected_seq <= 4; expected_seq++) {
         if (!ringbuf_zcopy_pop(rb, &msg) || msg.seq != expected_seq ||
             !payload_ok(msg.payload, expected_seq)) {
-            fprintf(stderr,
-                    "reserve_exhaust: expected seq %" PRIu64
-                    " while draining\n",
+            fprintf(stderr, "reserve_exhaust: expected seq %" PRIu64 " while draining\n",
                     expected_seq);
             goto out;
         }
     }
     if (ringbuf_zcopy_pop(rb, &msg)) {
-        fprintf(stderr,
-                "reserve_exhaust: expected empty buffer after draining\n");
+        fprintf(stderr, "reserve_exhaust: expected empty buffer after draining\n");
         goto out;
     }
 
@@ -788,11 +745,9 @@ out:
  */
 static bool run_unsubmitted_blocks_evict_test(void)
 {
-    struct ringbuf_zcopy *rb =
-        ringbuf_zcopy_create(sizeof(struct message), 4, RINGBUF_DROP_OLDEST);
+    struct ringbuf_zcopy *rb = ringbuf_zcopy_create(sizeof(struct message), 4, RINGBUF_DROP_OLDEST);
     if (!rb) {
-        fprintf(stderr,
-                "unsubmitted_blocks_evict: ringbuf_zcopy_create failed\n");
+        fprintf(stderr, "unsubmitted_blocks_evict: ringbuf_zcopy_create failed\n");
         return false;
     }
 
@@ -815,9 +770,7 @@ static bool run_unsubmitted_blocks_evict_test(void)
         tmp.seq = seq;
         fill_payload(tmp.payload, seq);
         if (!ringbuf_zcopy_push(rb, &tmp)) {
-            fprintf(stderr,
-                    "unsubmitted_blocks_evict: push failed at seq %" PRIu64
-                    " with room\n",
+            fprintf(stderr, "unsubmitted_blocks_evict: push failed at seq %" PRIu64 " with room\n",
                     seq);
             goto out;
         }
@@ -853,9 +806,7 @@ static bool run_unsubmitted_blocks_evict_test(void)
 
     dropped = ringbuf_zcopy_dropped_count(rb);
     if (dropped != 1) {
-        fprintf(stderr,
-                "unsubmitted_blocks_evict: expected 1 dropped, got %zu\n",
-                dropped);
+        fprintf(stderr, "unsubmitted_blocks_evict: expected 1 dropped, got %zu\n", dropped);
         goto out;
     }
 
@@ -863,15 +814,12 @@ static bool run_unsubmitted_blocks_evict_test(void)
     for (uint64_t expected_seq = 1; expected_seq <= 4; expected_seq++) {
         if (!ringbuf_zcopy_pop(rb, &msg) || msg.seq != expected_seq ||
             !payload_ok(msg.payload, expected_seq)) {
-            fprintf(stderr,
-                    "unsubmitted_blocks_evict: expected seq %" PRIu64 "\n",
-                    expected_seq);
+            fprintf(stderr, "unsubmitted_blocks_evict: expected seq %" PRIu64 "\n", expected_seq);
             goto out;
         }
     }
     if (ringbuf_zcopy_pop(rb, &msg)) {
-        fprintf(stderr,
-                "unsubmitted_blocks_evict: expected empty after draining\n");
+        fprintf(stderr, "unsubmitted_blocks_evict: expected empty after draining\n");
         goto out;
     }
 
@@ -945,8 +893,7 @@ static void *filler_main(void *arg)
     struct filler_args *a = arg;
 
     for (;;) {
-        bool done = atomic_load_explicit(&a->pool->reserving_done,
-                                         memory_order_acquire);
+        bool done = atomic_load_explicit(&a->pool->reserving_done, memory_order_acquire);
         bool worked = false;
 
         for (size_t i = 0; i < NUM_JOBS; i++) {
@@ -956,8 +903,7 @@ static void *filler_main(void *arg)
             /* Acquire on success: the reservation handle and seq written by
              * the reserver must be visible before we touch rsv.data. */
             if (!atomic_compare_exchange_strong_explicit(
-                    &j->state, &expected, JOB_CLAIMED, memory_order_acquire,
-                    memory_order_relaxed))
+                    &j->state, &expected, JOB_CLAIMED, memory_order_acquire, memory_order_relaxed))
                 continue;
 
             fill_in_place(j->rsv.data, j->seq);
@@ -987,8 +933,7 @@ static void *filler_main(void *arg)
  * Return: true if the job was posted; false if no filler took a job within
  * MAX_SPIN scans, which means the pool has stalled.
  */
-static bool post_job(struct fill_pool *pool, const struct ringbuf_rsv *rsv,
-                     uint64_t seq)
+static bool post_job(struct fill_pool *pool, const struct ringbuf_rsv *rsv, uint64_t seq)
 {
     uint64_t spins = 0;
 
@@ -1001,8 +946,7 @@ static bool post_job(struct fill_pool *pool, const struct ringbuf_rsv *rsv,
              * JOB_EMPTY once it has finished reading j->rsv, and without
              * this acquire our writes to j->rsv below would race that read.
              * Recycling a job slot needs an edge in both directions. */
-            if (atomic_load_explicit(&j->state, memory_order_acquire) !=
-                JOB_EMPTY)
+            if (atomic_load_explicit(&j->state, memory_order_acquire) != JOB_EMPTY)
                 continue;
 
             j->rsv = *rsv;
@@ -1042,8 +986,7 @@ static void *reserver_main(void *arg)
         uint64_t spins = 0;
         while (!ringbuf_zcopy_reserve(a->rb, &rsv)) {
             if (++spins > MAX_SPIN) {
-                fprintf(stderr, "%s: reserver stalled at seq %" PRIu64 "\n",
-                        a->label, seq);
+                fprintf(stderr, "%s: reserver stalled at seq %" PRIu64 "\n", a->label, seq);
                 a->failed = true;
                 goto done;
             }
@@ -1051,8 +994,7 @@ static void *reserver_main(void *arg)
         }
 
         if (!post_job(a->pool, &rsv, seq)) {
-            fprintf(stderr, "%s: filler pool stalled at seq %" PRIu64 "\n",
-                    a->label, seq);
+            fprintf(stderr, "%s: filler pool stalled at seq %" PRIu64 "\n", a->label, seq);
             a->failed = true;
             goto done;
         }
@@ -1077,8 +1019,8 @@ done:
  *
  * Return: true on pass.
  */
-static bool run_parallel_fill_on(struct ringbuf_zcopy *rb, uint64_t n,
-                                 bool overwrite, const char *label)
+static bool run_parallel_fill_on(struct ringbuf_zcopy *rb, uint64_t n, bool overwrite,
+                                 const char *label)
 {
     struct fill_pool pool;
     for (size_t i = 0; i < NUM_JOBS; i++) {
@@ -1139,36 +1081,30 @@ static bool run_parallel_fill_on(struct ringbuf_zcopy *rb, uint64_t n,
     }
     /* Every reservation was submitted exactly once, by exactly one filler. */
     if (filled != n) {
-        fprintf(stderr,
-                "%s: fillers submitted %" PRIu64 " of %" PRIu64 " messages\n",
-                label, filled, n);
+        fprintf(stderr, "%s: fillers submitted %" PRIu64 " of %" PRIu64 " messages\n", label,
+                filled, n);
         return false;
     }
     if (cargs.received + dropped != n) {
-        fprintf(stderr,
-                "%s: received(%" PRIu64 ") + dropped(%zu) != pushed(%" PRIu64
-                ")\n",
-                label, cargs.received, dropped, n);
+        fprintf(stderr, "%s: received(%" PRIu64 ") + dropped(%zu) != pushed(%" PRIu64 ")\n", label,
+                cargs.received, dropped, n);
         return false;
     }
     if (!overwrite && cargs.received != n) {
-        fprintf(stderr,
-                "%s: lossless mode lost messages (received=%" PRIu64
-                " of %" PRIu64 ")\n",
+        fprintf(stderr, "%s: lossless mode lost messages (received=%" PRIu64 " of %" PRIu64 ")\n",
                 label, cargs.received, n);
         return false;
     }
     /* The last reservation cannot be evicted -- nothing is pushed after it --
      * so it must be the last message delivered, in either mode. */
     if (cargs.last_seq != n - 1) {
-        fprintf(stderr,
-                "%s: did not observe final message (last_seq=%" PRIu64 ")\n",
-                label, cargs.last_seq);
+        fprintf(stderr, "%s: did not observe final message (last_seq=%" PRIu64 ")\n", label,
+                cargs.last_seq);
         return false;
     }
 
-    printf("%s: PASS (received=%" PRIu64 ", dropped=%zu, %d fillers)\n", label,
-           cargs.received, dropped, NUM_FILLERS);
+    printf("%s: PASS (received=%" PRIu64 ", dropped=%zu, %d fillers)\n", label, cargs.received,
+           dropped, NUM_FILLERS);
     return true;
 }
 
@@ -1201,15 +1137,12 @@ static bool run_parallel_fill_test(void)
  */
 static bool run_parallel_fill_overwrite_test(void)
 {
-    struct ringbuf_zcopy *rb =
-        ringbuf_zcopy_create(sizeof(struct message), 4, RINGBUF_DROP_OLDEST);
+    struct ringbuf_zcopy *rb = ringbuf_zcopy_create(sizeof(struct message), 4, RINGBUF_DROP_OLDEST);
     if (!rb) {
-        fprintf(stderr,
-                "parallel_fill_overwrite: ringbuf_zcopy_create failed\n");
+        fprintf(stderr, "parallel_fill_overwrite: ringbuf_zcopy_create failed\n");
         return false;
     }
-    bool ok =
-        run_parallel_fill_on(rb, 200000u, true, "parallel_fill_overwrite");
+    bool ok = run_parallel_fill_on(rb, 200000u, true, "parallel_fill_overwrite");
     ringbuf_zcopy_destroy(rb);
     return ok;
 }
@@ -1244,8 +1177,8 @@ static bool run_parallel_fill_overwrite_test(void)
 static bool run_wrap_boundary_test(void)
 {
     const uint64_t capacity = 16;
-    struct ringbuf_zcopy *rb = ringbuf_zcopy_create(
-        sizeof(struct message), (size_t)capacity, RINGBUF_DROP_NEWEST);
+    struct ringbuf_zcopy *rb =
+        ringbuf_zcopy_create(sizeof(struct message), (size_t)capacity, RINGBUF_DROP_NEWEST);
     if (!rb) {
         fprintf(stderr, "wrap_boundary: ringbuf_zcopy_create failed\n");
         return false;
@@ -1253,8 +1186,7 @@ static bool run_wrap_boundary_test(void)
     ringbuf_zcopy_test_seed_counters(rb, SEED_BASE);
 
     if (!ringbuf_zcopy_is_empty_approx(rb)) {
-        fprintf(stderr,
-                "wrap_boundary: should read empty right after seeding\n");
+        fprintf(stderr, "wrap_boundary: should read empty right after seeding\n");
         goto fail;
     }
 
@@ -1264,18 +1196,13 @@ static bool run_wrap_boundary_test(void)
         msg.seq = seq;
         fill_payload(msg.payload, seq);
         if (!ringbuf_zcopy_push(rb, &msg)) {
-            fprintf(stderr,
-                    "wrap_boundary: push failed at seq %" PRIu64
-                    " (expected room)\n",
-                    seq);
+            fprintf(stderr, "wrap_boundary: push failed at seq %" PRIu64 " (expected room)\n", seq);
             goto fail;
         }
     }
 
     if (!ringbuf_zcopy_is_full_approx(rb)) {
-        fprintf(stderr,
-                "wrap_boundary: should read full after %" PRIu64 " pushes\n",
-                capacity);
+        fprintf(stderr, "wrap_boundary: should read full after %" PRIu64 " pushes\n", capacity);
         goto fail;
     }
 
@@ -1295,17 +1222,14 @@ static bool run_wrap_boundary_test(void)
     for (uint64_t expected_seq = 0; expected_seq < capacity; expected_seq++) {
         struct message msg;
         if (!ringbuf_zcopy_pop(rb, &msg)) {
-            fprintf(
-                stderr,
-                "wrap_boundary: pop reported empty across the SIZE_MAX boundary "
-                "at seq %" PRIu64 "\n",
-                expected_seq);
+            fprintf(stderr,
+                    "wrap_boundary: pop reported empty across the SIZE_MAX boundary "
+                    "at seq %" PRIu64 "\n",
+                    expected_seq);
             goto fail;
         }
         if (msg.seq != expected_seq || !payload_ok(msg.payload, expected_seq)) {
-            fprintf(stderr,
-                    "wrap_boundary: mismatch, expected seq %" PRIu64
-                    ", got %" PRIu64 "\n",
+            fprintf(stderr, "wrap_boundary: mismatch, expected seq %" PRIu64 ", got %" PRIu64 "\n",
                     expected_seq, msg.seq);
             goto fail;
         }
@@ -1314,8 +1238,7 @@ static bool run_wrap_boundary_test(void)
     {
         struct message msg;
         if (ringbuf_zcopy_pop(rb, &msg)) {
-            fprintf(stderr,
-                    "wrap_boundary: expected empty buffer after draining\n");
+            fprintf(stderr, "wrap_boundary: expected empty buffer after draining\n");
             goto fail;
         }
     }
@@ -1325,8 +1248,7 @@ static bool run_wrap_boundary_test(void)
     }
 
     ringbuf_zcopy_destroy(rb);
-    printf("wrap_boundary: PASS (crossed SIZE_MAX, %" PRIu64 " messages)\n",
-           capacity);
+    printf("wrap_boundary: PASS (crossed SIZE_MAX, %" PRIu64 " messages)\n", capacity);
     return true;
 
 fail:
@@ -1341,8 +1263,7 @@ fail:
  */
 static bool run_wrap_overwrite_basic_test(void)
 {
-    struct ringbuf_zcopy *rb =
-        ringbuf_zcopy_create(sizeof(struct message), 4, RINGBUF_DROP_OLDEST);
+    struct ringbuf_zcopy *rb = ringbuf_zcopy_create(sizeof(struct message), 4, RINGBUF_DROP_OLDEST);
     if (!rb) {
         fprintf(stderr, "wrap_overwrite_basic: ringbuf_zcopy_create failed\n");
         return false;
@@ -1367,8 +1288,7 @@ static bool run_wrap_lossless_concurrent_test(void)
     struct ringbuf_zcopy *rb =
         ringbuf_zcopy_create(sizeof(struct message), 16, RINGBUF_DROP_NEWEST);
     if (!rb) {
-        fprintf(stderr,
-                "wrap_lossless_concurrent: ringbuf_zcopy_create failed\n");
+        fprintf(stderr, "wrap_lossless_concurrent: ringbuf_zcopy_create failed\n");
         return false;
     }
     ringbuf_zcopy_test_seed_counters(rb, SEED_BASE);
@@ -1384,8 +1304,7 @@ static bool run_wrap_lossless_concurrent_test(void)
  */
 static bool run_wrap_overwrite_stress_test(void)
 {
-    struct ringbuf_zcopy *rb =
-        ringbuf_zcopy_create(sizeof(struct message), 4, RINGBUF_DROP_OLDEST);
+    struct ringbuf_zcopy *rb = ringbuf_zcopy_create(sizeof(struct message), 4, RINGBUF_DROP_OLDEST);
     if (!rb) {
         fprintf(stderr, "wrap_overwrite_stress: ringbuf_zcopy_create failed\n");
         return false;
@@ -1408,8 +1327,7 @@ static bool run_wrap_overwrite_stress_test(void)
  */
 static bool run_wrap_parallel_fill_test(void)
 {
-    struct ringbuf_zcopy *rb =
-        ringbuf_zcopy_create(sizeof(struct message), 4, RINGBUF_DROP_OLDEST);
+    struct ringbuf_zcopy *rb = ringbuf_zcopy_create(sizeof(struct message), 4, RINGBUF_DROP_OLDEST);
     if (!rb) {
         fprintf(stderr, "wrap_parallel_fill: ringbuf_zcopy_create failed\n");
         return false;
@@ -1454,8 +1372,7 @@ int main(void)
     ok &= run_wrap_overwrite_stress_test();
     ok &= run_wrap_parallel_fill_test();
 #else
-    printf(
-        "counter-overflow tests SKIPPED (build with -DRINGBUF_TEST_HOOKS)\n");
+    printf("counter-overflow tests SKIPPED (build with -DRINGBUF_TEST_HOOKS)\n");
 #endif
 
     if (!ok) {

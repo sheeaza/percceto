@@ -52,8 +52,7 @@ struct ringbuf_mpsc *ringbuf_mpsc_create(size_t slot_size, size_t min_capacity,
         return NULL;
     if (capacity > SIZE_MAX / sizeof(atomic_size_t))
         return NULL;
-    size_t tail_bytes =
-        add_checked(stamp_offset, capacity * sizeof(atomic_size_t));
+    size_t tail_bytes = add_checked(stamp_offset, capacity * sizeof(atomic_size_t));
     if (tail_bytes == 0)
         return NULL;
 
@@ -75,8 +74,7 @@ struct ringbuf_mpsc *ringbuf_mpsc_create(size_t slot_size, size_t min_capacity,
     if (total == 0)
         return NULL;
 
-    struct ringbuf_mpsc *rb =
-        aligned_alloc(_Alignof(struct ringbuf_mpsc), total);
+    struct ringbuf_mpsc *rb = aligned_alloc(_Alignof(struct ringbuf_mpsc), total);
     if (rb == NULL)
         return NULL;
 
@@ -85,9 +83,8 @@ struct ringbuf_mpsc *ringbuf_mpsc_create(size_t slot_size, size_t min_capacity,
     rb->slot_size = slot_size;
     rb->mode = mode;
     rb->stamp = (atomic_size_t *)(void *)(rb->tail + stamp_offset);
-    rb->slot_lock = mode == RINGBUF_DROP_OLDEST ?
-                        (atomic_int *)(void *)(rb->tail + lock_offset) :
-                        NULL;
+    rb->slot_lock = mode == RINGBUF_DROP_OLDEST ? (atomic_int *)(void *)(rb->tail + lock_offset) :
+                                                  NULL;
     atomic_init(&rb->dropped_count, (size_t)0);
     atomic_init(&rb->write_idx, (size_t)0);
     atomic_init(&rb->read_idx, (size_t)0);
@@ -137,8 +134,7 @@ static void advance_read_idx(struct ringbuf_mpsc *rb, size_t target)
     size_t cur = atomic_load_explicit(&rb->read_idx, memory_order_relaxed);
 
     while ((ptrdiff_t)(target - cur) > 0) {
-        if (atomic_compare_exchange_weak_explicit(&rb->read_idx, &cur, target,
-                                                  memory_order_release,
+        if (atomic_compare_exchange_weak_explicit(&rb->read_idx, &cur, target, memory_order_release,
                                                   memory_order_relaxed))
             return;
     }
@@ -155,8 +151,7 @@ static void advance_read_idx(struct ringbuf_mpsc *rb, size_t target)
  *
  * Return: true if a slot was claimed; false if the buffer is full.
  */
-static bool reserve_drop_newest(struct ringbuf_mpsc *rb,
-                                struct ringbuf_mpsc_rsv *rsv)
+static bool reserve_drop_newest(struct ringbuf_mpsc *rb, struct ringbuf_mpsc_rsv *rsv)
 {
     size_t w = atomic_load_explicit(&rb->write_idx, memory_order_relaxed);
 
@@ -166,8 +161,7 @@ static bool reserve_drop_newest(struct ringbuf_mpsc *rb,
          * overwrites the bytes. This is the ordering that does the real work
          * -- on a weak memory model, relaxing it lets the caller's fill
          * float above the check. */
-        size_t st = atomic_load_explicit(&rb->stamp[w & rb->mask],
-                                         memory_order_acquire);
+        size_t st = atomic_load_explicit(&rb->stamp[w & rb->mask], memory_order_acquire);
         ptrdiff_t diff = (ptrdiff_t)(st - w);
 
         if (diff == 0) {
@@ -175,8 +169,7 @@ static bool reserve_drop_newest(struct ringbuf_mpsc *rb,
              * another producer took w and expected holds the fresh value,
              * so loop without re-loading. */
             if (atomic_compare_exchange_weak_explicit(&rb->write_idx, &w, w + 1,
-                                                      memory_order_relaxed,
-                                                      memory_order_relaxed))
+                                                      memory_order_relaxed, memory_order_relaxed))
                 break;
             continue;
         }
@@ -214,8 +207,7 @@ static bool reserve_drop_newest(struct ringbuf_mpsc *rb,
  * with an in-flight pop of the slot being evicted, or when the slot's
  * previous-lap reservation has not been submitted yet.
  */
-static bool reserve_overwrite(struct ringbuf_mpsc *rb,
-                              struct ringbuf_mpsc_rsv *rsv)
+static bool reserve_overwrite(struct ringbuf_mpsc *rb, struct ringbuf_mpsc_rsv *rsv)
 {
     size_t w = atomic_load_explicit(&rb->write_idx, memory_order_relaxed);
 
@@ -233,8 +225,7 @@ static bool reserve_overwrite(struct ringbuf_mpsc *rb,
         if (diff == 0) {
             /* Free slot, no eviction needed: same as the drop-newest path. */
             if (atomic_compare_exchange_weak_explicit(&rb->write_idx, &w, w + 1,
-                                                      memory_order_relaxed,
-                                                      memory_order_relaxed))
+                                                      memory_order_relaxed, memory_order_relaxed))
                 break;
             continue;
         }
@@ -249,9 +240,8 @@ static bool reserve_overwrite(struct ringbuf_mpsc *rb,
          * w forever, wedging the buffer. Locking on a merely tentative w is
          * safe because the ticket CAS below still validates it. */
         int expected_lock = 0;
-        if (!atomic_compare_exchange_strong_explicit(
-                &rb->slot_lock[idx], &expected_lock, 1, memory_order_acquire,
-                memory_order_relaxed))
+        if (!atomic_compare_exchange_strong_explicit(&rb->slot_lock[idx], &expected_lock, 1,
+                                                     memory_order_acquire, memory_order_relaxed))
             return false; /* consumer is mid-read of this exact slot */
 
         /* Retire the message this slot holds, counting it as dropped. The
@@ -268,11 +258,9 @@ static bool reserve_overwrite(struct ringbuf_mpsc *rb,
          * exclusion is the lock's doing. */
         size_t victim_published = w - rb->capacity + 1;
         size_t expected_stamp = victim_published;
-        if (atomic_compare_exchange_strong_explicit(
-                &rb->stamp[idx], &expected_stamp, w, memory_order_acq_rel,
-                memory_order_acquire)) {
-            atomic_fetch_add_explicit(&rb->dropped_count, 1,
-                                      memory_order_relaxed);
+        if (atomic_compare_exchange_strong_explicit(&rb->stamp[idx], &expected_stamp, w,
+                                                    memory_order_acq_rel, memory_order_acquire)) {
+            atomic_fetch_add_explicit(&rb->dropped_count, 1, memory_order_relaxed);
             /* The victim is retired, so read_idx must move past it. Without
              * this the consumer waits forever on a ticket that no longer
              * exists anywhere in the ring. */
@@ -299,8 +287,7 @@ static bool reserve_overwrite(struct ringbuf_mpsc *rb,
          * that message is genuinely destroyed either way, and the ticket's
          * real winner fills the slot. */
         if (!atomic_compare_exchange_strong_explicit(&rb->write_idx, &w, w + 1,
-                                                     memory_order_relaxed,
-                                                     memory_order_relaxed)) {
+                                                     memory_order_relaxed, memory_order_relaxed)) {
             atomic_store_explicit(&rb->slot_lock[idx], 0, memory_order_release);
             continue;
         }
@@ -390,8 +377,7 @@ bool ringbuf_mpsc_reserve(struct ringbuf_mpsc *rb, struct ringbuf_mpsc_rsv *rsv)
  * the caller's fill to pop's acquire load. ticket + 1 is what marks the slot
  * published and names the ticket it holds.
  */
-void ringbuf_mpsc_submit(struct ringbuf_mpsc *rb,
-                         const struct ringbuf_mpsc_rsv *rsv)
+void ringbuf_mpsc_submit(struct ringbuf_mpsc *rb, const struct ringbuf_mpsc_rsv *rsv)
 {
     atomic_store_explicit(&rb->stamp[rsv->ticket & rb->mask], rsv->ticket + 1,
                           memory_order_release);
@@ -440,9 +426,8 @@ static bool pop_overwrite(struct ringbuf_mpsc *rb, void *data, size_t r)
     size_t idx = r & rb->mask;
 
     int expected_lock = 0;
-    if (!atomic_compare_exchange_strong_explicit(
-            &rb->slot_lock[idx], &expected_lock, 1, memory_order_acquire,
-            memory_order_relaxed))
+    if (!atomic_compare_exchange_strong_explicit(&rb->slot_lock[idx], &expected_lock, 1,
+                                                 memory_order_acquire, memory_order_relaxed))
         return false; /* producer is evicting this exact slot right now */
 
     /* read_idx is re-read HERE, under the lock, and the operation is
@@ -471,9 +456,8 @@ static bool pop_overwrite(struct ringbuf_mpsc *rb, void *data, size_t r)
      * as a cheap assertion that the stamp is still what we validated
      * above. */
     size_t expected_stamp = r + 1;
-    if (!atomic_compare_exchange_strong_explicit(
-            &rb->stamp[idx], &expected_stamp, r + rb->capacity,
-            memory_order_release, memory_order_relaxed)) {
+    if (!atomic_compare_exchange_strong_explicit(&rb->stamp[idx], &expected_stamp, r + rb->capacity,
+                                                 memory_order_release, memory_order_relaxed)) {
         atomic_store_explicit(&rb->slot_lock[idx], 0, memory_order_release);
         return false;
     }
@@ -522,8 +506,7 @@ bool ringbuf_mpsc_pop(struct ringbuf_mpsc *rb, void *data)
     /* Release: frees the slot for the producer holding ticket r + capacity,
      * and publishes that our read of the bytes above is finished. Relaxing
      * this is the classic way to get a torn message on a weak model. */
-    atomic_store_explicit(&rb->stamp[idx], r + rb->capacity,
-                          memory_order_release);
+    atomic_store_explicit(&rb->stamp[idx], r + rb->capacity, memory_order_release);
     atomic_store_explicit(&rb->read_idx, r + 1, memory_order_relaxed);
     return true;
 }
@@ -614,8 +597,7 @@ void ringbuf_mpsc_test_seed_counters(struct ringbuf_mpsc *rb, size_t start)
      * stamp[t & mask] == t for the ticket t each slot awaits. */
     for (size_t i = 0; i < rb->capacity; i++) {
         size_t offset = (i - (start & rb->mask)) & rb->mask;
-        atomic_store_explicit(&rb->stamp[i], start + offset,
-                              memory_order_relaxed);
+        atomic_store_explicit(&rb->stamp[i], start + offset, memory_order_relaxed);
     }
 }
 #endif

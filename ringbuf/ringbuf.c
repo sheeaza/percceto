@@ -69,8 +69,7 @@ struct ringbuf {
  * Return: the new buffer, or NULL on allocation failure or invalid
  * arguments.
  */
-struct ringbuf *ringbuf_create(size_t slot_size, size_t min_capacity,
-                               bool overwrite_on_full)
+struct ringbuf *ringbuf_create(size_t slot_size, size_t min_capacity, bool overwrite_on_full)
 {
     if (slot_size == 0)
         return NULL;
@@ -116,9 +115,7 @@ struct ringbuf *ringbuf_create(size_t slot_size, size_t min_capacity,
     rb->mask = capacity - 1;
     rb->slot_size = slot_size;
     rb->overwrite_on_full = overwrite_on_full;
-    rb->slot_lock = overwrite_on_full ?
-                        (atomic_int *)(void *)(rb->tail + lock_offset) :
-                        NULL;
+    rb->slot_lock = overwrite_on_full ? (atomic_int *)(void *)(rb->tail + lock_offset) : NULL;
     atomic_init(&rb->dropped_count, (size_t)0);
     atomic_init(&rb->write_idx, (size_t)0);
     rb->cached_read = 0;
@@ -156,26 +153,22 @@ void ringbuf_destroy(struct ringbuf *rb)
  */
 bool ringbuf_push(struct ringbuf *rb, const void *data)
 {
-    size_t write_idx =
-        atomic_load_explicit(&rb->write_idx, memory_order_relaxed);
+    size_t write_idx = atomic_load_explicit(&rb->write_idx, memory_order_relaxed);
     size_t next = write_idx + 1;
     size_t idx = write_idx & rb->mask;
 
     if (next - rb->cached_read > rb->capacity) {
-        rb->cached_read =
-            atomic_load_explicit(&rb->read_idx, memory_order_acquire);
+        rb->cached_read = atomic_load_explicit(&rb->read_idx, memory_order_acquire);
         if (next - rb->cached_read > rb->capacity) {
             if (!rb->overwrite_on_full)
                 return false; /* genuinely full */
 
             int expected = 0;
             if (!atomic_compare_exchange_strong_explicit(
-                    &rb->slot_lock[idx], &expected, 1, memory_order_acquire,
-                    memory_order_relaxed))
+                    &rb->slot_lock[idx], &expected, 1, memory_order_acquire, memory_order_relaxed))
                 return false; /* consumer is mid-read of this exact slot */
 
-            size_t fresh_read =
-                atomic_load_explicit(&rb->read_idx, memory_order_acquire);
+            size_t fresh_read = atomic_load_explicit(&rb->read_idx, memory_order_acquire);
             if (next - fresh_read > rb->capacity) {
                 /* Still full, so claim the eviction of message `fresh_read`
                  * with a CAS. Both we and the consumer advance read_idx only
@@ -183,11 +176,10 @@ bool ringbuf_push(struct ringbuf *rb, const void *data)
                  * given message: it is counted as dropped or as received,
                  * never both, and read_idx can never move backwards. */
                 size_t expected_read = fresh_read;
-                if (atomic_compare_exchange_strong_explicit(
-                        &rb->read_idx, &expected_read, fresh_read + 1,
-                        memory_order_acq_rel, memory_order_acquire)) {
-                    atomic_fetch_add_explicit(&rb->dropped_count, 1,
-                                              memory_order_relaxed);
+                if (atomic_compare_exchange_strong_explicit(&rb->read_idx, &expected_read,
+                                                            fresh_read + 1, memory_order_acq_rel,
+                                                            memory_order_acquire)) {
+                    atomic_fetch_add_explicit(&rb->dropped_count, 1, memory_order_relaxed);
                     rb->cached_read = fresh_read + 1;
                 } else {
                     /* Consumer retired it first, so no eviction happened.
@@ -231,8 +223,7 @@ bool ringbuf_pop(struct ringbuf *rb, void *data)
      * difference just means cached_write is stale (the producer can advance
      * read_idx in overwrite mode), which is handled by the same refresh. */
     if ((ptrdiff_t)(rb->cached_write - read_idx) <= 0) {
-        rb->cached_write =
-            atomic_load_explicit(&rb->write_idx, memory_order_acquire);
+        rb->cached_write = atomic_load_explicit(&rb->write_idx, memory_order_acquire);
         if ((ptrdiff_t)(rb->cached_write - read_idx) <= 0)
             return false; /* genuinely empty */
     }
@@ -241,9 +232,8 @@ bool ringbuf_pop(struct ringbuf *rb, void *data)
 
     if (rb->overwrite_on_full) {
         int expected = 0;
-        if (!atomic_compare_exchange_strong_explicit(
-                &rb->slot_lock[idx], &expected, 1, memory_order_acquire,
-                memory_order_relaxed))
+        if (!atomic_compare_exchange_strong_explicit(&rb->slot_lock[idx], &expected, 1,
+                                                     memory_order_acquire, memory_order_relaxed))
             return false; /* producer is evicting this exact slot right now */
 
         memcpy(data, rb->tail + idx * rb->slot_size, rb->slot_size);
@@ -255,9 +245,8 @@ bool ringbuf_pop(struct ringbuf *rb, void *data)
          * could move read_idx backwards over an eviction that landed in
          * the meantime, causing the same message to be handed out twice. */
         size_t expected_read = read_idx;
-        if (!atomic_compare_exchange_strong_explicit(
-                &rb->read_idx, &expected_read, read_idx + 1,
-                memory_order_release, memory_order_relaxed))
+        if (!atomic_compare_exchange_strong_explicit(&rb->read_idx, &expected_read, read_idx + 1,
+                                                     memory_order_release, memory_order_relaxed))
             return false; /* producer evicted this message out from under us */
 
         return true;

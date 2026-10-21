@@ -348,16 +348,14 @@ static bool q_init(struct queue *q, const struct scenario *s)
 
     if (s->variant == VARIANT_MPSC) {
         q->mpsc = ringbuf_mpsc_create(s->slot_size, s->capacity,
-                                      s->overwrite ? RINGBUF_DROP_OLDEST :
-                                                     RINGBUF_DROP_NEWEST);
+                                      s->overwrite ? RINGBUF_DROP_OLDEST : RINGBUF_DROP_NEWEST);
         return q->mpsc != NULL;
     }
 
     q->mu = ringbuf_mutex_create(s->slot_size, s->capacity, s->overwrite);
     if (!q->mu)
         return false;
-    if (s->variant == VARIANT_MUTEX_MU &&
-        pthread_mutex_init(&q->push_lock, NULL) != 0) {
+    if (s->variant == VARIANT_MUTEX_MU && pthread_mutex_init(&q->push_lock, NULL) != 0) {
         ringbuf_mutex_destroy(q->mu);
         q->mu = NULL;
         return false;
@@ -817,9 +815,8 @@ static double bench_single(const struct scenario *s, double *cpu_ns_per_op)
  */
 static void print_header(void)
 {
-    printf("  %-17s %9s %9s %9s %8s %8s %8s %9s %8s %7s\n", "impl", "push-Mm/s",
-           "recv-Mm/s", "cpu-ns/rx", "cpu/wall", "prod-ns", "cons-ns",
-           "push-rt/k", "pop-rt/k", "ctxsw/k");
+    printf("  %-17s %9s %9s %9s %8s %8s %8s %9s %8s %7s\n", "impl", "push-Mm/s", "recv-Mm/s",
+           "cpu-ns/rx", "cpu/wall", "prod-ns", "cons-ns", "push-rt/k", "pop-rt/k", "ctxsw/k");
 }
 
 /**
@@ -838,19 +835,16 @@ static void print_header(void)
  */
 static void print_row(const char *label, const struct result *r, bool show_drop)
 {
-    double cpu_per_rx =
-        r->received ? r->cpu_ns_per_msg * r->msgs_per_sec / r->recv_per_sec :
-                      0.0;
+    double cpu_per_rx = r->received ? r->cpu_ns_per_msg * r->msgs_per_sec / r->recv_per_sec : 0.0;
 
-    printf("  %-17s %9.2f %9.2f %9.1f %8.2f %8.1f %8.1f %9.1f %8.1f %7.2f\n",
-           label, r->msgs_per_sec / 1e6, r->recv_per_sec / 1e6, cpu_per_rx,
-           r->cpu_per_wall, r->prod_cpu_ns_per_msg, r->cons_cpu_ns_per_msg,
-           r->push_retries_per_k, r->pop_retries_per_k, r->ctxsw_per_k);
+    printf("  %-17s %9.2f %9.2f %9.1f %8.2f %8.1f %8.1f %9.1f %8.1f %7.2f\n", label,
+           r->msgs_per_sec / 1e6, r->recv_per_sec / 1e6, cpu_per_rx, r->cpu_per_wall,
+           r->prod_cpu_ns_per_msg, r->cons_cpu_ns_per_msg, r->push_retries_per_k,
+           r->pop_retries_per_k, r->ctxsw_per_k);
 
     printf("  %-17s  ", "");
     if (show_drop)
-        printf("dropped %.2f%%, received %" PRIu64 ", ", r->drop_pct,
-               r->received);
+        printf("dropped %.2f%%, received %" PRIu64 ", ", r->drop_pct, r->received);
     printf("finish spread %.2fx%s\n", r->finish_spread,
            r->accounted ? "" : "  !! received + dropped != pushed");
 }
@@ -911,8 +905,7 @@ int main(void)
     printf("In overwrite mode compare recv-Mm/s, not push-Mm/s: evicting is"
            " cheaper than\ndelivering, so a variant can post a higher push"
            " rate just by dropping more.\n");
-    if (prod_counts[sizeof prod_counts / sizeof *prod_counts - 1] >
-        (unsigned)(g_ncpu - 1))
+    if (prod_counts[sizeof prod_counts / sizeof *prod_counts - 1] > (unsigned)(g_ncpu - 1))
         printf("NOTE: fewer cpus than the widest scenario asks for; the wide"
                " rows share cores\n  and are oversubscribed like scenario"
                " [6].\n");
@@ -925,8 +918,7 @@ int main(void)
            " uncontended lock/unlock pair.\n");
     printf("  %-17s %10s %8s %10s\n", "impl", "mode", "Mmsg/s", "cpu-ns/op");
     for (unsigned m = 0; m < 2; m++) {
-        static const enum variant single[] = { VARIANT_MPSC, VARIANT_MUTEX_MU,
-                                               VARIANT_MUTEX_RAW };
+        static const enum variant single[] = { VARIANT_MPSC, VARIANT_MUTEX_MU, VARIANT_MUTEX_RAW };
         for (unsigned i = 0; i < sizeof single / sizeof *single; i++) {
             struct scenario s = { .variant = single[i],
                                   .overwrite = m == 1,
@@ -947,10 +939,9 @@ int main(void)
            " this is lock-free fan-in against serialized\n    fan-in.\n");
     for (unsigned p = 0; p < sizeof prod_counts / sizeof *prod_counts; p++) {
         printf("  producers=%u\n", prod_counts[p]);
-        struct scenario s = { .overwrite = false,
-                              .slot_size = 64,
-                              .capacity = 4096,
-                              .producers = prod_counts[p] };
+        struct scenario s = {
+            .overwrite = false, .slot_size = 64, .capacity = 4096, .producers = prod_counts[p]
+        };
         bench_pair(&s);
     }
 
@@ -961,10 +952,9 @@ int main(void)
            " internal mutex on top of the external one.\n");
     for (unsigned p = 0; p < sizeof prod_counts / sizeof *prod_counts; p++) {
         printf("  producers=%u\n", prod_counts[p]);
-        struct scenario s = { .overwrite = true,
-                              .slot_size = 64,
-                              .capacity = 4096,
-                              .producers = prod_counts[p] };
+        struct scenario s = {
+            .overwrite = true, .slot_size = 64, .capacity = 4096, .producers = prod_counts[p]
+        };
         bench_pair(&s);
     }
 
@@ -975,10 +965,9 @@ int main(void)
            " the fan-in cost.\n");
     for (unsigned c = 0; c < sizeof caps / sizeof *caps; c++) {
         printf("  cap=%zu\n", caps[c]);
-        struct scenario s = { .overwrite = true,
-                              .slot_size = 64,
-                              .capacity = caps[c],
-                              .producers = 4 };
+        struct scenario s = {
+            .overwrite = true, .slot_size = 64, .capacity = caps[c], .producers = 4
+        };
         bench_pair(&s);
     }
 
@@ -988,15 +977,13 @@ int main(void)
            " contention is the fan-in.\n");
     for (unsigned z = 0; z < sizeof sizes / sizeof *sizes; z++) {
         printf("  slot=%zuB\n", sizes[z]);
-        struct scenario s = { .overwrite = false,
-                              .slot_size = sizes[z],
-                              .capacity = 4096,
-                              .producers = 4 };
+        struct scenario s = {
+            .overwrite = false, .slot_size = sizes[z], .capacity = 4096, .producers = 4
+        };
         bench_pair(&s);
     }
 
-    printf("\n[6] Oversubscribed: %u producers on %d producer cpus\n",
-           MAX_PRODUCERS, g_ncpu - 1);
+    printf("\n[6] Oversubscribed: %u producers on %d producer cpus\n", MAX_PRODUCERS, g_ncpu - 1);
     printf("    The scenario that should favor the mutex. A descheduled"
            " producer holding an\n    unpublished ticket blocks ringbuf_mpsc"
            " delivery head-of-line, where a\n    descheduled producer waiting"
@@ -1005,10 +992,9 @@ int main(void)
            YIELD_SPINS);
     for (unsigned m = 0; m < 2; m++) {
         printf("  %s, cap 4096\n", m ? "overwrite" : "lossless");
-        struct scenario s = { .overwrite = m == 1,
-                              .slot_size = 64,
-                              .capacity = 4096,
-                              .producers = MAX_PRODUCERS };
+        struct scenario s = {
+            .overwrite = m == 1, .slot_size = 64, .capacity = 4096, .producers = MAX_PRODUCERS
+        };
         bench_pair(&s);
     }
 
@@ -1040,11 +1026,9 @@ int main(void)
            " wall time.\n");
     for (unsigned m = 0; m < 2; m++) {
         printf("  %s, cap 4096\n", m ? "overwrite" : "lossless");
-        struct scenario s = { .overwrite = m == 1,
-                              .slot_size = 64,
-                              .capacity = 4096,
-                              .producers = 4,
-                              .paced = true };
+        struct scenario s = {
+            .overwrite = m == 1, .slot_size = 64, .capacity = 4096, .producers = 4, .paced = true
+        };
         bench_pair(&s);
     }
 

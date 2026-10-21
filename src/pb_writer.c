@@ -82,16 +82,14 @@ void pb_put_bool_field(struct pb_buf *b, uint32_t field_no, bool v)
     pb_put_varint_field(b, field_no, v ? 1 : 0);
 }
 
-void pb_put_string_field(struct pb_buf *b, uint32_t field_no, const char *s,
-                         size_t len)
+void pb_put_string_field(struct pb_buf *b, uint32_t field_no, const char *s, size_t len)
 {
     pb_put_tag(b, field_no, 2);
     pb_put_varint(b, len);
     pb_put_bytes(b, s, len);
 }
 
-void pb_put_fixed64_field(struct pb_buf *b, uint32_t field_no,
-                          uint64_t raw_bits)
+void pb_put_fixed64_field(struct pb_buf *b, uint32_t field_no, uint64_t raw_bits)
 {
     pb_put_tag(b, field_no, 1);
     /* protobuf fixed64 is little-endian on the wire; every platform this
@@ -107,8 +105,7 @@ void pb_put_double_field(struct pb_buf *b, uint32_t field_no, double v)
     pb_put_fixed64_field(b, field_no, bits);
 }
 
-void pb_put_submessage_field(struct pb_buf *b, uint32_t field_no,
-                             const struct pb_buf *sub)
+void pb_put_submessage_field(struct pb_buf *b, uint32_t field_no, const struct pb_buf *sub)
 {
     pb_put_tag(b, field_no, 2);
     pb_put_varint(b, sub->len);

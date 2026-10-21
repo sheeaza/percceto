@@ -68,22 +68,19 @@ int main(void)
     for (unsigned i = 0; i < N; i++)
         pf_slice_end(t, trk);
     uint64_t t1 = now_ns();
-    printf("producer, slice_end:                   %6.1f ns/event\n",
-           (double)(t1 - t0) / N);
+    printf("producer, slice_end:                   %6.1f ns/event\n", (double)(t1 - t0) / N);
 
     t0 = now_ns();
     for (unsigned i = 0; i < N; i++)
         pf_slice_begin(t, trk, "compute");
     t1 = now_ns();
-    printf("producer, slice_begin+name:            %6.1f ns/event\n",
-           (double)(t1 - t0) / N);
+    printf("producer, slice_begin+name:            %6.1f ns/event\n", (double)(t1 - t0) / N);
 
     t0 = now_ns();
     for (unsigned i = 0; i < N; i++)
         pf_counter_set_int(t, trk, i);
     t1 = now_ns();
-    printf("producer, counter:                     %6.1f ns/event\n",
-           (double)(t1 - t0) / N);
+    printf("producer, counter:                     %6.1f ns/event\n", (double)(t1 - t0) / N);
 
     pf_trace_close(t);
 
@@ -120,8 +117,8 @@ int main(void)
     printf("drain, encode+write:                   %6.1f ns/event "
            "(%.1f M events/s)\n",
            per, 1000.0 / per);
-    printf("  dumped %" PRIu64 " bytes for %u events (%.1f B/event)\n",
-           s.bytes_written, fill * 2, (double)s.bytes_written / (fill * 2));
+    printf("  dumped %" PRIu64 " bytes for %u events (%.1f B/event)\n", s.bytes_written, fill * 2,
+           (double)s.bytes_written / (fill * 2));
 
     pf_trace_close(t);
     dir_reset(dir);

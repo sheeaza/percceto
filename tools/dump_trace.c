@@ -180,8 +180,7 @@ static void parse_interned(struct state *s, const uint8_t *p, size_t len)
     }
 }
 
-static void parse_track_event(struct state *s, const uint8_t *p, size_t len,
-                              uint64_t ts)
+static void parse_track_event(struct state *s, const uint8_t *p, size_t len, uint64_t ts)
 {
     struct cursor c = { p, p + len, false };
     uint64_t type = 0, track_uuid = 0, name_iid = 0;
@@ -224,8 +223,7 @@ static void parse_track_event(struct state *s, const uint8_t *p, size_t len,
     if (ti == (size_t)-1)
         s->unknown_track++;
 
-    if (name_iid && name_iid < MAX_IIDS && !s->name_iid[name_iid] &&
-        !has_name_str)
+    if (name_iid && name_iid < MAX_IIDS && !s->name_iid[name_iid] && !has_name_str)
         s->unresolved_name++;
 
     if (ts < s->last_ts) {
@@ -283,8 +281,7 @@ static void parse_packet(struct state *s, const uint8_t *p, size_t len)
             else if (field == FN_PACKET_SEQUENCE_FLAGS)
                 flags = v;
             else if (field == FN_PACKET_TRUSTED_SEQ_ID)
-                CHECK(v == 1, "unexpected trusted_packet_sequence_id %" PRIu64,
-                      v);
+                CHECK(v == 1, "unexpected trusted_packet_sequence_id %" PRIu64, v);
         } else if (wt == 2) {
             uint64_t sub_len = get_varint(&c);
             if (c.bad || (uint64_t)(c.end - c.p) < sub_len) {
@@ -390,14 +387,14 @@ int main(int argc, char **argv)
         unsigned field = (unsigned)(tag >> 3);
         unsigned wt = (unsigned)(tag & 7);
         if (field != FN_TRACE_PACKET || wt != 2) {
-            CHECK(false, "unexpected top-level field %u wire type %u at %ld",
-                  field, wt, (long)(c.p - data));
+            CHECK(false, "unexpected top-level field %u wire type %u at %ld", field, wt,
+                  (long)(c.p - data));
             break;
         }
         uint64_t len = get_varint(&c);
         if (c.bad || (uint64_t)(c.end - c.p) < len) {
-            CHECK(false, "truncated packet at byte %ld (want %" PRIu64 ")",
-                  (long)(c.p - data), len);
+            CHECK(false, "truncated packet at byte %ld (want %" PRIu64 ")", (long)(c.p - data),
+                  len);
             break;
         }
         parse_packet(s, c.p, len);
@@ -406,21 +403,16 @@ int main(int argc, char **argv)
     CHECK(c.p == c.end, "framing consumed the file exactly");
 
     printf("parsed: %" PRIu64 " packets, %ld bytes\n", s->n_packets, size);
-    printf("track descriptors: %" PRIu64 " (%zu distinct uuids)\n",
-           s->n_descriptors, s->n_tracks);
+    printf("track descriptors: %" PRIu64 " (%zu distinct uuids)\n", s->n_descriptors, s->n_tracks);
     printf("state clears: %" PRIu64 "\n", s->n_state_clears);
-    printf("slice begin: %" PRIu64 "  slice end: %" PRIu64 "\n", s->n_begin,
-           s->n_end);
-    printf("instant: %" PRIu64 "  counter: %" PRIu64 "\n", s->n_instant,
-           s->n_counter);
+    printf("slice begin: %" PRIu64 "  slice end: %" PRIu64 "\n", s->n_begin, s->n_end);
+    printf("instant: %" PRIu64 "  counter: %" PRIu64 "\n", s->n_instant, s->n_counter);
 
     CHECK(s->n_packets > 0, "trace contains packets");
     CHECK(s->n_tracks > 0, "trace declares at least one track");
-    CHECK(s->unknown_track == 0,
-          "%" PRIu64 " events referenced a track with no descriptor",
+    CHECK(s->unknown_track == 0, "%" PRIu64 " events referenced a track with no descriptor",
           s->unknown_track);
-    CHECK(s->unresolved_name == 0,
-          "%" PRIu64 " events used an unresolvable name_iid",
+    CHECK(s->unresolved_name == 0, "%" PRIu64 " events used an unresolvable name_iid",
           s->unresolved_name);
     /* Slices left open at the end of a window are expected -- a snapshot
      * cuts the trace mid-flight -- so only report the depth. */
@@ -457,8 +449,7 @@ int main(int argc, char **argv)
           s->max_ts_regression);
 
     int rc = failures ? 1 : 0;
-    printf(failures ? "\n%d CHECK(S) FAILED\n" : "\nALL CHECKS PASSED\n",
-           failures);
+    printf(failures ? "\n%d CHECK(S) FAILED\n" : "\nALL CHECKS PASSED\n", failures);
     free(s);
     free(data);
     return rc;

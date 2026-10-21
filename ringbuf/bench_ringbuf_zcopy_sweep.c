@@ -235,8 +235,7 @@ static bool q_init(struct queue *q, bool overwrite, bool locked)
     memset(q, 0, sizeof(*q));
     q->locked = locked;
     q->zc = ringbuf_zcopy_create(SLOT_SIZE, CAPACITY,
-                                 overwrite ? RINGBUF_DROP_OLDEST :
-                                             RINGBUF_DROP_NEWEST);
+                                 overwrite ? RINGBUF_DROP_OLDEST : RINGBUF_DROP_NEWEST);
     if (!q->zc)
         return false;
     if (pthread_mutex_init(&q->push_lock, NULL) != 0) {
@@ -495,8 +494,7 @@ static struct result run_one(unsigned producers, bool overwrite, bool locked)
 
     r.store_per_sec = msgs * 1e9 / (double)wall;
     r.recv_per_sec = (double)cons.received * 1e9 / (double)wall;
-    r.cpu_ns_per_rx = cons.received ? (double)(prod_cpu + cons.cpu_ns) /
-                                          (double)cons.received :
+    r.cpu_ns_per_rx = cons.received ? (double)(prod_cpu + cons.cpu_ns) / (double)cons.received :
                                       0.0;
     r.cpu_per_wall = (double)(prod_cpu + cons.cpu_ns) / (double)wall;
     r.push_retries_per_k = (double)prod_retries / k;
@@ -539,9 +537,8 @@ static struct result bench_one(unsigned producers, bool overwrite, bool locked)
  */
 static void print_header(bool overwrite)
 {
-    printf("  %9s %9s %9s %8s %9s %8s %9s %8s %7s", "producers", "store-Mm/s",
-           "recv-Mm/s", "cpu-ns/rx", "cpu/wall", "stor-rt/k", "pop-rt/k",
-           "ctxsw/k", "spread");
+    printf("  %9s %9s %9s %8s %9s %8s %9s %8s %7s", "producers", "store-Mm/s", "recv-Mm/s",
+           "cpu-ns/rx", "cpu/wall", "stor-rt/k", "pop-rt/k", "ctxsw/k", "spread");
     if (overwrite)
         printf(" %9s %10s", "dropped%", "received");
     printf("\n");
@@ -555,10 +552,9 @@ static void print_header(bool overwrite)
  */
 static void print_row(const char *label, const struct result *r, bool overwrite)
 {
-    printf("  %9s %9.2f %9.2f %9.1f %8.2f %9.1f %8.1f %8.2f %7.2f", label,
-           r->store_per_sec / 1e6, r->recv_per_sec / 1e6, r->cpu_ns_per_rx,
-           r->cpu_per_wall, r->push_retries_per_k, r->pop_retries_per_k,
-           r->ctxsw_per_k, r->finish_spread);
+    printf("  %9s %9.2f %9.2f %9.1f %8.2f %9.1f %8.1f %8.2f %7.2f", label, r->store_per_sec / 1e6,
+           r->recv_per_sec / 1e6, r->cpu_ns_per_rx, r->cpu_per_wall, r->push_retries_per_k,
+           r->pop_retries_per_k, r->ctxsw_per_k, r->finish_spread);
     if (overwrite)
         printf(" %9.2f %10" PRIu64, r->drop_pct, r->received);
     printf("%s\n", r->accounted ? "" : "  !! received + dropped != pushed");
@@ -582,8 +578,8 @@ int main(void)
     printf("slot=%dB, cap=%d, %u messages per run split across the producers,"
            " median of %d runs\n",
            SLOT_SIZE, CAPACITY, TP_MESSAGES, REPS);
-    printf("consumer pinned to cpu %d, producers to cpus 1..%d (cycling)\n",
-           CONSUMER_CPU, g_ncpu - 1);
+    printf("consumer pinned to cpu %d, producers to cpus 1..%d (cycling)\n", CONSUMER_CPU,
+           g_ncpu - 1);
     if (prod_counts[n - 1] > (unsigned)g_ncpu)
         printf("NOTE: the widest row (%u producers) exceeds the %d online cpus"
                " and is oversubscribed.\n",
@@ -596,8 +592,7 @@ int main(void)
         for (size_t p = 0; p < n; p++) {
             char label[16];
             snprintf(label, sizeof label, "%u", prod_counts[p]);
-            struct result r =
-                bench_one(prod_counts[p], overwrite, prod_counts[p] > 1);
+            struct result r = bench_one(prod_counts[p], overwrite, prod_counts[p] > 1);
             print_row(label, &r, overwrite);
         }
         if (!overwrite) {

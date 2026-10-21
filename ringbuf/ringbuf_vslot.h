@@ -80,8 +80,7 @@ struct ringbuf_vslot;
  * Return: the new buffer, or NULL on allocation failure, mapping failure,
  * or invalid arguments.
  */
-struct ringbuf_vslot *ringbuf_vslot_create(size_t max_msg_size,
-                                           size_t min_ring_bytes,
+struct ringbuf_vslot *ringbuf_vslot_create(size_t max_msg_size, size_t min_ring_bytes,
                                            bool overwrite_on_full);
 
 /**
@@ -109,8 +108,7 @@ void ringbuf_vslot_destroy(struct ringbuf_vslot *rb);
  * except for a rare, transient false return if the consumer happens to be
  * mid-read of the oldest message, which the caller's normal retry handles.
  */
-bool ringbuf_vslot_push(struct ringbuf_vslot *rb, const void *data,
-                        size_t size);
+bool ringbuf_vslot_push(struct ringbuf_vslot *rb, const void *data, size_t size);
 
 /**
  * ringbuf_vslot_pop - copy one message out of the buffer
@@ -133,8 +131,7 @@ bool ringbuf_vslot_push(struct ringbuf_vslot *rb, const void *data,
  * or -- in overwrite_on_full mode only -- if the producer is evicting this
  * exact message right now; the caller's normal retry handles the latter.
  */
-bool ringbuf_vslot_pop(struct ringbuf_vslot *rb, void *data, size_t cap,
-                       size_t *len);
+bool ringbuf_vslot_pop(struct ringbuf_vslot *rb, void *data, size_t cap, size_t *len);
 
 /**
  * ringbuf_vslot_capacity_bytes - whole-buffer storage, in bytes

@@ -40,8 +40,7 @@ int main(void)
 
     /* With no default trace, every _g call returns 0 and does nothing. */
     check(pf_track_thread_uuid_g() == 0, "no default trace: thread track is 0");
-    check(pf_track_counter_g(0, "x", PF_UNIT_COUNT) == 0,
-          "no default trace: counter track is 0");
+    check(pf_track_counter_g(0, "x", PF_UNIT_COUNT) == 0, "no default trace: counter track is 0");
     pf_counter_set_int_g(1, 1);
     pf_counter_set_double_g(1, 1.0);
 
@@ -58,28 +57,23 @@ int main(void)
     uint64_t thr = pf_track_thread_uuid_g();
     check(thr != 0, "pf_track_thread_uuid_g registers the calling thread");
     int ti = find_uuid(t, thr);
-    check(ti >= 0 && t->tracks[ti].kind == TRACK_THREAD,
-          "the returned uuid is a thread track");
+    check(ti >= 0 && t->tracks[ti].kind == TRACK_THREAD, "the returned uuid is a thread track");
 
     /* A first _g slice call must hit the same cached track. */
     pf_slice_begin_g("probe");
     pf_slice_end_g();
-    check(pf_track_thread_uuid_g() == thr,
-          "repeat calls return the same cached uuid");
+    check(pf_track_thread_uuid_g() == thr, "repeat calls return the same cached uuid");
 
     uint64_t ctr = pf_track_counter_g(thr, "depth", PF_UNIT_COUNT);
     check(ctr != 0, "pf_track_counter_g creates a counter under the thread");
     int ci = find_uuid(t, ctr);
-    check(ci >= 0 && t->tracks[ci].kind == TRACK_COUNTER &&
-              t->tracks[ci].parent_uuid == thr,
+    check(ci >= 0 && t->tracks[ci].kind == TRACK_COUNTER && t->tracks[ci].parent_uuid == thr,
           "counter track is a child of the calling thread's track");
 
     check(pf_track_counter_g(thr, "depth", PF_UNIT_COUNT) == ctr,
           "same name and parent returns the same counter");
-    check(pf_track_counter_g(thr, "depth", PF_UNIT_SIZE_BYTES) == 0,
-          "unit conflict returns 0");
-    check(pf_track_counter_g(999999, "depth", PF_UNIT_COUNT) == 0,
-          "a non-track parent returns 0");
+    check(pf_track_counter_g(thr, "depth", PF_UNIT_SIZE_BYTES) == 0, "unit conflict returns 0");
+    check(pf_track_counter_g(999999, "depth", PF_UNIT_COUNT) == 0, "a non-track parent returns 0");
 
     /* Each _g sample is one event. */
     struct pf_stats before, after;
@@ -87,8 +81,7 @@ int main(void)
     pf_counter_set_int_g(ctr, 7);
     pf_counter_set_double_g(ctr, 2.5);
     pf_trace_stats(t, &after);
-    check(after.events == before.events + 2,
-          "both _g samples are counted as emitted");
+    check(after.events == before.events + 2, "both _g samples are counted as emitted");
 
     pf_trace_close(t);
 

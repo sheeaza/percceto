@@ -149,9 +149,7 @@ static void *lossless_producer_main(void *arg)
         uint64_t spins = 0;
         while (!ringbuf_vslot_push(a->rb, body, size)) {
             if (++spins > MAX_SPIN) {
-                fprintf(stderr,
-                        "%s: producer stalled pushing seq %" PRIu64 "\n",
-                        a->label, seq);
+                fprintf(stderr, "%s: producer stalled pushing seq %" PRIu64 "\n", a->label, seq);
                 a->failed = true;
                 return NULL;
             }
@@ -171,17 +169,15 @@ static void *lossless_consumer_main(void *arg)
 {
     struct lossless_args *a = arg;
 
-    for (uint64_t expected_seq = 0; expected_seq < a->num_messages;
-         expected_seq++) {
+    for (uint64_t expected_seq = 0; expected_seq < a->num_messages; expected_seq++) {
         unsigned char body[MAX_SIZE];
         size_t len;
 
         uint64_t spins = 0;
         while (!ringbuf_vslot_pop(a->rb, body, sizeof(body), &len)) {
             if (++spins > MAX_SPIN) {
-                fprintf(stderr,
-                        "%s: consumer stalled waiting for seq %" PRIu64 "\n",
-                        a->label, expected_seq);
+                fprintf(stderr, "%s: consumer stalled waiting for seq %" PRIu64 "\n", a->label,
+                        expected_seq);
                 a->failed = true;
                 return NULL;
             }
@@ -193,8 +189,7 @@ static void *lossless_consumer_main(void *arg)
             fprintf(stderr,
                     "%s: mismatch at expected seq %" PRIu64 ", got seq %" PRIu64
                     " len %zu (expected len %zu)\n",
-                    a->label, expected_seq, seq, len,
-                    size_for_seq(expected_seq));
+                    a->label, expected_seq, seq, len, size_for_seq(expected_seq));
             a->failed = true;
             return NULL;
         }
@@ -211,15 +206,10 @@ static void *lossless_consumer_main(void *arg)
  * Return: true if every message arrived in order, intact, at its own
  * length.
  */
-static bool run_lossless_transfer(struct ringbuf_vslot *rb, uint64_t n,
-                                  const char *label)
+static bool run_lossless_transfer(struct ringbuf_vslot *rb, uint64_t n, const char *label)
 {
-    struct lossless_args pargs = {
-        .rb = rb, .num_messages = n, .failed = false, .label = label
-    };
-    struct lossless_args cargs = {
-        .rb = rb, .num_messages = n, .failed = false, .label = label
-    };
+    struct lossless_args pargs = { .rb = rb, .num_messages = n, .failed = false, .label = label };
+    struct lossless_args cargs = { .rb = rb, .num_messages = n, .failed = false, .label = label };
 
     pthread_t producer, consumer;
     pthread_create(&producer, NULL, lossless_producer_main, &pargs);
@@ -275,8 +265,7 @@ static bool run_overwrite_basic_on(struct ringbuf_vslot *rb, const char *label)
         unsigned char body[MAX_SIZE];
         size_t size = fill_message(body, seq);
         if (!ringbuf_vslot_push(rb, body, size)) {
-            fprintf(stderr, "%s: push unexpectedly failed at seq %" PRIu64 "\n",
-                    label, seq);
+            fprintf(stderr, "%s: push unexpectedly failed at seq %" PRIu64 "\n", label, seq);
             return false;
         }
     }
@@ -297,27 +286,23 @@ static bool run_overwrite_basic_on(struct ringbuf_vslot *rb, const char *label)
 
     size_t dropped = ringbuf_vslot_dropped_count(rb);
     if (dropped != first_alive) {
-        fprintf(stderr, "%s: expected %" PRIu64 " dropped, got %zu\n", label,
-                first_alive, dropped);
+        fprintf(stderr, "%s: expected %" PRIu64 " dropped, got %zu\n", label, first_alive, dropped);
         return false;
     }
 
-    for (uint64_t expected_seq = first_alive; expected_seq < pushed;
-         expected_seq++) {
+    for (uint64_t expected_seq = first_alive; expected_seq < pushed; expected_seq++) {
         unsigned char body[MAX_SIZE];
         size_t len;
 
         if (!ringbuf_vslot_pop(rb, body, sizeof(body), &len)) {
-            fprintf(stderr, "%s: pop unexpectedly failed at seq %" PRIu64 "\n",
-                    label, expected_seq);
+            fprintf(stderr, "%s: pop unexpectedly failed at seq %" PRIu64 "\n", label,
+                    expected_seq);
             return false;
         }
 
         uint64_t seq;
         if (!message_ok(body, len, &seq) || seq != expected_seq) {
-            fprintf(stderr,
-                    "%s: mismatch, expected seq %" PRIu64 ", got %" PRIu64
-                    " len %zu\n",
+            fprintf(stderr, "%s: mismatch, expected seq %" PRIu64 ", got %" PRIu64 " len %zu\n",
                     label, expected_seq, seq, len);
             return false;
         }
@@ -330,8 +315,7 @@ static bool run_overwrite_basic_on(struct ringbuf_vslot *rb, const char *label)
         return false;
     }
 
-    printf("%s: PASS (dropped=%zu, survivors=%" PRIu64 ")\n", label, dropped,
-           pushed - first_alive);
+    printf("%s: PASS (dropped=%zu, survivors=%" PRIu64 ")\n", label, dropped, pushed - first_alive);
     return true;
 }
 
@@ -395,9 +379,7 @@ static void *stress_producer_main(void *arg)
         uint64_t spins = 0;
         while (!ringbuf_vslot_push(a->rb, body, size)) {
             if (++spins > MAX_SPIN) {
-                fprintf(stderr,
-                        "%s: producer stalled pushing seq %" PRIu64 "\n",
-                        a->label, seq);
+                fprintf(stderr, "%s: producer stalled pushing seq %" PRIu64 "\n", a->label, seq);
                 a->failed = true;
                 atomic_store_explicit(a->done, true, memory_order_release);
                 return NULL;
@@ -436,9 +418,8 @@ static void *stress_consumer_main(void *arg)
                     break; /* producer finished and buffer fully drained */
             } else {
                 if (++spins > MAX_SPIN) {
-                    fprintf(stderr,
-                            "%s: consumer stalled after %" PRIu64 " messages\n",
-                            a->label, a->received);
+                    fprintf(stderr, "%s: consumer stalled after %" PRIu64 " messages\n", a->label,
+                            a->received);
                     a->stalled = true;
                     return NULL;
                 }
@@ -475,15 +456,12 @@ static void *stress_consumer_main(void *arg)
  * Return: true if lengths and payloads were intact, seqs strictly
  * increasing, the final message observed, and received + dropped == @n.
  */
-static bool run_overwrite_stress_on(struct ringbuf_vslot *rb, uint64_t n,
-                                    const char *label)
+static bool run_overwrite_stress_on(struct ringbuf_vslot *rb, uint64_t n, const char *label)
 {
     atomic_bool done = false;
-    struct stress_producer_args pargs = { .rb = rb,
-                                          .num_messages = n,
-                                          .done = &done,
-                                          .failed = false,
-                                          .label = label };
+    struct stress_producer_args pargs = {
+        .rb = rb, .num_messages = n, .done = &done, .failed = false, .label = label
+    };
     struct stress_consumer_args cargs = { .rb = rb,
                                           .done = &done,
                                           .received = 0,
@@ -512,21 +490,17 @@ static bool run_overwrite_stress_on(struct ringbuf_vslot *rb, uint64_t n,
         return false;
     }
     if (cargs.last_seq != n - 1) {
-        fprintf(stderr,
-                "%s: did not observe final message (last_seq=%" PRIu64 ")\n",
-                label, cargs.last_seq);
+        fprintf(stderr, "%s: did not observe final message (last_seq=%" PRIu64 ")\n", label,
+                cargs.last_seq);
         return false;
     }
     if (cargs.received + dropped != n) {
-        fprintf(stderr,
-                "%s: received(%" PRIu64 ") + dropped(%zu) != pushed(%" PRIu64
-                ")\n",
-                label, cargs.received, dropped, n);
+        fprintf(stderr, "%s: received(%" PRIu64 ") + dropped(%zu) != pushed(%" PRIu64 ")\n", label,
+                cargs.received, dropped, n);
         return false;
     }
 
-    printf("%s: PASS (received=%" PRIu64 ", dropped=%zu)\n", label,
-           cargs.received, dropped);
+    printf("%s: PASS (received=%" PRIu64 ", dropped=%zu)\n", label, cargs.received, dropped);
     return true;
 }
 
@@ -603,20 +577,16 @@ static bool run_straddle_test(void)
 
             fill_message_sized(body, seq, body_size);
             if (!ringbuf_vslot_push(rb, body, body_size)) {
-                fprintf(stderr,
-                        "straddle: positioning push failed at offset %zu\n",
-                        at);
+                fprintf(stderr, "straddle: positioning push failed at offset %zu\n", at);
                 goto out;
             }
             if (!ringbuf_vslot_pop(rb, body, sizeof(body), &len)) {
-                fprintf(stderr,
-                        "straddle: positioning pop failed at offset %zu\n", at);
+                fprintf(stderr, "straddle: positioning pop failed at offset %zu\n", at);
                 goto out;
             }
             if (len != body_size) {
-                fprintf(stderr,
-                        "straddle: positioning len %zu != %zu at offset %zu\n",
-                        len, body_size, at);
+                fprintf(stderr, "straddle: positioning len %zu != %zu at offset %zu\n", len,
+                        body_size, at);
                 goto out;
             }
             at = (at + rec) & (capacity - 1);
@@ -641,8 +611,7 @@ static bool run_straddle_test(void)
                 goto out;
             }
             if (len != body_size) {
-                fprintf(stderr, "straddle[gap=%zu]: len %zu != %zu\n", gap, len,
-                        body_size);
+                fprintf(stderr, "straddle[gap=%zu]: len %zu != %zu\n", gap, len, body_size);
                 goto out;
             }
             if (!message_bytes_ok(got, len, seq)) {
@@ -722,8 +691,7 @@ static bool run_truncate_test(void)
             goto out;
         }
         if (len != MAX_SIZE) {
-            fprintf(stderr, "truncate: expected len %u, got %zu\n", MAX_SIZE,
-                    len);
+            fprintf(stderr, "truncate: expected len %u, got %zu\n", MAX_SIZE, len);
             goto out;
         }
         if (memcmp(body, big, MAX_SIZE) != 0) {
@@ -752,8 +720,7 @@ static bool run_truncate_test(void)
     }
 
     ok = true;
-    printf("truncate: PASS (oversize clamped to %u, zero-length round-trip)\n",
-           MAX_SIZE);
+    printf("truncate: PASS (oversize clamped to %u, zero-length round-trip)\n", MAX_SIZE);
 
 out:
     free(big);
@@ -786,8 +753,7 @@ static bool run_pop_cap_test(void)
     const size_t cap = 16;
 
     if (size <= cap) {
-        fprintf(stderr, "pop_cap: test needs size > cap (%zu <= %zu)\n", size,
-                cap);
+        fprintf(stderr, "pop_cap: test needs size > cap (%zu <= %zu)\n", size, cap);
         goto out;
     }
 
@@ -835,8 +801,7 @@ static bool run_pop_cap_test(void)
     }
 
     ok = true;
-    printf("pop_cap: PASS (stored len %zu reported through cap %zu)\n", size,
-           cap);
+    printf("pop_cap: PASS (stored len %zu reported through cap %zu)\n", size, cap);
 
 out:
     ringbuf_vslot_destroy(rb);
@@ -883,8 +848,7 @@ static bool run_wrap_boundary_test(void)
     size_t capacity = ringbuf_vslot_capacity_bytes(rb);
 
     if (!ringbuf_vslot_is_empty_approx(rb)) {
-        fprintf(stderr,
-                "wrap_boundary: should read empty right after seeding\n");
+        fprintf(stderr, "wrap_boundary: should read empty right after seeding\n");
         goto fail;
     }
     if (ringbuf_vslot_free_bytes_approx(rb) != capacity) {
@@ -905,8 +869,7 @@ static bool run_wrap_boundary_test(void)
             break;
         if (!ringbuf_vslot_push(rb, body, size)) {
             fprintf(stderr,
-                    "wrap_boundary: push failed at seq %" PRIu64
-                    " with %zu free and rec %zu\n",
+                    "wrap_boundary: push failed at seq %" PRIu64 " with %zu free and rec %zu\n",
                     pushed, ringbuf_vslot_free_bytes_approx(rb), rec);
             goto fail;
         }
@@ -919,8 +882,7 @@ static bool run_wrap_boundary_test(void)
         unsigned char body[MAX_SIZE];
         size_t size = fill_message(body, pushed);
         if (ringbuf_vslot_push(rb, body, size)) {
-            fprintf(stderr,
-                    "wrap_boundary: push succeeded with only %zu free\n",
+            fprintf(stderr, "wrap_boundary: push succeeded with only %zu free\n",
                     ringbuf_vslot_free_bytes_approx(rb));
             goto fail;
         }
@@ -942,8 +904,7 @@ static bool run_wrap_boundary_test(void)
         uint64_t seq;
         if (!message_ok(body, len, &seq) || seq != expected) {
             fprintf(stderr,
-                    "wrap_boundary: mismatch, expected seq %" PRIu64
-                    ", got %" PRIu64 " len %zu\n",
+                    "wrap_boundary: mismatch, expected seq %" PRIu64 ", got %" PRIu64 " len %zu\n",
                     expected, seq, len);
             goto fail;
         }
@@ -953,8 +914,7 @@ static bool run_wrap_boundary_test(void)
         unsigned char body[MAX_SIZE];
         size_t len;
         if (ringbuf_vslot_pop(rb, body, sizeof(body), &len)) {
-            fprintf(stderr,
-                    "wrap_boundary: expected empty buffer after draining\n");
+            fprintf(stderr, "wrap_boundary: expected empty buffer after draining\n");
             goto fail;
         }
     }
@@ -964,8 +924,7 @@ static bool run_wrap_boundary_test(void)
     }
 
     ringbuf_vslot_destroy(rb);
-    printf("wrap_boundary: PASS (crossed SIZE_MAX, %" PRIu64 " messages)\n",
-           pushed);
+    printf("wrap_boundary: PASS (crossed SIZE_MAX, %" PRIu64 " messages)\n", pushed);
     return true;
 
 fail:
@@ -1004,8 +963,7 @@ static bool run_wrap_lossless_concurrent_test(void)
 {
     struct ringbuf_vslot *rb = ringbuf_vslot_create(MAX_SIZE, 512, false);
     if (!rb) {
-        fprintf(stderr,
-                "wrap_lossless_concurrent: ringbuf_vslot_create failed\n");
+        fprintf(stderr, "wrap_lossless_concurrent: ringbuf_vslot_create failed\n");
         return false;
     }
     ringbuf_vslot_test_seed_counters(rb, SEED_BASE);
@@ -1058,8 +1016,7 @@ int main(void)
     ok &= run_wrap_lossless_concurrent_test();
     ok &= run_wrap_overwrite_stress_test();
 #else
-    printf(
-        "counter-overflow tests SKIPPED (build with -DRINGBUF_TEST_HOOKS)\n");
+    printf("counter-overflow tests SKIPPED (build with -DRINGBUF_TEST_HOOKS)\n");
 #endif
 
     if (!ok) {

@@ -93,8 +93,7 @@ struct parsed {
 
 static uint32_t rd32(const uint8_t *p)
 {
-    return (uint32_t)p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 |
-           (uint32_t)p[3] << 24;
+    return (uint32_t)p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24;
 }
 
 static uint64_t rd64(const uint8_t *p)
@@ -186,8 +185,7 @@ static int parse_raw(const char *path, struct parsed *p)
                 const struct rname *have = find_name(p, ptr);
                 if (have) {
                     /* A repeat must be identical; first definition wins. */
-                    if (strncmp(have->s, (const char *)body + q, nl) != 0 ||
-                        have->s[nl] != '\0')
+                    if (strncmp(have->s, (const char *)body + q, nl) != 0 || have->s[nl] != '\0')
                         goto out;
                 } else {
                     struct rname *n = &p->nm[p->nnm++];
@@ -223,9 +221,8 @@ static int parse_raw(const char *path, struct parsed *p)
                 } else {
                     /* A rename: everything but the name must match. */
                     const struct rtrack *have = &p->trk[at];
-                    if (have->parent != nt.parent || have->kind != nt.kind ||
-                        have->pid != nt.pid || have->tid != nt.tid ||
-                        have->unit != nt.unit)
+                    if (have->parent != nt.parent || have->kind != nt.kind || have->pid != nt.pid ||
+                        have->tid != nt.tid || have->unit != nt.unit)
                         goto out;
                     p->trk[at] = nt;
                 }
@@ -247,8 +244,7 @@ static int parse_raw(const char *path, struct parsed *p)
                 /* Ordering rule: definitions precede use. */
                 if (!find_track(p, ev->track))
                     goto out;
-                if (!(ev->flags & RF_HAS_VALUE) && ev->u != 0 &&
-                    !find_name(p, ev->u))
+                if (!(ev->flags & RF_HAS_VALUE) && ev->u != 0 && !find_name(p, ev->u))
                     goto out;
             }
         } else {
@@ -287,8 +283,7 @@ static int move_dump(const char *dir, const char *leaf, const char *path)
  * A continuous trace is the file @path in the working directory. A snapshot
  * trace is dumped into the directory @path.d, and the dump is then moved to
  * @path, so every caller reads the same name in either mode. */
-static int write_trace(const char *path, enum pf_mode mode, int iters,
-                       struct ids *out)
+static int write_trace(const char *path, enum pf_mode mode, int iters, struct ids *out)
 {
     char dir[256];
     char leaf[512] = "";
@@ -322,8 +317,7 @@ static int write_trace(const char *path, enum pf_mode mode, int iters,
         pf_slice_end(t, out->thread);
     }
 
-    if (mode == PF_MODE_SNAPSHOT &&
-        pf_trace_dump(t, "snap", leaf, sizeof(leaf)) != 0) {
+    if (mode == PF_MODE_SNAPSHOT && pf_trace_dump(t, "snap", leaf, sizeof(leaf)) != 0) {
         pf_trace_close(t);
         return -1;
     }
@@ -338,8 +332,7 @@ static int write_trace(const char *path, enum pf_mode mode, int iters,
 
 /* Compares event k to what was emitted at position k. Returns true if it
  * matches. */
-static bool event_matches(const struct parsed *p, size_t k,
-                          const struct ids *ids)
+static bool event_matches(const struct parsed *p, size_t k, const struct ids *ids)
 {
     const struct rev *e = &p->ev[k];
     int pos = (int)(k % 4);
@@ -352,20 +345,18 @@ static bool event_matches(const struct parsed *p, size_t k,
         uint32_t want_type = pos == 0 ? TYPE_SLICE_BEGIN : TYPE_INSTANT;
         uint64_t want_track = ids->thread;
         const struct rname *n = find_name(p, e->u);
-        return e->type == want_type && e->track == want_track &&
-               e->flags == 0 && n && strcmp(n->s, want) == 0;
+        return e->type == want_type && e->track == want_track && e->flags == 0 && n &&
+               strcmp(n->s, want) == 0;
     }
     case 1:
-        return e->type == TYPE_COUNTER && e->track == ids->counter &&
-               e->flags == RF_HAS_VALUE && e->u == (uint64_t)i;
+        return e->type == TYPE_COUNTER && e->track == ids->counter && e->flags == RF_HAS_VALUE &&
+               e->u == (uint64_t)i;
     default:
-        return e->type == TYPE_SLICE_END && e->track == ids->thread &&
-               e->flags == 0 && e->u == 0;
+        return e->type == TYPE_SLICE_END && e->track == ids->thread && e->flags == 0 && e->u == 0;
     }
 }
 
-static void check_contents(const struct parsed *p, const struct ids *ids,
-                           size_t want_events)
+static void check_contents(const struct parsed *p, const struct ids *ids, size_t want_events)
 {
     CHECK(p->version == 4, "version %u", p->version);
     CHECK(p->record_size == REC_BYTES, "record_size %u", p->record_size);
@@ -381,25 +372,21 @@ static void check_contents(const struct parsed *p, const struct ids *ids,
                   strcmp(p->trk[0].name, "rawapp") == 0,
               "process track");
         const uint64_t proc = p->trk[0].uuid;
-        CHECK(p->trk[1].uuid == ids->thread && p->trk[1].kind == 1 &&
-                  p->trk[1].tid == 1 && strcmp(p->trk[1].name, "main") == 0 &&
-                  p->trk[1].parent == proc,
+        CHECK(p->trk[1].uuid == ids->thread && p->trk[1].kind == 1 && p->trk[1].tid == 1 &&
+                  strcmp(p->trk[1].name, "main") == 0 && p->trk[1].parent == proc,
               "thread track");
         CHECK(p->trk[2].uuid == ids->counter && p->trk[2].kind == 2 &&
-                  p->trk[2].unit == PF_UNIT_COUNT &&
-                  strcmp(p->trk[2].name, "depth") == 0 &&
+                  p->trk[2].unit == PF_UNIT_COUNT && strcmp(p->trk[2].name, "depth") == 0 &&
                   p->trk[2].parent == proc,
               "counter track");
     }
 
     CHECK(p->nnm == 2, "names %zu, want 2", p->nnm);
-    CHECK(p->nev <= want_events, "events %zu, want at most %zu", p->nev,
-          want_events);
+    CHECK(p->nev <= want_events, "events %zu, want at most %zu", p->nev, want_events);
 
     for (size_t k = 0; k < p->nev; k++) {
         if (k > 0)
-            CHECK(p->ev[k].ts >= p->ev[k - 1].ts, "ts went backwards at %zu",
-                  k);
+            CHECK(p->ev[k].ts >= p->ev[k - 1].ts, "ts went backwards at %zu", k);
         if (!event_matches(p, k, ids)) {
             CHECK(false, "event %zu does not match what was emitted", k);
             break;
@@ -407,8 +394,7 @@ static void check_contents(const struct parsed *p, const struct ids *ids,
     }
 }
 
-static void round_trip(const char *label, enum pf_mode mode, int iters,
-                       const char *path)
+static void round_trip(const char *label, enum pf_mode mode, int iters, const char *path)
 {
     struct ids ids;
     if (write_trace(path, mode, iters, &ids) != 0) {
@@ -421,11 +407,9 @@ static void round_trip(const char *label, enum pf_mode mode, int iters,
         CHECK(false, "%s: reader rejected the file", label);
         return;
     }
-    CHECK(p.torn_bytes == 0, "%s: %zu torn bytes in a closed file", label,
-          p.torn_bytes);
+    CHECK(p.torn_bytes == 0, "%s: %zu torn bytes in a closed file", label, p.torn_bytes);
     check_contents(&p, &ids, (size_t)iters * 4);
-    CHECK(p.nev == (size_t)iters * 4, "%s: events %zu, want %d", label, p.nev,
-          iters * 4);
+    CHECK(p.nev == (size_t)iters * 4, "%s: events %zu, want %d", label, p.nev, iters * 4);
 
     free(p.ev);
 }
@@ -469,8 +453,7 @@ static void refuses_existing(const char *path)
 
     errno = 0;
     struct pf_trace *t = pf_trace_open(&cfg);
-    CHECK(t == NULL && errno == EEXIST, "reopen: expected EEXIST, got %d",
-          errno);
+    CHECK(t == NULL && errno == EEXIST, "reopen: expected EEXIST, got %d", errno);
     if (t)
         pf_trace_close(t);
 }
@@ -539,8 +522,7 @@ static void simple_threads(const char *path)
     }
     for (int i = 0; i < SIMPLE_THREADS; i++)
         pthread_join(th[i], NULL);
-    CHECK(pf_trace_dump(t, "simple", leaf, sizeof(leaf)) == 0,
-          "simple threads: dump failed");
+    CHECK(pf_trace_dump(t, "simple", leaf, sizeof(leaf)) == 0, "simple threads: dump failed");
     pf_trace_close(t);
     CHECK(move_dump(dir, leaf, path) == 0, "simple threads: no dump");
 
@@ -551,8 +533,8 @@ static void simple_threads(const char *path)
     }
     CHECK(p.torn_bytes == 0, "simple threads: %zu torn bytes", p.torn_bytes);
     /* One more than SIMPLE_THREADS: the process track from pf_trace_open(). */
-    CHECK(p.ntrk == SIMPLE_THREADS + 1, "simple threads: tracks %zu, want %d",
-          p.ntrk, SIMPLE_THREADS + 1);
+    CHECK(p.ntrk == SIMPLE_THREADS + 1, "simple threads: tracks %zu, want %d", p.ntrk,
+          SIMPLE_THREADS + 1);
 
     for (int i = 0; i < SIMPLE_THREADS; i++) {
         char want[32];
@@ -562,8 +544,8 @@ static void simple_threads(const char *path)
             CHECK(false, "simple threads: no track for worker %d", i);
             continue;
         }
-        CHECK(strcmp(tr->name, want) == 0,
-              "simple threads: track for %s is named '%s'", want, tr->name);
+        CHECK(strcmp(tr->name, want) == 0, "simple threads: track for %s is named '%s'", want,
+              tr->name);
 
         size_t begins = 0, ticks = 0, ends = 0;
         for (size_t k = 0; k < p.nev; k++) {
@@ -577,10 +559,9 @@ static void simple_threads(const char *path)
             else if (e->type == TYPE_SLICE_END)
                 ends++;
         }
-        CHECK(begins == SIMPLE_ROUNDS && ticks == SIMPLE_ROUNDS &&
-                  ends == SIMPLE_ROUNDS,
-              "simple threads: %s has %zu/%zu/%zu begin/tick/end, want %d each",
-              want, begins, ticks, ends, SIMPLE_ROUNDS);
+        CHECK(begins == SIMPLE_ROUNDS && ticks == SIMPLE_ROUNDS && ends == SIMPLE_ROUNDS,
+              "simple threads: %s has %zu/%zu/%zu begin/tick/end, want %d each", want, begins,
+              ticks, ends, SIMPLE_ROUNDS);
     }
 
     free(p.ev);
@@ -624,14 +605,13 @@ static void simple_rename(const char *path)
     if (!tr) {
         CHECK(false, "simple rename: no thread track for this thread");
     } else {
-        CHECK(strcmp(tr->name, "renamed") == 0,
-              "simple rename: track named '%s', want 'renamed'", tr->name);
+        CHECK(strcmp(tr->name, "renamed") == 0, "simple rename: track named '%s', want 'renamed'",
+              tr->name);
         size_t on_track = 0;
         for (size_t k = 0; k < p.nev; k++)
             if (p.ev[k].track == tr->uuid)
                 on_track++;
-        CHECK(on_track == 4, "simple rename: %zu events on track, want 4",
-              on_track);
+        CHECK(on_track == 4, "simple rename: %zu events on track, want 4", on_track);
     }
     free(p.ev);
 }
@@ -677,19 +657,17 @@ static void header_bytes(const char *path)
      * far past the boot clock's zero, so the offset is large and positive. */
     int64_t offset;
     memcpy(&offset, buf + 24, 8);
-    CHECK(offset > 1000000000000000000LL, "clock offset %lld ns",
-          (long long)offset);
+    CHECK(offset > 1000000000000000000LL, "clock offset %lld ns", (long long)offset);
 
     /* Bytes 32..39 are BOOTTIME minus the trace clock. The trace clock here
      * is BOOTTIME, so it is zero. */
     int64_t boot_offset;
     memcpy(&boot_offset, buf + 32, 8);
-    CHECK(boot_offset == 0, "boottime offset %lld ns, want 0",
-          (long long)boot_offset);
+    CHECK(boot_offset == 0, "boottime offset %lld ns, want 0", (long long)boot_offset);
 
     /* The first chunk is TRACKS: three 104-byte entries. */
-    CHECK(rd32(buf + 40) == CHUNK_TRACKS, "first chunk kind %u, want %d",
-          rd32(buf + 40), CHUNK_TRACKS);
+    CHECK(rd32(buf + 40) == CHUNK_TRACKS, "first chunk kind %u, want %d", rd32(buf + 40),
+          CHUNK_TRACKS);
     uint32_t tlen = rd32(buf + 44);
     CHECK(tlen == 3 * 104, "TRACKS len %u, want %u", tlen, 3u * 104u);
 
@@ -698,12 +676,10 @@ static void header_bytes(const char *path)
     CHECK(off + 8 + 12 + 7 <= n, "header: file ends before NAMES");
     if (off + 8 + 12 + 7 > n)
         return;
-    CHECK(rd32(buf + off) == CHUNK_NAMES, "chunk at %zu kind %u, want NAMES",
-          off, rd32(buf + off));
+    CHECK(rd32(buf + off) == CHUNK_NAMES, "chunk at %zu kind %u, want NAMES", off, rd32(buf + off));
     const uint8_t *entry = buf + off + 8;
     CHECK(rd32(entry + 8) == 7, "name length %u, want 7", rd32(entry + 8));
-    CHECK(memcmp(entry + 12, "compute", 7) == 0,
-          "name bytes are not 'compute'");
+    CHECK(memcmp(entry + 12, "compute", 7) == 0, "name bytes are not 'compute'");
 }
 
 /* Events with arguments: the format name, the arg count and types in the
@@ -747,37 +723,31 @@ static void args_roundtrip(const char *path)
     double two_and_half = 2.5;
     memcpy(&want_dbl, &two_and_half, sizeof want_dbl);
     CHECK(e->type == TYPE_SLICE_BEGIN, "args: event 0 type %u", e->type);
-    CHECK(((e->flags & RF_NARGS_MASK) >> RF_NARGS_SHIFT) == 2,
-          "args: event 0 nargs flags %#x", e->flags);
+    CHECK(((e->flags & RF_NARGS_MASK) >> RF_NARGS_SHIFT) == 2, "args: event 0 nargs flags %#x",
+          e->flags);
     CHECK(!(e->flags & RF_ARG0_IS_DOUBLE) && (e->flags & RF_ARG1_IS_DOUBLE),
           "args: event 0 arg types %#x", e->flags);
     CHECK(e->a[0] == 7, "args: event 0 arg0 %llu", (unsigned long long)e->a[0]);
-    CHECK(e->a[1] == want_dbl, "args: event 0 arg1 bits %#llx",
-          (unsigned long long)e->a[1]);
+    CHECK(e->a[1] == want_dbl, "args: event 0 arg1 bits %#llx", (unsigned long long)e->a[1]);
     const struct rname *n = find_name(&p, e->u);
-    CHECK(n && strcmp(n->s, "job %d took %f") == 0,
-          "args: event 0 name is not the format");
+    CHECK(n && strcmp(n->s, "job %d took %f") == 0, "args: event 0 name is not the format");
 
     e = &p.ev[1];
-    CHECK(e->type == TYPE_SLICE_END && e->flags == 0 && e->a[0] == 0 &&
-              e->a[1] == 0,
+    CHECK(e->type == TYPE_SLICE_END && e->flags == 0 && e->a[0] == 0 && e->a[1] == 0,
           "args: event 1 (no args) is not zeroed");
 
     e = &p.ev[2];
     CHECK(e->type == TYPE_INSTANT && e->a[0] == 42 && e->a[1] == 255,
-          "args: event 2 args %llu %llu", (unsigned long long)e->a[0],
-          (unsigned long long)e->a[1]);
+          "args: event 2 args %llu %llu", (unsigned long long)e->a[0], (unsigned long long)e->a[1]);
     CHECK(((e->flags & RF_NARGS_MASK) >> RF_NARGS_SHIFT) == 2 &&
               !(e->flags & (RF_ARG0_IS_DOUBLE | RF_ARG1_IS_DOUBLE)),
           "args: event 2 flags %#x", e->flags);
 
     e = &p.ev[3];
-    CHECK(e->type == TYPE_SLICE_BEGIN && e->flags == 0 && e->a[0] == 0 &&
-              e->a[1] == 0,
+    CHECK(e->type == TYPE_SLICE_BEGIN && e->flags == 0 && e->a[0] == 0 && e->a[1] == 0,
           "args: event 3 (plain begin) is not zeroed");
     e = &p.ev[4];
-    CHECK(e->type == TYPE_SLICE_END && e->flags == 0 && e->a[0] == 0 &&
-              e->a[1] == 0,
+    CHECK(e->type == TYPE_SLICE_END && e->flags == 0 && e->a[0] == 0 && e->a[1] == 0,
           "args: event 4 (plain end) is not zeroed");
 }
 
@@ -785,12 +755,10 @@ int main(void)
 {
     /* Continuous: the drain writes several event chunks, since 5000
      * iterations are 20000 records against a 128 KiB flush threshold. */
-    round_trip("continuous", PF_MODE_CONTINUOUS, 5000,
-               "raw_roundtrip_continuous.pfraw");
+    round_trip("continuous", PF_MODE_CONTINUOUS, 5000, "raw_roundtrip_continuous.pfraw");
 
     /* Snapshot: a single dump on close, one events chunk. */
-    round_trip("snapshot", PF_MODE_SNAPSHOT, 1000,
-               "raw_roundtrip_snapshot.pfraw");
+    round_trip("snapshot", PF_MODE_SNAPSHOT, 1000, "raw_roundtrip_snapshot.pfraw");
 
     header_bytes("raw_roundtrip_header.pfraw");
     torn_tail("raw_roundtrip_torn.pfraw", 2000);

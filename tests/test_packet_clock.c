@@ -50,8 +50,7 @@ struct field {
     size_t size;
 };
 
-static bool read_varint(const unsigned char *b, size_t len, size_t *p,
-                        uint64_t *out)
+static bool read_varint(const unsigned char *b, size_t len, size_t *p, uint64_t *out)
 {
     uint64_t v = 0;
     for (unsigned shift = 0; shift < 64; shift += 7) {
@@ -68,8 +67,7 @@ static bool read_varint(const unsigned char *b, size_t len, size_t *p,
 }
 
 /* Reads the field at *p, advancing past it. Returns false on bad bytes. */
-static bool next_field(const unsigned char *b, size_t len, size_t *p,
-                       struct field *f)
+static bool next_field(const unsigned char *b, size_t len, size_t *p, struct field *f)
 {
     uint64_t key;
     if (!read_varint(b, len, p, &key))
@@ -134,8 +132,7 @@ static int check_dump(const unsigned char *buf, size_t len, uint64_t want)
         if (!has_ts)
             continue;
         timed++;
-        CHECK(has_clock && clock == want,
-              "packet %d names clock %llu, want %llu", timed,
+        CHECK(has_clock && clock == want, "packet %d names clock %llu, want %llu", timed,
               (unsigned long long)clock, (unsigned long long)want);
     }
     return timed;

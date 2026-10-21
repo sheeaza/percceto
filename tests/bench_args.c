@@ -71,8 +71,7 @@ static size_t file_size(const char *path)
 
 /* Begin and end N_PAIRS slices with no args, or with two args when @args is
  * set. Returns ns per event. */
-static double produce(struct pf_trace *t, uint64_t trk, bool args,
-                      uint64_t pairs)
+static double produce(struct pf_trace *t, uint64_t trk, bool args, uint64_t pairs)
 {
     uint64_t t0 = real_ns();
     for (uint64_t i = 0; i < pairs; i++) {

@@ -59,8 +59,7 @@ int raw_write_header(struct pf_trace *t)
     raw_put_u32(&t->out, 0); /* flags, reserved */
     /* REALTIME minus the trace clock, read back to back, so a reader can turn
      * a timestamp into wall time. Two's complement in the 8 bytes. */
-    raw_put_u64(&t->out, (uint64_t)(int64_t)(now_ns(CLOCK_REALTIME) -
-                                             now_ns(t->cfg.clock_id)));
+    raw_put_u64(&t->out, (uint64_t)(int64_t)(now_ns(CLOCK_REALTIME) - now_ns(t->cfg.clock_id)));
     /* BOOTTIME minus the trace clock, sampled the same way. Zero when the
      * trace clock is BOOTTIME itself. */
     int64_t boot_off = 0;
@@ -73,8 +72,7 @@ int raw_write_header(struct pf_trace *t)
 
 /* Writes one chunk as a single write(), then empties the payload buffer.
  * An empty payload writes nothing. Caller holds out_lock. */
-static int raw_write_chunk(struct pf_trace *t, uint32_t kind,
-                           struct pb_buf *payload)
+static int raw_write_chunk(struct pf_trace *t, uint32_t kind, struct pb_buf *payload)
 {
     if (payload->len == 0)
         return 0;
@@ -153,8 +151,7 @@ static int raw_emit_record(struct pf_trace *t, const struct pf_rec *r)
     if (name) {
         uint64_t iid;
         bool is_new = false;
-        bool found =
-            intern_lookup_or_insert(&t->name_table, name, &iid, &is_new);
+        bool found = intern_lookup_or_insert(&t->name_table, name, &iid, &is_new);
         /* A full table cannot dedupe, so the definition is queued again.
          * Harmless: the reader keeps the first, and the copies are identical. */
         if (!found || is_new)

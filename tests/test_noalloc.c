@@ -40,8 +40,7 @@ static void report(const char *what)
     if (atomic_load(&armed)) {
         atomic_fetch_add(&violations, 1);
         char buf[128];
-        size_t n = (size_t)snprintf(buf, sizeof(buf),
-                                    "  VIOLATION: %s while armed\n", what);
+        size_t n = (size_t)snprintf(buf, sizeof(buf), "  VIOLATION: %s while armed\n", what);
         ssize_t ignored = write(2, buf, n);
         (void)ignored;
     }
@@ -141,8 +140,8 @@ static void check_mode(const char *label, enum pf_mode mode, bool dump)
     uint64_t v = atomic_load(&violations);
     struct pf_stats s;
     pf_trace_stats(t, &s);
-    printf("  %u events emitted, %" PRIu64 " published, %" PRIu64 " written\n",
-           n * 5, s.events, s.bytes_written);
+    printf("  %u events emitted, %" PRIu64 " published, %" PRIu64 " written\n", n * 5, s.events,
+           s.bytes_written);
     if (v == 0) {
         printf("  ok: zero allocations while armed\n");
     } else {

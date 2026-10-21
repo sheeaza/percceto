@@ -150,15 +150,13 @@ static char *map_mirrored(size_t bytes)
 
     /* Reserve the whole span first so the two views are guaranteed
      * adjacent; MAP_FIXED below then overwrites this placeholder. */
-    void *reserved =
-        mmap(NULL, bytes * 2, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    void *reserved = mmap(NULL, bytes * 2, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     if (reserved == MAP_FAILED)
         goto out;
 
     for (size_t half = 0; half < 2; half++) {
         void *want = (char *)reserved + half * bytes;
-        void *got = mmap(want, bytes, PROT_READ | PROT_WRITE,
-                         MAP_SHARED | MAP_FIXED, fd, 0);
+        void *got = mmap(want, bytes, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, fd, 0);
         if (got == MAP_FAILED) {
             /* Drops the placeholder and whichever view already
              * succeeded, in one call. */
@@ -190,8 +188,7 @@ out:
  * Return: the new buffer, or NULL on allocation failure, mapping failure,
  * or invalid arguments.
  */
-struct ringbuf_vslot *ringbuf_vslot_create(size_t max_msg_size,
-                                           size_t min_ring_bytes,
+struct ringbuf_vslot *ringbuf_vslot_create(size_t max_msg_size, size_t min_ring_bytes,
                                            bool overwrite_on_full)
 {
     if (max_msg_size == 0)
@@ -228,8 +225,7 @@ struct ringbuf_vslot *ringbuf_vslot_create(size_t max_msg_size,
      * the page size is itself a power of two; map_mirrored requires it. */
 
     struct ringbuf_vslot *rb = NULL;
-    if (posix_memalign((void **)&rb, _Alignof(struct ringbuf_vslot),
-                       sizeof(*rb)) != 0)
+    if (posix_memalign((void **)&rb, _Alignof(struct ringbuf_vslot), sizeof(*rb)) != 0)
         return NULL;
 
     rb->base = map_mirrored(capacity);
@@ -295,8 +291,7 @@ static size_t read_record_len(const struct ringbuf_vslot *rb, size_t idx)
  * makes the span contiguous even when it runs off the physical end (see
  * map_mirrored).
  */
-static void store_record(struct ringbuf_vslot *rb, size_t idx, const void *data,
-                         size_t size)
+static void store_record(struct ringbuf_vslot *rb, size_t idx, const void *data, size_t size)
 {
     size_t off = idx & rb->mask;
     uint32_t len = (uint32_t)size;
@@ -324,13 +319,11 @@ bool ringbuf_vslot_push(struct ringbuf_vslot *rb, const void *data, size_t size)
 {
     if (size > rb->max_msg_size) {
         size = rb->max_msg_size;
-        atomic_fetch_add_explicit(&rb->truncated_count, 1,
-                                  memory_order_relaxed);
+        atomic_fetch_add_explicit(&rb->truncated_count, 1, memory_order_relaxed);
     }
 
     size_t reclen = record_len(size);
-    size_t write_idx =
-        atomic_load_explicit(&rb->write_idx, memory_order_relaxed);
+    size_t write_idx = atomic_load_explicit(&rb->write_idx, memory_order_relaxed);
     size_t next = write_idx + reclen;
 
     if (next - rb->cached_read > rb->capacity) {
@@ -339,8 +332,7 @@ bool ringbuf_vslot_push(struct ringbuf_vslot *rb, const void *data, size_t size)
          * overwrite that space. The lock below cannot substitute, because
          * this load runs before we take it and the fast path never takes
          * it at all. */
-        rb->cached_read =
-            atomic_load_explicit(&rb->read_idx, memory_order_acquire);
+        rb->cached_read = atomic_load_explicit(&rb->read_idx, memory_order_acquire);
         if (next - rb->cached_read > rb->capacity) {
             if (!rb->overwrite_on_full)
                 return false; /* genuinely no room */
@@ -350,8 +342,7 @@ bool ringbuf_vslot_push(struct ringbuf_vslot *rb, const void *data, size_t size)
              * boundary lock for the whole eviction. */
             int expected = 0;
             if (!atomic_compare_exchange_strong_explicit(
-                    &rb->boundary_lock, &expected, 1, memory_order_acquire,
-                    memory_order_relaxed))
+                    &rb->boundary_lock, &expected, 1, memory_order_acquire, memory_order_relaxed))
                 return false; /* consumer is mid-read of the oldest record */
 
             /* Relaxed: in overwrite mode pop touches read_idx only under
@@ -359,8 +350,7 @@ bool ringbuf_vslot_push(struct ringbuf_vslot *rb, const void *data, size_t size)
              * against it. Same reasoning for the store at the end of the
              * loop and for write_idx below. Every non-relaxed ordering in
              * this file has an unlocked access on at least one end. */
-            size_t fresh_read =
-                atomic_load_explicit(&rb->read_idx, memory_order_relaxed);
+            size_t fresh_read = atomic_load_explicit(&rb->read_idx, memory_order_relaxed);
 
             /* Evict until the message fits. Variable sizes mean one push
              * can need to retire several records -- the loop is the main
@@ -373,10 +363,8 @@ bool ringbuf_vslot_push(struct ringbuf_vslot *rb, const void *data, size_t size)
             }
 
             if (dropped) {
-                atomic_store_explicit(&rb->read_idx, fresh_read,
-                                      memory_order_relaxed);
-                atomic_fetch_add_explicit(&rb->dropped_count, dropped,
-                                          memory_order_relaxed);
+                atomic_store_explicit(&rb->read_idx, fresh_read, memory_order_relaxed);
+                atomic_fetch_add_explicit(&rb->dropped_count, dropped, memory_order_relaxed);
             }
             rb->cached_read = fresh_read;
 
@@ -408,21 +396,18 @@ bool ringbuf_vslot_push(struct ringbuf_vslot *rb, const void *data, size_t size)
  * Return: true if a message was copied out; false if the buffer is empty,
  * or on transient contention with an evicting producer (overwrite mode).
  */
-bool ringbuf_vslot_pop(struct ringbuf_vslot *rb, void *data, size_t cap,
-                       size_t *len)
+bool ringbuf_vslot_pop(struct ringbuf_vslot *rb, void *data, size_t cap, size_t *len)
 {
     if (!rb->overwrite_on_full) {
         /* Lossless mode: read_idx has exactly one writer (us), so this is
          * the plain lock-free path. */
-        size_t read_idx =
-            atomic_load_explicit(&rb->read_idx, memory_order_relaxed);
+        size_t read_idx = atomic_load_explicit(&rb->read_idx, memory_order_relaxed);
 
         /* Signed difference so this stays correct when the counters wrap
          * past SIZE_MAX; a plain `read_idx >= cached_write` would read as
          * "empty" forever once write_idx wrapped and read_idx had not. */
         if ((ptrdiff_t)(rb->cached_write - read_idx) <= 0) {
-            rb->cached_write =
-                atomic_load_explicit(&rb->write_idx, memory_order_acquire);
+            rb->cached_write = atomic_load_explicit(&rb->write_idx, memory_order_acquire);
             if ((ptrdiff_t)(rb->cached_write - read_idx) <= 0)
                 return false; /* genuinely empty */
         }
@@ -433,17 +418,15 @@ bool ringbuf_vslot_pop(struct ringbuf_vslot *rb, void *data, size_t cap,
             memcpy(data, rb->base + ((read_idx & rb->mask) + HDR_SIZE), copy);
         *len = size;
 
-        atomic_store_explicit(&rb->read_idx, read_idx + record_len(size),
-                              memory_order_release);
+        atomic_store_explicit(&rb->read_idx, read_idx + record_len(size), memory_order_release);
         return true;
     }
 
     /* Overwrite mode: hold the lock across the whole operation, so an
      * evicting producer cannot touch this record mid-copy. */
     int expected = 0;
-    if (!atomic_compare_exchange_strong_explicit(&rb->boundary_lock, &expected,
-                                                 1, memory_order_acquire,
-                                                 memory_order_relaxed))
+    if (!atomic_compare_exchange_strong_explicit(&rb->boundary_lock, &expected, 1,
+                                                 memory_order_acquire, memory_order_relaxed))
         return false; /* producer is evicting this record right now */
 
     /* read_idx is re-read HERE, under the lock, never reused from before
@@ -454,8 +437,7 @@ bool ringbuf_vslot_pop(struct ringbuf_vslot *rb, void *data, size_t cap,
      * evicted one -- and a bogus length would drive the memcpy below. */
     size_t read_idx = atomic_load_explicit(&rb->read_idx, memory_order_relaxed);
     if ((ptrdiff_t)(rb->cached_write - read_idx) <= 0) {
-        rb->cached_write =
-            atomic_load_explicit(&rb->write_idx, memory_order_acquire);
+        rb->cached_write = atomic_load_explicit(&rb->write_idx, memory_order_acquire);
         if ((ptrdiff_t)(rb->cached_write - read_idx) <= 0) {
             atomic_store_explicit(&rb->boundary_lock, 0, memory_order_release);
             return false; /* genuinely empty */
@@ -472,8 +454,7 @@ bool ringbuf_vslot_pop(struct ringbuf_vslot *rb, void *data, size_t cap,
      * push's fast path reads read_idx without ever taking the lock, so the
      * unlock's release does not reach it. This store is what tells that
      * path our read is complete and the space is safe to reuse. */
-    atomic_store_explicit(&rb->read_idx, read_idx + record_len(size),
-                          memory_order_release);
+    atomic_store_explicit(&rb->read_idx, read_idx + record_len(size), memory_order_release);
 
     atomic_store_explicit(&rb->boundary_lock, 0, memory_order_release);
     return true;

@@ -239,8 +239,7 @@ static bool mq_pop(struct mq *q, void *data)
  *
  * Return: median messages/sec over REPS repetitions.
  */
-static double bench_single_ringbuf(size_t slot_size, size_t capacity,
-                                   bool overwrite)
+static double bench_single_ringbuf(size_t slot_size, size_t capacity, bool overwrite)
 {
     double rate[REPS];
     char *msg = calloc(1, slot_size);
@@ -457,33 +456,23 @@ static void *tp_mutex_consumer(void *arg)
  *
  * Return: median messages/sec over REPS repetitions.
  */
-static double bench_spsc(bool use_mutex, bool overwrite, size_t slot_size,
-                         size_t capacity, uint64_t *dropped_out,
-                         uint64_t *errors_out)
+static double bench_spsc(bool use_mutex, bool overwrite, size_t slot_size, size_t capacity,
+                         uint64_t *dropped_out, uint64_t *errors_out)
 {
     double rate[REPS];
     uint64_t dropped = 0, errors = 0;
 
     for (int r = 0; r < REPS; r++) {
-        void *q = use_mutex ?
-                      (void *)mq_create(slot_size, capacity) :
-                      (void *)ringbuf_create(slot_size, capacity, overwrite);
+        void *q = use_mutex ? (void *)mq_create(slot_size, capacity) :
+                              (void *)ringbuf_create(slot_size, capacity, overwrite);
         atomic_bool done = false;
-        struct tp_args pa = {
-            .q = q, .slot_size = slot_size, .count = TP_MESSAGES, .done = &done
-        };
-        struct tp_args ca = {
-            .q = q, .slot_size = slot_size, .count = TP_MESSAGES, .done = &done
-        };
+        struct tp_args pa = { .q = q, .slot_size = slot_size, .count = TP_MESSAGES, .done = &done };
+        struct tp_args ca = { .q = q, .slot_size = slot_size, .count = TP_MESSAGES, .done = &done };
 
         pthread_t prod, cons;
         uint64_t t0 = now_ns();
-        pthread_create(&prod, NULL,
-                       use_mutex ? tp_mutex_producer : tp_ringbuf_producer,
-                       &pa);
-        pthread_create(&cons, NULL,
-                       use_mutex ? tp_mutex_consumer : tp_ringbuf_consumer,
-                       &ca);
+        pthread_create(&prod, NULL, use_mutex ? tp_mutex_producer : tp_ringbuf_producer, &pa);
+        pthread_create(&cons, NULL, use_mutex ? tp_mutex_consumer : tp_ringbuf_consumer, &ca);
         pthread_join(prod, NULL);
         pthread_join(cons, NULL);
         uint64_t t1 = now_ns();
@@ -604,12 +593,11 @@ static void *lat_consumer(void *arg)
  *
  * Prints min, p50, p99, p99.9, max, and mean in nanoseconds.
  */
-static void bench_latency(const char *label, bool use_mutex, bool overwrite,
-                          size_t slot_size, size_t capacity)
+static void bench_latency(const char *label, bool use_mutex, bool overwrite, size_t slot_size,
+                          size_t capacity)
 {
-    void *q = use_mutex ?
-                  (void *)mq_create(slot_size, capacity) :
-                  (void *)ringbuf_create(slot_size, capacity, overwrite);
+    void *q = use_mutex ? (void *)mq_create(slot_size, capacity) :
+                          (void *)ringbuf_create(slot_size, capacity, overwrite);
     uint64_t *samples = calloc(LAT_MESSAGES, sizeof(*samples));
     atomic_bool done = false;
 
@@ -639,8 +627,7 @@ static void bench_latency(const char *label, bool use_mutex, bool overwrite,
         mean += (double)samples[i];
     mean /= (double)n;
 
-    printf("  %-26s %6" PRIu64 " %7" PRIu64 " %7" PRIu64 " %7" PRIu64
-           " %8" PRIu64 " %8.0f\n",
+    printf("  %-26s %6" PRIu64 " %7" PRIu64 " %7" PRIu64 " %7" PRIu64 " %8" PRIu64 " %8.0f\n",
            label, samples[0], samples[n / 2], samples[(uint64_t)(n * 0.99)],
            samples[(uint64_t)(n * 0.999)], samples[n - 1], mean);
 
@@ -682,8 +669,7 @@ int main(void)
     for (int i = 0; i < 1000000; i++)
         sink += now_ns();
     uint64_t c1 = now_ns();
-    printf("clock_gettime(CLOCK_MONOTONIC): %.1f ns/call\n\n",
-           (double)(c1 - c0) / 1e6);
+    printf("clock_gettime(CLOCK_MONOTONIC): %.1f ns/call\n\n", (double)(c1 - c0) / 1e6);
 
     printf("Single-threaded, alternating push/pop (depth 1), 64B slots,"
            " cap 1024\n");
@@ -692,8 +678,8 @@ int main(void)
     print_row("ringbuf overwrite", bench_single_ringbuf(64, 1024, true), 64);
     print_row("mutex baseline", bench_single_mutex(64, 1024), 64);
 
-    printf("\nSPSC two threads (cpu %d -> %d), 64B slots, by capacity\n",
-           PRODUCER_CPU, CONSUMER_CPU);
+    printf("\nSPSC two threads (cpu %d -> %d), 64B slots, by capacity\n", PRODUCER_CPU,
+           CONSUMER_CPU);
     printf("  %-26s %9s %8s %9s\n", "", "Mmsg/s", "ns/msg", "GiB/s");
     size_t caps[] = { 16, 256, 4096, 65536 };
     for (unsigned i = 0; i < sizeof caps / sizeof *caps; i++) {
@@ -705,8 +691,7 @@ int main(void)
         if (errors)
             printf("    !! %" PRIu64 " sequence errors\n", errors);
     }
-    print_row("mutex cap=4096", bench_spsc(true, false, 64, 4096, NULL, NULL),
-              64);
+    print_row("mutex cap=4096", bench_spsc(true, false, 64, 4096, NULL, NULL), 64);
 
     printf("\nSPSC two threads, cap 4096, by slot size\n");
     printf("  %-26s %9s %8s %9s\n", "", "Mmsg/s", "ns/msg", "GiB/s");
@@ -714,8 +699,7 @@ int main(void)
     for (unsigned i = 0; i < sizeof sizes / sizeof *sizes; i++) {
         char label[64];
         snprintf(label, sizeof label, "lossless slot=%zuB", sizes[i]);
-        print_row(label, bench_spsc(false, false, sizes[i], 4096, NULL, NULL),
-                  sizes[i]);
+        print_row(label, bench_spsc(false, false, sizes[i], 4096, NULL, NULL), sizes[i]);
     }
 
     printf("\nSPSC two threads, overwrite mode (producer never blocks)\n");
@@ -726,15 +710,13 @@ int main(void)
         double r = bench_spsc(false, true, 64, caps[i], &dropped, NULL);
         snprintf(label, sizeof label, "overwrite cap=%zu", caps[i]);
         print_row(label, r, 64);
-        printf("    dropped %.1f%% of %u\n",
-               100.0 * (double)dropped / TP_MESSAGES, TP_MESSAGES);
+        printf("    dropped %.1f%% of %u\n", 100.0 * (double)dropped / TP_MESSAGES, TP_MESSAGES);
     }
 
     printf("\nEnd-to-end handoff latency, 64B slots, cap 4096,"
            " one msg per %d ns (ns)\n",
            LAT_GAP_NS);
-    printf("  %-26s %6s %7s %7s %7s %8s %8s\n", "", "min", "p50", "p99",
-           "p99.9", "max", "mean");
+    printf("  %-26s %6s %7s %7s %7s %8s %8s\n", "", "min", "p50", "p99", "p99.9", "max", "mean");
     bench_latency("ringbuf lossless", false, false, 64, 4096);
     bench_latency("ringbuf overwrite", false, true, 64, 4096);
     bench_latency("mutex baseline", true, false, 64, 4096);
