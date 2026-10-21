@@ -51,6 +51,36 @@ so this should matter only at the boundary. Not measured.
 Option: round `chunk_bytes` up to a multiple of 64 and align the pool, at the
 cost of padding each chunk. Measure with `bench_chunk` first.
 
+## 5. Return a writer slot when its thread exits
+
+A writer slot is not reclaimed when its thread exits, so a trace binds at most
+`max_threads` threads over its life. Threads past that limit drop their events.
+Option: once the exiting thread's partial chunk is committed, the slot goes back
+to the unbound state so a later thread can take it. The slot's event count must
+survive the reuse, or stats would lose the events already emitted. Only the
+thread-exit destructor and bind touch `bound`, under `reg_lock`, so the hot path
+does not change.
+
+Trade-off: a slot is then reused by a different thread, so the writer's per-slot
+state (`seq`, `cur`) has to be reset on bind, and a stale TLS cache in another
+thread must still be rejected. Test with a trace that outlives more threads than
+`max_threads`.
+
+## 6. Replace the free list with a bitmap
+
+The free list threads its chunks through their `next` fields, under `pool_lock`.
+Option: keep one bit per pool chunk, indexed from the chunk's offset in
+`pool_mem`. Taking a chunk is then a scan for a set bit, and returning one is a
+bit set. Nothing is written into the chunk headers to track free chunks, and
+the pool's invariants are easier to check.
+
+Trade-off: the scan is linear in the pool size. At the default 8 MiB with 256
+slots that is about 680 chunks, or 11 words, so it is cheap, but a large
+`buffer_bytes` with small chunks would make it longer. A bitmap does not help
+the committed FIFO, which still needs order. The `next` field is also borrowed
+by the snapshot partial-chunk walk, so that walk may need a separate list after
+this change.
+
 ## Notes
 
 - Continuous mode has no timer flush. A thread's partial chunk is written when
