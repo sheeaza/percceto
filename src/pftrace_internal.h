@@ -104,8 +104,8 @@ struct pf_chunk {
 /* One per bound thread. The producer owns @cur, @used and @seq. @bound is
  * read and written only under reg_lock. Aligned to a cache line so two
  * producers' hot fields never share one; the array is allocated to match. */
-struct __attribute__((aligned(64))) pf_writer {
-    struct pf_chunk *cur; /* NULL until the first rotation */
+struct pf_writer {
+    _Alignas(64) struct pf_chunk *cur; /* NULL until the first rotation */
     uint32_t used; /* records in @cur; chunk_slots forces a rotation */
     uint32_t id;
     uint64_t seq;
