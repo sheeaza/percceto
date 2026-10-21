@@ -1,7 +1,7 @@
 # C coding style
 
 Rules that apply to C across the whole repository. Project-specific guidance
-lives next to the code it covers (for example `ringbuf/CLAUDE.md`).
+lives next to the code it covers.
 
 ## Failure paths
 

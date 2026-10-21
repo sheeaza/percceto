@@ -119,26 +119,13 @@ jobs:
   format:
     # Architecture-independent, so this runs once rather than per-arch.
     #
-    # Scoped to ringbuf/: the pftrace sources follow a different style
-    # (root .clang-format), and this job gates only the ringbuf tree.
+    # Gates every tracked C and C++ source against the root .clang-format.
+    # git ls-files keeps untracked output such as build/ out of the check.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
       - name: Check formatting
         # clang-format ships on the runner image. --dry-run --Werror reports
-        # a diff as a failure without touching the tree. ringbuf/.clang-format
-        # is picked up automatically for files under ringbuf/, so this needs
-        # no flags.
-        run: clang-format --dry-run --Werror ringbuf/*.c ringbuf/*.h
-
-      - name: Check for struct typedefs
-        # A style rule clang-format cannot express (see ringbuf/CLAUDE.md):
-        # structs are never typedef'd, and the only _t names should come from
-        # the standard library. Matches `typedef struct ... ;` on one line and
-        # the closing `} name_t;` of a multi-line form.
-        run: |
-          if grep -nE '^\s*typedef\s+struct|^\}\s*[A-Za-z_][A-Za-z0-9_]*_t\s*;' ringbuf/*.c ringbuf/*.h; then
-            echo "::error::struct typedefs are not used in ringbuf/ (see ringbuf/CLAUDE.md)"
-            exit 1
-          fi
+        # a diff as a failure without touching the tree.
+        run: git ls-files '*.c' '*.h' '*.cc' '*.cpp' '*.hpp' | xargs clang-format --dry-run --Werror

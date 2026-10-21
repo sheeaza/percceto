@@ -139,5 +139,5 @@ address reused while the cache points at it. This needs no registry.
 ## Removed
 
 The `pf_ring` backends (mpsc and zcopy), their per-backend build and tests, and
-the ring benchmarks. The `ringbuf/` directory stays in the repo as its own
-project; pftrace no longer uses it.
+the ring benchmarks. The `ringbuf/` directory moved out of this repo into its
+own project; pftrace no longer uses it.

@@ -41,13 +41,3 @@ repos:
         entry: clang-format -i --Werror
         language: system
         types_or: [c]
-
-      # Mirrors the struct-typedef check in the CI `format` job. It is a
-      # style rule clang-format cannot express (see ringbuf/CLAUDE.md).
-      - id: no-struct-typedef
-        name: no struct typedefs in ringbuf/
-        description: structs are never typedef'd; only stdlib _t names are used
-        entry: '^\s*typedef\s+struct|^\}\s*[A-Za-z_][A-Za-z0-9_]*_t\s*;'
-        language: pygrep
-        files: ^ringbuf/.*\.[ch]$
-        types: [text]
