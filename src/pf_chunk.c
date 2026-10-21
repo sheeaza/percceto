@@ -280,6 +280,37 @@ void pf_writer_flush_own_locked(struct pf_trace *t)
     w->used = t->chunk_slots;
 }
 
+/* A live partial chunk has next == NULL, like every chunk a writer holds, and
+ * the owner never reads next. So a snapshot can borrow the link field for the
+ * length of one walk. */
+struct pf_chunk *pf_link_partials_locked(struct pf_trace *t)
+{
+    struct pf_chunk *head = t->committed_head;
+    struct pf_chunk *tail = t->committed_tail;
+    for (uint32_t i = 0; i < t->cfg.max_threads; i++) {
+        struct pf_chunk *c = t->writers[i].cur;
+        if (!c)
+            continue;
+        if (tail)
+            tail->next = c;
+        else
+            head = c;
+        tail = c;
+    }
+    return head;
+}
+
+void pf_unlink_partials_locked(struct pf_trace *t)
+{
+    if (t->committed_tail)
+        t->committed_tail->next = NULL;
+    for (uint32_t i = 0; i < t->cfg.max_threads; i++) {
+        struct pf_chunk *c = t->writers[i].cur;
+        if (c)
+            c->next = NULL;
+    }
+}
+
 struct pf_chunk *pf_committed_take(struct pf_trace *t)
 {
     pthread_mutex_lock(&t->pool_lock);

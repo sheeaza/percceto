@@ -169,13 +169,13 @@ static int drain_locked(struct pf_trace *t)
         t->cfg.format == PF_FORMAT_RAW ? raw_drain_locked : pb_drain_locked;
 
     if (t->cfg.mode == PF_MODE_SNAPSHOT) {
+        /* Holds pool_lock for the whole write, so no writer can rotate and
+         * recycle a chunk the walk is reading. Partial chunks are walked in
+         * place: their owners keep filling them, but only up to the count
+         * they published. */
         pthread_mutex_lock(&t->pool_lock);
-        /* TODO(TODO.md item 2): this commits only the calling thread's partial
-         * chunk. A live thread that dumps from another thread still has its
-         * unfilled chunk left out of the dump. Fix this, e.g. by stalling the
-         * dump until each live writer acknowledges a flush request. */
-        pf_writer_flush_own_locked(t);
-        int rc = write_chunks(t, t->committed_head);
+        int rc = write_chunks(t, pf_link_partials_locked(t));
+        pf_unlink_partials_locked(t);
         pthread_mutex_unlock(&t->pool_lock);
         return rc;
     }
@@ -427,6 +427,9 @@ static void emit_event(struct pf_trace *t, uint32_t type, uint64_t track_uuid, c
     r->arg[0] = nargs > 0 ? a0 : 0;
     r->arg[1] = nargs > 1 ? a1 : 0;
 
+    /* Publish the count after the record is complete. Release pairs with the
+     * acquire in pf_walk_enter, so a snapshot never reads a half-written record. */
+    atomic_store_explicit(&w->cur->used, w->used, memory_order_release);
     atomic_store_explicit(&w->events, atomic_load_explicit(&w->events, memory_order_relaxed) + 1,
                           memory_order_relaxed);
 }
@@ -950,6 +953,10 @@ void pf_trace_close(struct pf_trace *t)
     if (!t)
         return;
 
+    /* TODO(TODO.md item 2): in continuous mode, live threads' partial chunks
+     * are written only when they fill or exit. Refcount the trace's lifetime
+     * so the last user to leave flushes it, instead of close assuming every
+     * thread has stopped. Large change; deferred. */
     pf_registry_remove(t);
 
     if (t->cfg.mode == PF_MODE_CONTINUOUS) {

@@ -14,7 +14,7 @@ sorts by timestamp on import.
      ├─ writers[]    max_threads slots, bound on a thread's first emit
      └─ open_next    link on the open-trace registry
 
-    chunk: { next, used, writer, seq, recs[chunk_slots] }   (recs: struct pf_rec)
+    chunk: { next, used (atomic), writer, seq, recs[chunk_slots] }   (recs: struct pf_rec)
 
     chunk_bytes = header + chunk_slots * PF_PAYLOAD_BYTES
 
@@ -31,11 +31,12 @@ sorts by timestamp on import.
       w = writer for this trace (TLS cache; bound on first use)
       if w->used == chunk_slots: rotate (slow path, once per chunk)
       r = &w->cur->recs[w->used++]; fill the record
+      w->cur->used = w->used   (release; publishes the record to a snapshot)
       w->events += 1   (relaxed; written only by this thread)
 
-No shared state is read or written on the common path. The writer counter is
-a relaxed store to a line only its owner writes, so stats can sum the counters
-without the emit path ever contending with them.
+The common path takes no lock and reads no shared state. The two stores go to
+lines only the owner writes: the chunk's `used`, which a snapshot dump reads,
+and the writer counter, which stats sums.
 
 ## Commit and rotate
 
@@ -53,12 +54,18 @@ Rotate takes the pool lock:
 ## Drain
 
 - Continuous: under the lock, detach the committed FIFO. Unlock, write it in
-  commit order, lock again and return the chunks to the free list.
-- Snapshot: under the lock, walk the committed FIFO in place and write it. The
-  lock stays held for the whole dump, so a producer that needs a chunk waits.
+  commit order, lock again and return the chunks to the free list. The
+  dumping thread's own partial chunk is committed first.
+- Snapshot: under the lock, link every writer's partial chunk after the
+  committed FIFO and walk the chain once. The lock stays held for the whole
+  dump, so a producer that needs a chunk waits. Partial chunks are not
+  committed: their owners keep filling them, and the walk reads each one only
+  up to its published `used`. The links are cleared after the walk, and
+  `next` is NULL on every chunk a writer holds, so this changes nothing the
+  owners read.
 
-The dumping thread first commits its own partial chunk, so a dump includes its
-latest events.
+The walk reads a chunk's `used` once, when it enters the chunk. Records below
+that count are final until the chunk is recycled, which needs the pool lock.
 
 ## Threads
 
@@ -79,10 +86,9 @@ close.
 
 ## Known limits
 
-- A live thread that has not filled its chunk and has not emitted since is not
-  in a dump. Its last records appear once it emits again, fills its chunk, or
-  exits. Only the dumping thread's own tail is included. Closing the gap needs
-  a per-event shared store or a stall in the dump, and neither was chosen.
+- Continuous mode: a live thread's partial chunk is written when it fills, when
+  the thread exits, or at close. A low-rate thread's records stay out of the
+  file until then. This is accepted for now; see TODO.md item 2.
 - Continuous mode has no timer flush. A low-rate thread's last events are lost
   only if the process dies before its chunk fills, exits, or the trace closes.
 

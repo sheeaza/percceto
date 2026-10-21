@@ -17,10 +17,15 @@ returned. A thread that goes idle holds its chunks until they are reclaimed.
 
 ## 2. Tails of live idle threads in dumps
 
-A thread that has emitted but not filled its chunk, and is still alive, is not
-in a snapshot dump. Its records appear after it emits again, fills its chunk,
-or exits. Options: a per-event shared store (rejected for the hot path), or
-have the dump stall until each live writer acknowledges a flush request.
+Snapshot dumps are done. A dump walks every writer's partial chunk up to the
+count the writer has published, so a live idle thread's records are in the
+next dump. The cost is one release store per event, measured with
+`bench_chunk` within noise.
+
+Still open, in continuous mode and at close. A live thread's partial chunk is
+written only when it fills, when the thread exits, or at close. Closing the gap
+here needs the trace's lifetime managed by a refcount, so the last user flushes
+it. That is a large change and is deferred.
 
 ## 3. Encode on the producer
 

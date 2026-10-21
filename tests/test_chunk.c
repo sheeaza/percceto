@@ -5,10 +5,12 @@
  * - A single producer in continuous mode loses nothing except what the
  *   counters report, and every emitted event is accounted for: committed,
  *   dropped, or still in the producer's chunk at the moment of the read.
- * - A snapshot window that wraps the pool does not count overwrites as drops. */
+ * - A snapshot window that wraps the pool does not count overwrites as drops.
+ * - A snapshot dump includes the unfilled chunk of a live thread. */
 
 #include <errno.h>
 #include <pthread.h>
+#include <semaphore.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -171,12 +173,76 @@ static void test_snapshot_wrap_is_not_a_drop(void)
     unlink(file);
 }
 
+struct parked {
+    struct pf_trace *t;
+    sem_t emitted;
+    sem_t done;
+};
+
+/* Emits two events into a chunk that never fills, then waits to be released,
+ * so the thread is alive with a partial chunk for the whole dump. */
+static void *emit_and_park(void *arg)
+{
+    struct parked *p = arg;
+    pf_instant_event(p->t, 0, "parked");
+    pf_instant_event(p->t, 0, "parked");
+    sem_post(&p->emitted);
+    sem_wait(&p->done);
+    return NULL;
+}
+
+static long dump_size(const char *file)
+{
+    struct stat st;
+    return stat(file, &st) == 0 ? (long)st.st_size : -1;
+}
+
+/* A dump from one thread includes the unfilled chunk of a live thread that
+ * emitted into it. The file must grow when that thread's events arrive. */
+static void test_snapshot_live_tail(void)
+{
+    struct pf_config cfg;
+    setup(&cfg, PF_MODE_SNAPSHOT, ".");
+    cfg.buffer_bytes = 8 * CHUNK_BYTES(4);
+
+    struct pf_trace *t = pf_trace_open(&cfg);
+    CHECK(t != NULL, "open failed");
+    if (!t) {
+        failures++;
+        return;
+    }
+
+    char before[512], after[512];
+    CHECK(pf_trace_dump(t, "tail_before", before, sizeof(before)) == 0, "dump before failed");
+
+    struct parked p = { .t = t };
+    sem_init(&p.emitted, 0, 0);
+    sem_init(&p.done, 0, 0);
+    pthread_t th;
+    pthread_create(&th, NULL, emit_and_park, &p);
+    sem_wait(&p.emitted);
+
+    CHECK(pf_trace_dump(t, "tail_after", after, sizeof(after)) == 0, "dump after failed");
+    CHECK(dump_size(after) > dump_size(before),
+          "live thread's partial chunk missing from dump (%ld vs %ld bytes)", dump_size(after),
+          dump_size(before));
+
+    sem_post(&p.done);
+    pthread_join(th, NULL);
+    sem_destroy(&p.emitted);
+    sem_destroy(&p.done);
+    pf_trace_close(t);
+    unlink(before);
+    unlink(after);
+}
+
 int main(void)
 {
     test_open_limits();
     test_writer_limit();
     test_accounting();
     test_snapshot_wrap_is_not_a_drop();
+    test_snapshot_live_tail();
 
     if (failures) {
         fprintf(stderr, "chunk: %d failure(s)\n", failures);

@@ -94,7 +94,9 @@ _Static_assert(PF_MAX_ARGS <= 3, "RF_NARGS_MASK holds counts up to 3");
  * docs/chunk_buffers_design.md. */
 struct pf_chunk {
     struct pf_chunk *next; /* committed FIFO or free list */
-    uint32_t used; /* records written; set at commit */
+    /* Records published to the drain. The owner stores it after each record,
+     * so a snapshot dump can read a chunk that is still being filled. */
+    _Atomic uint32_t used;
     uint32_t writer; /* owning writer slot */
     uint64_t seq; /* per-writer chunk number */
     struct pf_rec recs[]; /* cfg.chunk_slots records */
@@ -303,12 +305,17 @@ void pf_writers_commit_all(struct pf_trace *t);
 struct pf_chunk *pf_committed_take(struct pf_trace *t);
 void pf_chunks_release(struct pf_trace *t, struct pf_chunk *head);
 
-/* Snapshot drain: the committed FIFO stays in place while the lock is held,
- * so producers that need a chunk wait until the dump is done. */
-/* Commits the calling thread's partial chunk, so a dump includes its last
- * events. Other threads' partial chunks are not touched. Caller holds
- * pool_lock. */
+/* Continuous drain: commits the calling thread's partial chunk, so the drain
+ * includes its last events. Caller holds pool_lock. */
 void pf_writer_flush_own_locked(struct pf_trace *t);
+
+/* Snapshot drain: the committed FIFO stays in place while the lock is held,
+ * so producers that need a chunk wait until the dump is done. Every writer's
+ * partial chunk is linked after the FIFO, so one walk covers all of them. It
+ * is still being filled, so only its published records are walked. Caller
+ * holds pool_lock; pf_unlink_partials_locked must follow the walk. */
+struct pf_chunk *pf_link_partials_locked(struct pf_trace *t);
+void pf_unlink_partials_locked(struct pf_trace *t);
 
 /* Open-trace registry. A trace is added at open and removed before close frees
  * anything. */
@@ -346,20 +353,28 @@ static inline struct pf_writer *pf_writer_for(struct pf_trace *t)
 struct pf_walk {
     const struct pf_chunk *c;
     uint32_t i;
+    /* Records of @c to walk, read once when the walk enters the chunk. A
+     * live chunk's count can rise during the walk, and records below the
+     * count it was read with are never rewritten before the chunk is freed. */
+    uint32_t end;
 };
+
+static inline void pf_walk_enter(struct pf_walk *w, const struct pf_chunk *c)
+{
+    w->c = c;
+    w->i = 0;
+    w->end = c ? atomic_load_explicit(&c->used, memory_order_acquire) : 0;
+}
 
 static inline void pf_walk_begin(struct pf_walk *w, const struct pf_chunk *head)
 {
-    w->c = head;
-    w->i = 0;
+    pf_walk_enter(w, head);
 }
 
 static inline const struct pf_rec *pf_walk_next(struct pf_walk *w)
 {
-    while (w->c && w->i >= w->c->used) {
-        w->c = w->c->next;
-        w->i = 0;
-    }
+    while (w->c && w->i >= w->end)
+        pf_walk_enter(w, w->c->next);
     if (!w->c)
         return NULL;
     return &w->c->recs[w->i++];
