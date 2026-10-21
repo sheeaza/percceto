@@ -12,7 +12,7 @@ sorts by timestamp on import.
      ├─ free list    chunks nobody holds
      ├─ committed    FIFO of full chunks, in commit order
      ├─ writers[]    max_threads slots, bound on a thread's first emit
-     └─ open_next    link on the open-trace registry
+     └─ refs         owner's reference, plus one per bound thread
 
     chunk: { next, used (atomic), writer, seq, recs[chunk_slots] }   (recs: struct pf_rec)
 
@@ -69,28 +69,60 @@ that count are final until the chunk is recycled, which needs the pool lock.
 
 ## Threads
 
-- A thread's partial chunk is committed when the thread exits, if it is still
-  bound to an open trace. A thread-exit destructor does this, after checking the
-  open-trace registry, so it never touches a closed trace. Only the last trace
-  the thread bound is covered. An earlier trace it used is committed at that
-  trace's close.
-- A thread past `max_threads` drops its events and counts them. Writer slots
-  are not reclaimed when a thread exits, so a trace binds at most `max_threads`
-  threads over its life.
+- A thread holds a reference to the trace it is bound to, from its first bind
+  until it unbinds. Unbinding commits the thread's partial chunk, then drops the
+  reference. A thread-exit destructor does this, so a thread that exits without
+  closing the trace still hands its records over. A thread binds one trace at a
+  time: binding another unbinds the first.
+- A thread past `max_threads` drops its events and counts them. It still holds a
+  reference, so the trace stays open until it exits. Writer slots are not
+  reclaimed when a thread exits, so a trace binds at most `max_threads` threads
+  over its life.
 
-## Close
+## Close and lifetime
 
-Close removes the trace from the registry, stops the drain thread, commits every
-writer's partial chunk, then drains and frees. Threads must stop emitting before
-close.
+`pf_trace_close` gives back the caller's reference. If the caller is itself
+bound, its binding is unbound first, since a main thread never runs the exit
+destructor. The last reference to go finishes the trace: it stops the drain
+thread, writes what is buffered, closes the file and frees the buffers. Close
+does not commit any other thread's chunk, so no producer is raced.
+
+So the file is complete when the last reference goes, which is:
+
+- at close, if no other thread is bound;
+- otherwise, at the exit of the last bound thread. Close returns earlier, and
+  such a thread may keep emitting until it exits.
+
+Only the reference count guards the trace. A bound thread's cached pointer is
+safe because the thread holds a reference, so the trace cannot be freed or its
+address reused while the cache points at it. This needs no registry.
 
 ## Known limits
 
-- Continuous mode: a live thread's partial chunk is written when it fills, when
-  the thread exits, or at close. A low-rate thread's records stay out of the
-  file until then. This is accepted for now; see TODO.md item 2.
+- A thread that never exits keeps the trace open, and its partial chunk is not
+  written. A process that exits without its threads exiting loses those events.
+  This is the cost of close returning early; see TODO.md item 7 for the
+  one-trace-per-thread limit that comes with it.
 - Continuous mode has no timer flush. A low-rate thread's last events are lost
-  only if the process dies before its chunk fills, exits, or the trace closes.
+  only if the process dies before its chunk fills, its thread exits, or the
+  trace's last reference goes.
+
+## Risks
+
+- Process exit with live threads. The file is final only when the last thread
+  exits. If the process ends first, the partial chunks of those threads are not
+  written, and nothing else flushes them. Before this change, close wrote them.
+- Close returns early. A caller that reads the file right after close, while a
+  thread is still bound, sees an incomplete file. A bound thread may also keep
+  emitting after close, so its events reach the file only at its exit.
+- Rebinding unbinds the old trace. A thread that binds a second trace gives up
+  its first, and its later events go to the second only. This is a behaviour
+  change from the old last-bound-trace rule; see TODO.md item 7.
+- Snapshot mode. Buffered events of a snapshot trace stay in memory until the
+  last reference goes, and are lost then unless a dump was taken first. Close
+  does not dump.
+- A thread past `max_threads` still takes a reference, so it holds the trace
+  open until it exits, even though it writes nothing.
 
 ## Stats
 

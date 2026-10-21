@@ -6,7 +6,9 @@
  *   counters report, and every emitted event is accounted for: committed,
  *   dropped, or still in the producer's chunk at the moment of the read.
  * - A snapshot window that wraps the pool does not count overwrites as drops.
- * - A snapshot dump includes the unfilled chunk of a live thread. */
+ * - A snapshot dump includes the unfilled chunk of a live thread.
+ * - Close leaves a trace open while another thread is bound to it; that
+ *   thread's exit finishes it. A thread that closes its own trace finishes it. */
 
 #include <errno.h>
 #include <pthread.h>
@@ -236,6 +238,76 @@ static void test_snapshot_live_tail(void)
     unlink(after);
 }
 
+/* Continuous mode with the drain kept idle, so the file changes only when the
+ * trace finishes. A thread still bound to the trace keeps it open past close:
+ * nothing reaches the file until that thread exits. */
+static void test_close_waits_for_live_thread(void)
+{
+    struct pf_config cfg;
+    setup(&cfg, PF_MODE_CONTINUOUS, ".");
+    cfg.name = "live_close.pftrace";
+    cfg.buffer_bytes = 8 * CHUNK_BYTES(4);
+    cfg.drain_interval_ms = 60000;
+    cfg.watermark_pct = 99;
+    unlink(cfg.name);
+
+    struct pf_trace *t = pf_trace_open(&cfg);
+    CHECK(t != NULL, "open failed");
+    if (!t) {
+        failures++;
+        return;
+    }
+    long opened = dump_size(cfg.name);
+
+    struct parked p = { .t = t };
+    sem_init(&p.emitted, 0, 0);
+    sem_init(&p.done, 0, 0);
+    pthread_t th;
+    pthread_create(&th, NULL, emit_and_park, &p);
+    sem_wait(&p.emitted);
+
+    pf_trace_close(t);
+    CHECK(dump_size(cfg.name) == opened,
+          "file changed at close while a thread was bound (%ld vs %ld)", dump_size(cfg.name),
+          opened);
+
+    sem_post(&p.done);
+    pthread_join(th, NULL);
+    CHECK(dump_size(cfg.name) > opened, "thread exit did not finish the file (%ld bytes)",
+          dump_size(cfg.name));
+    sem_destroy(&p.emitted);
+    sem_destroy(&p.done);
+    unlink(cfg.name);
+}
+
+/* The thread that closes the trace is bound to it itself. Its reference is
+ * given back by close, so the file is complete when close returns. A main
+ * thread never runs the exit destructor, so this is the only way out. */
+static void test_close_by_bound_thread(void)
+{
+    struct pf_config cfg;
+    setup(&cfg, PF_MODE_CONTINUOUS, ".");
+    cfg.name = "self_close.pftrace";
+    cfg.buffer_bytes = 8 * CHUNK_BYTES(4);
+    cfg.drain_interval_ms = 60000;
+    cfg.watermark_pct = 99;
+    unlink(cfg.name);
+
+    struct pf_trace *t = pf_trace_open(&cfg);
+    CHECK(t != NULL, "open failed");
+    if (!t) {
+        failures++;
+        return;
+    }
+    long opened = dump_size(cfg.name);
+
+    pf_instant_event(t, 0, "self");
+    pf_trace_close(t);
+    CHECK(dump_size(cfg.name) > opened, "closing thread's events missing from file (%ld bytes)",
+          dump_size(cfg.name));
+    unlink(cfg.name);
+}
+
 int main(void)
 {
     test_open_limits();
@@ -243,6 +315,8 @@ int main(void)
     test_accounting();
     test_snapshot_wrap_is_not_a_drop();
     test_snapshot_live_tail();
+    test_close_waits_for_live_thread();
+    test_close_by_bound_thread();
 
     if (failures) {
         fprintf(stderr, "chunk: %d failure(s)\n", failures);

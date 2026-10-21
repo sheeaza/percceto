@@ -13,69 +13,42 @@
 
 __thread struct pf_tls_cache pf_tls;
 
-/* Source of trace generations. Only ever incremented, so a generation is
- * never reused, even when a trace address is. */
-static _Atomic uint64_t g_gen;
-
-/* Open traces, so a thread-exit destructor can tell whether the trace it
- * cached is still alive before it touches it. Guarded by g_registry_lock,
- * which is taken before any pool lock. */
-static pthread_mutex_t g_registry_lock = PTHREAD_MUTEX_INITIALIZER;
-static struct pf_trace *g_open_traces;
-
 static pthread_key_t g_exit_key;
 static pthread_once_t g_exit_key_once = PTHREAD_ONCE_INIT;
 
 static void commit_locked(struct pf_trace *t, struct pf_writer *w);
 
-/* Runs when a thread that bound a writer exits. Commits its partial chunk, so
- * the records it wrote are visible to the drain without waiting for close.
- * Only the thread's last-bound trace is covered; a trace it used earlier is
- * committed at its close. */
-static void writer_exit(void *unused)
+/* Gives back the calling thread's binding. The partial chunk is committed, so
+ * its records reach the drain without waiting for the trace to finish. The
+ * reference is dropped last, since it may be the one that finishes the trace.
+ * Runs at thread exit, on rebind, and from pf_trace_close on the closing thread. */
+void pf_unbind_thread(void)
 {
-    (void)unused;
     struct pf_trace *t = pf_tls.trace;
     struct pf_writer *w = pf_tls.writer;
-    if (!t || !w)
+    pf_tls.trace = NULL;
+    pf_tls.writer = NULL;
+    if (!t)
         return;
 
-    pthread_mutex_lock(&g_registry_lock);
-    bool live = false;
-    for (struct pf_trace *p = g_open_traces; p && !live; p = p->open_next)
-        live = p == t && t->gen == pf_tls.gen;
-    if (live) {
+    if (w) {
         pthread_mutex_lock(&t->pool_lock);
         if (w->cur && w->used > 0)
             commit_locked(t, w);
         pthread_mutex_unlock(&t->pool_lock);
     }
-    pthread_mutex_unlock(&g_registry_lock);
+    pf_trace_unref(t);
+}
+
+static void writer_exit(void *unused)
+{
+    (void)unused;
+    pf_unbind_thread();
 }
 
 static void make_exit_key(void)
 {
     pthread_key_create(&g_exit_key, writer_exit);
-}
-
-void pf_registry_add(struct pf_trace *t)
-{
-    pthread_mutex_lock(&g_registry_lock);
-    t->open_next = g_open_traces;
-    g_open_traces = t;
-    pthread_mutex_unlock(&g_registry_lock);
-}
-
-void pf_registry_remove(struct pf_trace *t)
-{
-    pthread_mutex_lock(&g_registry_lock);
-    for (struct pf_trace **p = &g_open_traces; *p; p = &(*p)->open_next) {
-        if (*p == t) {
-            *p = t->open_next;
-            break;
-        }
-    }
-    pthread_mutex_unlock(&g_registry_lock);
 }
 
 int pf_pool_init(struct pf_trace *t)
@@ -115,7 +88,6 @@ int pf_pool_init(struct pf_trace *t)
     t->chunk_count = (uint32_t)count;
     t->chunk_slots = slots;
     t->watermark_chunks = (uint32_t)(count * t->cfg.watermark_pct / 100u);
-    t->gen = atomic_fetch_add_explicit(&g_gen, 1, memory_order_relaxed) + 1;
 
     pthread_mutex_init(&t->pool_lock, NULL);
     pthread_mutex_init(&t->reg_lock, NULL);
@@ -142,6 +114,12 @@ struct pf_writer *pf_writer_bind(struct pf_trace *t)
 {
     struct pf_writer *w = NULL;
 
+    if (pf_tls.trace)
+        pf_unbind_thread();
+
+    /* Taken even when no slot is free, so the cache always holds a live trace. */
+    atomic_fetch_add_explicit(&t->refs, 1, memory_order_relaxed);
+
     pthread_mutex_lock(&t->reg_lock);
     for (uint32_t i = 0; i < t->cfg.max_threads; i++) {
         if (!t->writers[i].bound) {
@@ -159,14 +137,16 @@ struct pf_writer *pf_writer_bind(struct pf_trace *t)
         w->cur = NULL;
         w->used = t->chunk_slots;
         w->seq = 0;
-        pthread_once(&g_exit_key_once, make_exit_key);
-        pthread_setspecific(g_exit_key, &pf_tls.writer);
     }
+
+    /* Set on every bind, NULL writer included, so the exit destructor runs and
+     * gives back the reference. */
+    pthread_once(&g_exit_key_once, make_exit_key);
+    pthread_setspecific(g_exit_key, &pf_tls);
 
     /* Cached even when NULL, so a thread past max_threads does not take
      * the registration lock on every event. */
     pf_tls.trace = t;
-    pf_tls.gen = t->gen;
     pf_tls.writer = w;
     return w;
 }
@@ -238,26 +218,6 @@ bool pf_writer_rotate(struct pf_trace *t, struct pf_writer *w)
     return c != NULL;
 }
 
-void pf_writers_commit_all(struct pf_trace *t)
-{
-    pthread_mutex_lock(&t->reg_lock);
-    pthread_mutex_lock(&t->pool_lock);
-    for (uint32_t i = 0; i < t->cfg.max_threads; i++) {
-        struct pf_writer *w = &t->writers[i];
-        if (!w->bound || !w->cur)
-            continue;
-        if (w->used > 0) {
-            commit_locked(t, w);
-        } else {
-            w->cur->next = t->free_list;
-            t->free_list = w->cur;
-            w->cur = NULL;
-        }
-    }
-    pthread_mutex_unlock(&t->pool_lock);
-    pthread_mutex_unlock(&t->reg_lock);
-}
-
 uint64_t pf_writers_events(struct pf_trace *t)
 {
     uint64_t total = 0;
@@ -270,7 +230,7 @@ uint64_t pf_writers_events(struct pf_trace *t)
 
 void pf_writer_flush_own_locked(struct pf_trace *t)
 {
-    if (pf_tls.trace != t || pf_tls.gen != t->gen || !pf_tls.writer)
+    if (pf_tls.trace != t || !pf_tls.writer)
         return;
 
     struct pf_writer *w = pf_tls.writer;

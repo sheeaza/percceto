@@ -217,16 +217,21 @@ PF_API int pf_trace_flush(struct pf_trace *t, const char *name, char *file, size
 PF_API void pf_trace_stats(const struct pf_trace *t, struct pf_stats *out);
 
 /**
- * pf_trace_close() - Free everything, writing the buffer first in
- * %PF_MODE_CONTINUOUS.
+ * pf_trace_close() - Drop the caller's reference to a trace.
  * @t: Trace context to close, or %NULL.
  *
- * In %PF_MODE_CONTINUOUS, stops and joins the drain thread and writes any
- * remaining buffered events, so the file holds every event. In
- * %PF_MODE_SNAPSHOT it writes nothing: events still in the buffer are lost
- * unless pf_trace_dump() was called first. Then closes the file and
- * frees the buffers. Not safe to call concurrently with any other function
- * on @t.
+ * The trace is finished by its last reference. A thread that has emitted into
+ * @t holds one until it exits, and the calling thread's own is given back here.
+ * When the last one goes, the work is done: in %PF_MODE_CONTINUOUS the drain
+ * thread is stopped and joined and any buffered events are written, so the
+ * file holds every event; in %PF_MODE_SNAPSHOT nothing is written, so events
+ * still in the buffer are lost unless pf_trace_dump() was called first. Then
+ * the file is closed and the buffers are freed.
+ *
+ * If other threads are still bound, this returns at once, and the file is
+ * complete only when the last of them exits. Such a thread may keep emitting
+ * until then. The caller must not use @t after this call, and must not call
+ * this concurrently with any other function on @t.
  */
 PF_API void pf_trace_close(struct pf_trace *t);
 

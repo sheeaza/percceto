@@ -186,10 +186,9 @@ struct pf_trace {
     int fd;
     struct pf_config cfg;
 
-    /* Unique per open. A thread's cached writer is valid only if both its
-     * trace pointer and this generation match, so a freed-and-reused
-     * trace address never picks up a stale writer. */
-    uint64_t gen;
+    /* The owner's reference, plus one per thread bound to this trace. The
+     * last to drop one finishes the trace; see pf_trace_unref. */
+    _Atomic uint32_t refs;
 
     /* --- Chunk pool, guarded by pool_lock ---------------------------------
      * One allocation at open holds every chunk. A chunk is on exactly one of
@@ -206,9 +205,6 @@ struct pf_trace {
      * thread, from cfg.watermark_pct. */
     uint32_t watermark_chunks;
     pthread_mutex_t pool_lock;
-
-    /* Link on the open-trace registry; see pf_registry_add. */
-    struct pf_trace *open_next;
 
     /* Writer slots. reg_lock guards the bound flags only. */
     struct pf_writer *writers;
@@ -288,17 +284,23 @@ struct pf_trace {
 int pf_pool_init(struct pf_trace *t);
 void pf_pool_destroy(struct pf_trace *t);
 
-/* Binds the calling thread to a writer slot. Returns NULL when every slot
- * is taken, and that answer is cached for the thread. */
+/* Binds the calling thread to @t and takes a reference to it, released by
+ * pf_unbind_thread. Returns NULL when every slot is taken, and that answer is
+ * cached for the thread. A thread binds one trace at a time: binding another
+ * first unbinds the old one. */
 struct pf_writer *pf_writer_bind(struct pf_trace *t);
+
+/* Commits the calling thread's partial chunk and drops its reference to the
+ * trace it is bound to. Safe to call when unbound. */
+void pf_unbind_thread(void);
+
+/* Drops one reference to @t. The last one finishes the trace: stops the drain,
+ * writes what is buffered, and frees everything. Defined in pftrace.c. */
+void pf_trace_unref(struct pf_trace *t);
 
 /* Commits @w's full chunk and takes a new one. Returns false if no chunk is
  * free, in which case the caller drops the event. Slow path: once per chunk. */
 bool pf_writer_rotate(struct pf_trace *t, struct pf_writer *w);
-
-/* Close only: commits every writer's partial chunk. The caller guarantees no
- * producer is emitting. */
-void pf_writers_commit_all(struct pf_trace *t);
 
 /* Continuous drain: detaches the committed FIFO and returns its head. The
  * drain writes it, then gives it back with pf_chunks_release. */
@@ -317,11 +319,6 @@ void pf_writer_flush_own_locked(struct pf_trace *t);
 struct pf_chunk *pf_link_partials_locked(struct pf_trace *t);
 void pf_unlink_partials_locked(struct pf_trace *t);
 
-/* Open-trace registry. A trace is added at open and removed before close frees
- * anything. */
-void pf_registry_add(struct pf_trace *t);
-void pf_registry_remove(struct pf_trace *t);
-
 /* Total records emitted by every writer. Takes reg_lock. */
 uint64_t pf_writers_events(struct pf_trace *t);
 
@@ -330,17 +327,17 @@ uint64_t pf_writers_events(struct pf_trace *t);
 void pf_drain_wake(struct pf_trace *t);
 
 /* Hot path lookup: the calling thread's writer, cached in TLS. Binds it on
- * first use. */
+ * first use. The cached trace is held by a reference, so it cannot be freed
+ * and its address cannot be reused while the cache points at it. */
 struct pf_tls_cache {
     struct pf_trace *trace;
-    uint64_t gen;
     struct pf_writer *writer;
 };
 extern __thread struct pf_tls_cache pf_tls;
 
 static inline struct pf_writer *pf_writer_for(struct pf_trace *t)
 {
-    if (pf_tls.trace == t && pf_tls.gen == t->gen)
+    if (pf_tls.trace == t)
         return pf_tls.writer;
     return pf_writer_bind(t);
 }

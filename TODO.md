@@ -15,17 +15,18 @@ between threads. Rebalancing is only done at chunk rotation, so the hot path
 does not change. A quiet thread that suddenly bursts must wait for chunks to be
 returned. A thread that goes idle holds its chunks until they are reclaimed.
 
-## 2. Tails of live idle threads in dumps
+## ~~2. Tails of live idle threads in dumps~~ (done)
 
-Snapshot dumps are done. A dump walks every writer's partial chunk up to the
-count the writer has published, so a live idle thread's records are in the
-next dump. The cost is one release store per event, measured with
-`bench_chunk` within noise.
+~~Done. Snapshot dumps walk every writer's partial chunk up to the count the
+writer has published, so a live idle thread's records are in the next dump. The
+cost is one release store per event, measured with `bench_chunk` within noise.~~
 
-Still open, in continuous mode and at close. A live thread's partial chunk is
-written only when it fills, when the thread exits, or at close. Closing the gap
-here needs the trace's lifetime managed by a refcount, so the last user flushes
-it. That is a large change and is deferred.
+~~Done in continuous mode and at close. The trace is held by a reference count:
+the owner and each bound thread hold one. Close drops the owner's, and the last
+reference to go finishes the trace. A thread's partial chunk is committed when
+it unbinds, so it reaches the file at its exit. The file is complete at close if
+no thread is bound, and otherwise at the last bound thread's exit. Close does
+not commit another thread's chunk, so the race with a producer is gone.~~
 
 ## 3. Encode on the producer
 
@@ -62,9 +63,9 @@ thread-exit destructor and bind touch `bound`, under `reg_lock`, so the hot path
 does not change.
 
 Trade-off: a slot is then reused by a different thread, so the writer's per-slot
-state (`seq`, `cur`) has to be reset on bind, and a stale TLS cache in another
-thread must still be rejected. Test with a trace that outlives more threads than
-`max_threads`.
+state (`seq`, `cur`) has to be reset on bind. A thread's TLS cache is released
+when it unbinds, so no cache can point at a slot after its thread has gone.
+Test with a trace that outlives more threads than `max_threads`.
 
 ## 6. Replace the free list with a bitmap
 
@@ -81,9 +82,23 @@ the committed FIFO, which still needs order. The `next` field is also borrowed
 by the snapshot partial-chunk walk, so that walk may need a separate list after
 this change.
 
+## 7. Let a thread bind to more than one trace (low priority)
+
+A thread's binding (trace, writer) is one TLS slot, so a thread binds one trace
+at a time. Binding a second trace unbinds the first: its partial chunk is
+committed and its reference dropped, and the thread's later events go to the
+second trace only. The simple API keeps the thread's track uuid in one TLS slot
+too, so it has the same limit.
+
+Option: model the bindings as per-thread maps, a thread id to writer and a
+thread id to track uuid, so one thread holds a writer and a uuid in each trace
+it uses. The hot path must stay a TLS read and a compare. So the map would be a
+small per-thread cache in front of the table, touched only on bind and on
+thread exit. Measure with `bench_chunk` before and after.
+
 ## Notes
 
 - Continuous mode has no timer flush. A thread's partial chunk is written when
-  it fills, when the thread exits, or when the trace closes. Events still in a
-  live thread's partial chunk are lost only if the process dies first.
+  it unbinds (the thread exits, or closes the trace), or when it fills. Events
+  still in a live thread's partial chunk are lost only if the process dies first.
 - Encoding stays on the drain thread.

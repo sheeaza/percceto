@@ -881,6 +881,8 @@ struct pf_trace *pf_trace_open(const struct pf_config *cfg)
     pthread_cond_init(&t->drain_cv, NULL);
     atomic_init(&t->wake_pending, 0);
     atomic_init(&t->bytes_written, 0);
+    /* The owner's reference. Each bound thread adds one; see pf_trace_unref. */
+    atomic_init(&t->refs, 1);
 
     /* Before the drain thread starts, so the header is the file's first
      * bytes. An existing file is refused here, see raw_write_header. Snapshot
@@ -892,7 +894,6 @@ struct pf_trace *pf_trace_open(const struct pf_config *cfg)
     if (t->cfg.mode == PF_MODE_CONTINUOUS &&
         pthread_create(&t->drain_thread, NULL, drain_thread_fn, t) != 0)
         goto destroy_sync;
-    pf_registry_add(t);
     return t;
 
     /* Only continuous mode gets this far with a file open, so the close of
@@ -948,29 +949,18 @@ void pf_trace_stats(const struct pf_trace *t, struct pf_stats *out)
     out->bytes_written = atomic_load_explicit(&m->bytes_written, memory_order_relaxed);
 }
 
-void pf_trace_close(struct pf_trace *t)
+/* Runs once, from the last reference. Nothing can emit into the trace now: a
+ * thread holding a reference gives up its writer before it drops it. So the
+ * final drain is the last write to the file. */
+static void trace_finish(struct pf_trace *t)
 {
-    if (!t)
-        return;
-
-    /* TODO(TODO.md item 2): in continuous mode, live threads' partial chunks
-     * are written only when they fill or exit. Refcount the trace's lifetime
-     * so the last user to leave flushes it, instead of close assuming every
-     * thread has stopped. Large change; deferred. */
-    pf_registry_remove(t);
-
     if (t->cfg.mode == PF_MODE_CONTINUOUS) {
         pthread_mutex_lock(&t->drain_lock);
         t->stop = true;
         pthread_cond_signal(&t->drain_cv);
         pthread_mutex_unlock(&t->drain_lock);
         pthread_join(t->drain_thread, NULL);
-    }
 
-    /* Partial chunks go out with everything else. Threads must have stopped
-     * emitting: a producer that is mid-chunk here would race this commit. */
-    pf_writers_commit_all(t);
-    if (t->cfg.mode == PF_MODE_CONTINUOUS) {
         /* Write whatever is still buffered, so the file holds every event. A
          * snapshot trace writes nothing here: its buffered window goes out only
          * through an explicit pf_trace_dump. */
@@ -991,4 +981,23 @@ void pf_trace_close(struct pf_trace *t)
     pthread_mutex_destroy(&t->track_lock);
     pthread_mutex_destroy(&t->out_lock);
     free(t);
+}
+
+void pf_trace_unref(struct pf_trace *t)
+{
+    if (atomic_fetch_sub_explicit(&t->refs, 1, memory_order_acq_rel) == 1)
+        trace_finish(t);
+}
+
+void pf_trace_close(struct pf_trace *t)
+{
+    if (!t)
+        return;
+
+    /* The calling thread gives up its own reference first. A main thread never
+     * runs the exit destructor, so it must do this here or the trace never
+     * finishes. */
+    if (pf_tls.trace == t)
+        pf_unbind_thread();
+    pf_trace_unref(t);
 }
