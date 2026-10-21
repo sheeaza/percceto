@@ -268,22 +268,9 @@ uint64_t pf_writers_events(struct pf_trace *t)
     return total;
 }
 
-void pf_writer_flush_own_locked(struct pf_trace *t)
-{
-    if (pf_tls.trace != t || pf_tls.gen != t->gen || !pf_tls.writer)
-        return;
-
-    struct pf_writer *w = pf_tls.writer;
-    if (!w->cur || w->used == 0)
-        return;
-    commit_locked(t, w);
-    w->used = t->chunk_slots;
-}
-
 struct pf_chunk *pf_committed_take(struct pf_trace *t)
 {
     pthread_mutex_lock(&t->pool_lock);
-    pf_writer_flush_own_locked(t);
     struct pf_chunk *head = t->committed_head;
     t->committed_head = NULL;
     t->committed_tail = NULL;
