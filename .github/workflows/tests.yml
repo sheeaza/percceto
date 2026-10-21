@@ -125,7 +125,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install clang-format
+        # The runner image ships a different clang-format than the one the
+        # tree is formatted with, and their macro-continuation alignment
+        # disagrees. Pin the version the tree was formatted with.
+        run: pip install clang-format==21.1.8
+
       - name: Check formatting
-        # clang-format ships on the runner image. --dry-run --Werror reports
-        # a diff as a failure without touching the tree.
+        # --dry-run --Werror reports a diff as a failure without touching
+        # the tree.
         run: git ls-files '*.c' '*.h' '*.cc' '*.cpp' '*.hpp' | xargs clang-format --dry-run --Werror
