@@ -95,19 +95,17 @@ int pf_pool_init(struct pf_trace *t)
     }
 
     t->pool_mem = calloc(count, chunk_bytes);
-    /* aligned_alloc, not calloc: the writers need a cache-line boundary, and
-     * sizeof is a multiple of 64, as aligned_alloc requires. Zeroed by hand. */
-    t->writers = aligned_alloc(64, t->cfg.max_threads * sizeof(*t->writers));
-    if (t->writers)
-        memset(t->writers, 0, t->cfg.max_threads * sizeof(*t->writers));
-    if (!t->pool_mem || !t->writers) {
-        free(t->pool_mem);
-        free(t->writers);
-        t->pool_mem = NULL;
-        t->writers = NULL;
+    if (!t->pool_mem) {
         errno = ENOMEM;
         return -1;
     }
+
+    /* aligned_alloc, not calloc: the writers need a cache-line boundary, and
+     * sizeof is a multiple of 64, as aligned_alloc requires. Zeroed by hand. */
+    t->writers = aligned_alloc(64, t->cfg.max_threads * sizeof(*t->writers));
+    if (!t->writers)
+        goto free_pool;
+    memset(t->writers, 0, t->cfg.max_threads * sizeof(*t->writers));
 
     /* Each chunk is linked onto the free list. chunk_bytes is a multiple of 8,
      * so every chunk's records stay 8-byte aligned. */
@@ -127,6 +125,12 @@ int pf_pool_init(struct pf_trace *t)
     pthread_mutex_init(&t->pool_lock, NULL);
     pthread_mutex_init(&t->reg_lock, NULL);
     return 0;
+
+free_pool:
+    free(t->pool_mem);
+    t->pool_mem = NULL;
+    errno = ENOMEM;
+    return -1;
 }
 
 void pf_pool_destroy(struct pf_trace *t)

@@ -51,3 +51,35 @@ Each `goto` lands on the label that frees exactly what was acquired before it.
 A failure in `acquire_c` jumps to `release_b`, which frees `b` and then falls
 through to `release_a`. A failure in `acquire_a` jumps to `out` and frees
 nothing.
+
+## Acquisition checks
+
+Check each acquisition right after it is made, and return early on failure.
+An acquisition is any call that obtains a resource: memory, a file, a lock,
+a handle. Do not acquire several resources and test them together afterwards.
+
+- Test the result on the line after the call, before any other acquisition.
+- A failure with nothing to free returns at once.
+- A failure that must release an earlier resource jumps to a cleanup label
+  with `goto`, following the goto ladder rules above. Do not release inline
+  before returning.
+- Set `errno` before returning when the caller depends on it.
+
+```c
+    a = acquire_a();
+    if (!a) {
+        errno = ENOMEM;
+        return -1;
+    }
+
+    b = acquire_b();
+    if (!b)
+        goto release_a;
+
+    return 0;
+
+release_a:
+    release_a(a);
+    errno = ENOMEM;
+    return -1;
+```
