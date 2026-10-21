@@ -57,6 +57,9 @@ Rotate takes the pool lock:
 - Snapshot: under the lock, walk the committed FIFO in place and write it. The
   lock stays held for the whole dump, so a producer that needs a chunk waits.
 
+The dumping thread first commits its own partial chunk, so a dump includes its
+latest events.
+
 ## Threads
 
 - A thread's partial chunk is committed when the thread exits, if it is still
@@ -77,8 +80,8 @@ close.
 ## Known limits
 
 - A live thread that has not filled its chunk and has not emitted since is not
-  in a dump, including the thread that requests the dump. Its last records
-  appear once it emits again, fills its chunk, or exits. Closing the gap needs
+  in a dump. Its last records appear once it emits again, fills its chunk, or
+  exits. Only the dumping thread's own tail is included. Closing the gap needs
   a per-event shared store or a stall in the dump, and neither was chosen.
 - Continuous mode has no timer flush. A low-rate thread's last events are lost
   only if the process dies before its chunk fills, exits, or the trace closes.

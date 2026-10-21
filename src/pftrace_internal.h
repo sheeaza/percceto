@@ -305,6 +305,10 @@ void pf_chunks_release(struct pf_trace *t, struct pf_chunk *head);
 
 /* Snapshot drain: the committed FIFO stays in place while the lock is held,
  * so producers that need a chunk wait until the dump is done. */
+/* Commits the calling thread's partial chunk, so a dump includes its last
+ * events. Other threads' partial chunks are not touched. Caller holds
+ * pool_lock. */
+void pf_writer_flush_own_locked(struct pf_trace *t);
 
 /* Open-trace registry. A trace is added at open and removed before close frees
  * anything. */

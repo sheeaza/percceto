@@ -18,11 +18,9 @@ returned. A thread that goes idle holds its chunks until they are reclaimed.
 ## 2. Tails of live idle threads in dumps
 
 A thread that has emitted but not filled its chunk, and is still alive, is not
-in a snapshot dump. This includes the thread that requests the dump, since its
-partial chunk is no longer committed first. Its records appear after it emits
-again, fills its chunk, or exits. Options: a per-event shared store (rejected
-for the hot path), or have the dump stall until each live writer acknowledges a
-flush request.
+in a snapshot dump. Its records appear after it emits again, fills its chunk,
+or exits. Options: a per-event shared store (rejected for the hot path), or
+have the dump stall until each live writer acknowledges a flush request.
 
 ## 3. Encode on the producer
 

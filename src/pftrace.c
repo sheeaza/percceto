@@ -170,6 +170,7 @@ static int drain_locked(struct pf_trace *t)
 
     if (t->cfg.mode == PF_MODE_SNAPSHOT) {
         pthread_mutex_lock(&t->pool_lock);
+        pf_writer_flush_own_locked(t);
         int rc = write_chunks(t, t->committed_head);
         pthread_mutex_unlock(&t->pool_lock);
         return rc;
