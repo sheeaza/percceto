@@ -47,12 +47,12 @@ int main(void)
     struct pf_config cfg;
     pf_config_init(&cfg);
     cfg.path = ".";
-    struct pf_trace *t = pf_trace_open(&cfg);
-    if (!t) {
+    if (pf_trace_open_g(&cfg) != 0) {
         check(0, "open trace");
         printf("1 failure(s)\n");
         return 1;
     }
+    struct pf_trace *t = pf_trace_default_g();
 
     uint64_t thr = pf_track_thread_uuid_g();
     check(thr != 0, "pf_track_thread_uuid_g registers the calling thread");
@@ -83,7 +83,7 @@ int main(void)
     pf_trace_stats(t, &after);
     check(after.events == before.events + 2, "both _g samples are counted as emitted");
 
-    pf_trace_close(t);
+    pf_trace_close_g();
 
     if (failures) {
         printf("%d failure(s)\n", failures);

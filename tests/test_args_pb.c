@@ -51,11 +51,11 @@ int main(void)
     cfg.format = PF_FORMAT_PROTOBUF;
     cfg.path = dir;
 
-    struct pf_trace *t = pf_trace_open(&cfg);
-    if (!t) {
+    if (pf_trace_open_g(&cfg) != 0) {
         perror("open");
         return 1;
     }
+    struct pf_trace *t = pf_trace_default_g();
     uint64_t trk = pf_track_thread(t, getpid(), 1, "main");
 
     pf_slice_begin_args(t, trk, "job %d took %f", 7, 2.5);
@@ -84,10 +84,10 @@ int main(void)
     char leaf[512] = "";
     if (pf_trace_dump(t, "snap", leaf, sizeof(leaf)) != 0) {
         CHECK(false, "dump failed");
-        pf_trace_close(t);
+        pf_trace_close_g();
         return 1;
     }
-    pf_trace_close(t);
+    pf_trace_close_g();
 
     char path[1024];
     snprintf(path, sizeof(path), "%s/%s", dir, leaf);

@@ -162,8 +162,11 @@ static void test_thread_uuid_g(void)
 {
     check(pf_track_thread_uuid_g() == 0, "no default trace gives 0");
 
-    struct pf_trace *t = open_trace(4);
-    if (!t) {
+    struct pf_config cfg;
+    pf_config_init(&cfg);
+    cfg.path = ".";
+    cfg.max_tracks = 5;
+    if (pf_trace_open_g(&cfg) != 0) {
         check(0, "open trace");
         return;
     }
@@ -172,7 +175,7 @@ static void test_thread_uuid_g(void)
     for (int i = 0; i < 1000; i++)
         same &= pf_track_thread_uuid_g() == a;
     check(same, "same thread gets the same cached uuid");
-    pf_trace_close(t);
+    pf_trace_close_g();
 }
 
 int main(void)

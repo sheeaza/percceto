@@ -602,8 +602,9 @@ uint64_t pf_track_counter(struct pf_trace *t, uint64_t parent_uuid, const char *
 }
 
 /* --- Simple API -------------------------------------------------------
- * The trace is the process default, set by pf_trace_open() and cleared by
- * pf_trace_close(). It is expected to be created once by the main thread
+ * The trace is the process default, set by pf_trace_open_g() and cleared by
+ * pf_trace_close_g(). pf_trace_open() and pf_trace_close() never touch it.
+ * It is expected to be created once by the main thread
  * and live for the whole process, so it is never swapped while threads
  * use it. Each thread caches the uuid of its own track in a single TLS
  * slot. The hot path is one pointer load, one TLS read and a flag check.
@@ -754,6 +755,32 @@ int pf_trace_flush_g(const char *name, char *file, size_t size)
     return pf_trace_flush(t, name, file, size);
 }
 
+int pf_trace_open_g(const struct pf_config *cfg)
+{
+    struct pf_trace *t = pf_trace_open(cfg);
+    if (!t)
+        return -1;
+    g_default_trace = t;
+    return 0;
+}
+
+void pf_trace_close_g(void)
+{
+    struct pf_trace *t = default_trace();
+    if (!t)
+        return;
+
+    /* Cleared before the drain stops, so no simple-API call reaches a trace
+     * that is being torn down. */
+    g_default_trace = NULL;
+    pf_trace_close(t);
+}
+
+struct pf_trace *pf_trace_default_g(void)
+{
+    return default_trace();
+}
+
 /* --- Lifecycle --------------------------------------------------------- */
 
 void pf_config_init(struct pf_config *cfg)
@@ -858,7 +885,6 @@ struct pf_trace *pf_trace_open(const struct pf_config *cfg)
         pthread_create(&t->drain_thread, NULL, drain_thread_fn, t) != 0)
         goto destroy_sync;
     pf_registry_add(t);
-    g_default_trace = t;
     return t;
 
     /* Only continuous mode gets this far with a file open, so the close of
@@ -918,11 +944,6 @@ void pf_trace_close(struct pf_trace *t)
 {
     if (!t)
         return;
-
-    /* Before the drain stops, so no simple-API call reaches a trace that
-     * is being torn down. */
-    if (g_default_trace == t)
-        g_default_trace = NULL;
 
     pf_registry_remove(t);
 

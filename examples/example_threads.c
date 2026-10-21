@@ -69,11 +69,11 @@ static int run(void)
     cfg.watermark_pct = 75;
     cfg.drain_interval_ms = 20;
 
-    struct pf_trace *t = pf_trace_open(&cfg);
-    if (!t) {
+    if (pf_trace_open_g(&cfg) != 0) {
         perror("pf_trace_open");
         return 1;
     }
+    struct pf_trace *t = pf_trace_default_g();
 
     struct shared sh = { .t = t };
     atomic_init(&sh.jobs_done, 0);
@@ -103,13 +103,13 @@ static int run(void)
         pthread_join(threads[i], NULL);
 
     if (started < NUM_WORKERS) {
-        pf_trace_close(t);
+        pf_trace_close_g();
         return 1;
     }
 
     if (pf_trace_flush(t, NULL, NULL, 0) != 0) {
         perror("pf_trace_flush");
-        pf_trace_close(t);
+        pf_trace_close_g();
         return 1;
     }
 
@@ -123,7 +123,7 @@ static int run(void)
         printf("  NOTE: %llu events dropped -- buffer or interval too small\n",
                (unsigned long long)s.dropped);
 
-    pf_trace_close(t);
+    pf_trace_close_g();
     printf("  wrote %s\n", name);
     return 0;
 }

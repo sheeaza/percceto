@@ -506,12 +506,13 @@ PF_API void pf_counter_set_double(struct pf_trace *t, uint64_t counter_track_uui
  * The calls below take no trace and no track. They act on the calling
  * thread's own track, on the process default trace:
  *
- *   - The default is the trace pf_trace_open() returned. It is meant to be
+ *   - The default is the trace pf_trace_open_g() opened. It is meant to be
  *     opened once, by the main thread, and to live for the whole process.
- *     pf_trace_close() clears it.
+ *     pf_trace_close_g() clears it. pf_trace_open() and pf_trace_close()
+ *     leave it alone.
  *   - A thread's track is created on its first _g call. The library calls
  *     gettid() and getpid() at that point and registers a thread track with
- *     them. The track is a child of the process track, which pf_trace_open()
+ *     them. The track is a child of the process track, which pf_trace_open_g()
  *     registers for getpid().
  *   - The uuid is cached in thread-local storage. Once cached, a call costs
  *     a pointer load, a thread-local read and a flag check. No syscall.
@@ -625,6 +626,37 @@ PF_API int pf_trace_dump_g(const char *name, char *file, size_t size);
  *      trace.
  */
 PF_API int pf_trace_flush_g(const char *name, char *file, size_t size);
+
+/**
+ * pf_trace_open_g() - pf_trace_open(), and make the result the default trace.
+ * @cfg: As for pf_trace_open().
+ *
+ * On success the simple API calls write to the new trace until
+ * pf_trace_close_g() is called. The trace itself is not returned.
+ *
+ * Return: 0 on success, or -1 with errno set as for pf_trace_open(). On
+ *      failure the default is left unset.
+ */
+PF_API int pf_trace_open_g(const struct pf_config *cfg);
+
+/**
+ * pf_trace_close_g() - pf_trace_close() on the default trace, and clear it.
+ *
+ * Does nothing if there is no default trace. Use this rather than
+ * pf_trace_close() on the default: that leaves the default pointing at a
+ * freed trace.
+ */
+PF_API void pf_trace_close_g(void);
+
+/**
+ * pf_trace_default_g() - Get the default trace, for the explicit API.
+ *
+ * Return: The trace pf_trace_open_g() opened, or %NULL if there is none.
+ *      Valid until pf_trace_close_g(). Use it with the calls that take a
+ *      trace, such as pf_track_thread() or pf_trace_dump(), and never pass
+ *      it to pf_trace_close(): use pf_trace_close_g().
+ */
+PF_API struct pf_trace *pf_trace_default_g(void);
 
 #ifdef __cplusplus
 }

@@ -199,11 +199,11 @@ static void run_clock(clockid_t clock_id, uint64_t want, const char *name)
     cfg.path = dir;
     cfg.clock_id = clock_id;
 
-    struct pf_trace *t = pf_trace_open(&cfg);
-    if (!t) {
+    if (pf_trace_open_g(&cfg) != 0) {
         CHECK(false, "open %s trace", name);
         return;
     }
+    struct pf_trace *t = pf_trace_default_g();
     pf_slice_begin_g("clock_probe");
     pf_slice_end_g();
     pf_instant_event_g("clock_instant");
@@ -211,10 +211,10 @@ static void run_clock(clockid_t clock_id, uint64_t want, const char *name)
     char leaf[512] = "";
     if (pf_trace_dump(t, "snap", leaf, sizeof(leaf)) != 0) {
         CHECK(false, "dump %s trace failed", name);
-        pf_trace_close(t);
+        pf_trace_close_g();
         return;
     }
-    pf_trace_close(t);
+    pf_trace_close_g();
 
     char path[1024];
     snprintf(path, sizeof(path), "%s/%s", dir, leaf);

@@ -44,12 +44,12 @@ int main(void)
     struct pf_config cfg;
     pf_config_init(&cfg);
     cfg.path = ".";
-    struct pf_trace *t = pf_trace_open(&cfg);
-    if (!t) {
+    if (pf_trace_open_g(&cfg) != 0) {
         check(0, "open trace");
         printf("1 failure(s)\n");
         return 1;
     }
+    struct pf_trace *t = pf_trace_default_g();
 
     check(t->process_uuid != 0, "pf_trace_open registers a process track");
 
@@ -66,7 +66,7 @@ int main(void)
     check(th >= 0 && t->tracks[th].parent_uuid == t->process_uuid,
           "thread track is a child of the process track");
 
-    pf_trace_close(t);
+    pf_trace_close_g();
 
     /* A name set in the config is the process track's name. */
     pf_config_init(&cfg);
@@ -87,14 +87,13 @@ int main(void)
     pf_config_init(&cfg);
     cfg.path = ".";
     cfg.clock_id = CLOCK_REALTIME;
-    t = pf_trace_open(&cfg);
-    if (t) {
+    if (pf_trace_open_g(&cfg) == 0) {
         pf_slice_begin_g("realtime_probe");
         pf_slice_end_g();
         char file[256];
-        int rc = pf_trace_dump(t, "clock_realtime", file, sizeof file);
+        int rc = pf_trace_dump_g("clock_realtime", file, sizeof file);
         printf("REALTIME dump: %s (rc %d)\n", rc == 0 ? file : "none", rc);
-        pf_trace_close(t);
+        pf_trace_close_g();
     }
 
     if (failures) {

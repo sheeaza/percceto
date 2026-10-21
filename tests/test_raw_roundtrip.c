@@ -507,8 +507,7 @@ static void simple_threads(const char *path)
     cfg.format = PF_FORMAT_RAW;
     cfg.mode = PF_MODE_SNAPSHOT;
 
-    struct pf_trace *t = pf_trace_open(&cfg);
-    if (!t) {
+    if (pf_trace_open_g(&cfg) != 0) {
         CHECK(false, "simple threads: open failed: %s", strerror(errno));
         return;
     }
@@ -522,8 +521,9 @@ static void simple_threads(const char *path)
     }
     for (int i = 0; i < SIMPLE_THREADS; i++)
         pthread_join(th[i], NULL);
-    CHECK(pf_trace_dump(t, "simple", leaf, sizeof(leaf)) == 0, "simple threads: dump failed");
-    pf_trace_close(t);
+    CHECK(pf_trace_dump(pf_trace_default_g(), "simple", leaf, sizeof(leaf)) == 0,
+          "simple threads: dump failed");
+    pf_trace_close_g();
     CHECK(move_dump(dir, leaf, path) == 0, "simple threads: no dump");
 
     struct parsed p;
@@ -580,11 +580,12 @@ static void simple_rename(const char *path)
     cfg.format = PF_FORMAT_RAW;
     cfg.mode = PF_MODE_CONTINUOUS;
 
-    struct pf_trace *t = pf_trace_open(&cfg);
-    if (!t) {
+    struct pf_trace *t = NULL;
+    if (pf_trace_open_g(&cfg) != 0) {
         CHECK(false, "simple rename: open failed: %s", strerror(errno));
         return;
     }
+    t = pf_trace_default_g();
 
     /* The flush makes the first declaration reach the file before the
      * rename, which is the case that needs the track re-declared. */
@@ -594,7 +595,7 @@ static void simple_rename(const char *path)
     pf_thread_name("renamed");
     pf_slice_begin_g("after");
     pf_slice_end_g();
-    pf_trace_close(t);
+    pf_trace_close_g();
 
     struct parsed p;
     if (parse_raw(path, &p) != 0) {
