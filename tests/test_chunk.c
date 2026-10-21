@@ -3,6 +3,7 @@
  * - Open refuses a buffer that cannot hold two chunks, and a zero-size chunk.
  * - A thread past max_threads drops each event it emits, and counts it.
  * - A thread that exits gives its writer slot back, so a later thread can bind it.
+ * - A thread that emits into two traces keeps a writer slot in each.
  * - A single producer in continuous mode loses nothing except what the
  *   counters report, and every emitted event is accounted for: committed,
  *   dropped, or still in the producer's chunk at the moment of the read.
@@ -112,6 +113,68 @@ static void test_writer_limit(void)
     CHECK(s.dropped == 10, "second thread should drop 10 events, dropped %llu",
           (unsigned long long)s.dropped);
     pf_trace_close(t);
+}
+
+/* A thread that emits into two traces holds a writer slot in each. With one
+ * slot per trace, a second thread finds both taken and drops its events in
+ * both traces. Had the first trace's slot been released when the thread moved
+ * to the second, the second thread would bind it and drop nothing. */
+struct two_traces {
+    struct pf_trace *a;
+    struct pf_trace *b;
+};
+
+static void *emit_both(void *arg)
+{
+    struct two_traces *p = arg;
+    for (int i = 0; i < 5; i++) {
+        pf_slice_begin(p->a, 0, "worker");
+        pf_slice_begin(p->b, 0, "worker");
+    }
+    return NULL;
+}
+
+static void test_bind_two_traces(void)
+{
+    struct pf_config ca, cb;
+    setup(&ca, PF_MODE_SNAPSHOT, ".");
+    setup(&cb, PF_MODE_SNAPSHOT, ".");
+    ca.buffer_bytes = 8 * CHUNK_BYTES(4);
+    cb.buffer_bytes = 8 * CHUNK_BYTES(4);
+    ca.max_threads = 1;
+    cb.max_threads = 1;
+
+    struct pf_trace *a = pf_trace_open(&ca);
+    struct pf_trace *b = pf_trace_open(&cb);
+    CHECK(a != NULL && b != NULL, "open failed");
+    if (!a || !b) {
+        failures++;
+        pf_trace_close(a);
+        pf_trace_close(b);
+        return;
+    }
+
+    /* The main thread alternates between the traces. */
+    for (int i = 0; i < 4; i++) {
+        pf_slice_begin(a, 0, "main");
+        pf_slice_begin(b, 0, "main");
+    }
+
+    struct two_traces p = { a, b };
+    pthread_t th;
+    pthread_create(&th, NULL, emit_both, &p);
+    pthread_join(th, NULL);
+
+    struct pf_stats sa, sb;
+    pf_trace_stats(a, &sa);
+    pf_trace_stats(b, &sb);
+    CHECK(sa.events == 4 && sb.events == 4, "main thread lost events (%llu, %llu)",
+          (unsigned long long)sa.events, (unsigned long long)sb.events);
+    CHECK(sa.dropped == 5 && sb.dropped == 5,
+          "main thread should hold its slot in both traces (dropped %llu, %llu)",
+          (unsigned long long)sa.dropped, (unsigned long long)sb.dropped);
+    pf_trace_close(a);
+    pf_trace_close(b);
 }
 
 /* Threads come and go, one at a time, against two writer slots. Each exiting
@@ -345,6 +408,7 @@ int main(void)
 {
     test_open_limits();
     test_writer_limit();
+    test_bind_two_traces();
     test_slot_reuse();
     test_accounting();
     test_snapshot_wrap_is_not_a_drop();

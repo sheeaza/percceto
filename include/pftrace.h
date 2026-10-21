@@ -74,8 +74,9 @@ enum pf_format {
  *      shared state. 0 is rejected at open. pf_config_init() selects 256.
  * @max_threads: Threads that may be bound to this trace at once. A thread
  *      past the limit drops its events and counts them. A thread's slot is
- *      freed when it exits, so later threads can bind it. 0 is rejected at
- *      open. pf_config_init() selects 256.
+ *      freed when it exits, so later threads can bind it. The table is
+ *      rounded up to a power of two. 0 is rejected at open.
+ *      pf_config_init() selects 256.
  * @mode: Snapshot or continuous; see &enum pf_mode.
  * @format: Protobuf or raw output; see &enum pf_format. Fixed for the
  *      life of the trace, so a file never mixes the two.

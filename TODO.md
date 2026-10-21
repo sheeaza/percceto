@@ -107,17 +107,18 @@ bitmap gains nothing in speed. Reverted.
 
 ## 7. Let a thread bind to more than one trace (low priority)
 
-A thread's binding (trace, writer) is one TLS slot, so a thread binds one trace
-at a time. Binding a second trace unbinds the first: its partial chunk is
-committed and its reference dropped, and the thread's later events go to the
-second trace only. The simple API keeps the thread's track uuid in one TLS slot
-too, so it has the same limit.
+Writers are done. A thread's writer is found in each trace's own table by the
+thread's identity, with no TLS slot, so a thread holds a writer in every trace it
+emits to, and binding a second trace no longer releases the first. The hot path
+is no longer "a TLS read and a compare": it hashes the thread pointer and probes
+the owner tags. Cost, from `bench_chunk` run side by side with the old build:
+about 2 ns per event at 1 thread (5.1–6.7 to 7.2–8.2), and about 3 ns at 8
+threads (25–26 to 28–29). See `tests/BENCHMARK_chunk.md`.
 
-Option: model the bindings as per-thread maps, a thread id to writer and a
-thread id to track uuid, so one thread holds a writer and a uuid in each trace
-it uses. The hot path must stay a TLS read and a compare. So the map would be a
-small per-thread cache in front of the table, touched only on bind and on
-thread exit. Measure with `bench_chunk` before and after.
+Still open: the simple API keeps the thread's track uuid in one TLS slot
+(`tl_slot` in `pftrace.c`), so the uuid is for one trace, not one per trace. The
+same lookup could key it per trace. Measure with `bench_chunk` before and after,
+since it is on the simple API's hot path too.
 
 ## Notes
 

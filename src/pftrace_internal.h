@@ -102,10 +102,19 @@ struct pf_chunk {
     struct pf_rec recs[]; /* cfg.chunk_slots records */
 };
 
-/* One per bound thread. The producer owns @cur, @used and @seq. @bound is
- * read and written only under reg_lock. Aligned to a cache line so two
- * producers' hot fields never share one; the array is allocated to match. */
+/* Owner tags. A slot's owner is the pthread_t bound to it. A slot is never
+ * set back to PF_OWNER_NONE once claimed, so a lookup can stop at the first
+ * such slot: every slot before it on the probe chain is still in use. A
+ * released slot is tagged PF_OWNER_RELEASED, which no thread id can equal. */
+#define PF_OWNER_NONE ((uintptr_t)0)
+#define PF_OWNER_RELEASED ((uintptr_t)1)
+
+/* One per bound thread. The producer owns @cur, @used and @seq. @owner is
+ * written under reg_lock, or by the owner on its own unbind. Aligned to a
+ * cache line so two producers' hot fields never share one; the array is
+ * allocated to match. */
 struct pf_writer {
+    _Alignas(64) _Atomic uintptr_t owner; /* pthread_t, or a PF_OWNER_* tag */
     _Alignas(64) struct pf_chunk *cur; /* NULL until the first rotation */
     uint32_t used; /* records in @cur; chunk_slots forces a rotation */
     uint32_t id;
@@ -113,7 +122,6 @@ struct pf_writer {
     /* Records this writer has emitted into its chunks, including any that a
      * snapshot later overwrites. Written only by the owner, read by stats. */
     _Atomic uint64_t events;
-    bool bound;
 };
 
 /* Cap on a track's stored name. Fixed so the track table is one
@@ -206,9 +214,16 @@ struct pf_trace {
     uint32_t watermark_chunks;
     pthread_mutex_t pool_lock;
 
-    /* Writer slots. reg_lock guards the bound flags only. */
+    /* Writer slots: a power of two, at least cfg.max_threads, so a thread's
+     * probe start is a mask. reg_lock guards claims and releases. */
     struct pf_writer *writers;
+    uint32_t writer_count;
     pthread_mutex_t reg_lock;
+
+    /* Per-trace thread key. Its value is the trace while the thread holds a
+     * reference, and its destructor gives that reference back at thread exit.
+     * Set only on bind and unbind, never on the emit path. */
+    pthread_key_t bind_key;
 
     /* Records lost to a full pool in continuous mode. Atomic because the
      * producer that loses an event does not take pool_lock. */
@@ -285,14 +300,13 @@ int pf_pool_init(struct pf_trace *t);
 void pf_pool_destroy(struct pf_trace *t);
 
 /* Binds the calling thread to @t and takes a reference to it, released by
- * pf_unbind_thread. Returns NULL when every slot is taken, and that answer is
- * cached for the thread. A thread binds one trace at a time: binding another
- * first unbinds the old one. */
+ * pf_unbind_thread. Returns NULL when every slot is taken, and the thread then
+ * stays bound with no slot. Called only when pf_writer_find has missed. */
 struct pf_writer *pf_writer_bind(struct pf_trace *t);
 
-/* Commits the calling thread's partial chunk and drops its reference to the
- * trace it is bound to. Safe to call when unbound. */
-void pf_unbind_thread(void);
+/* Commits the calling thread's partial chunk, frees its slot, and drops its
+ * reference to @t. Does nothing if the thread is not bound to @t. */
+void pf_unbind_thread(struct pf_trace *t);
 
 /* Drops one reference to @t. The last one finishes the trace: stops the drain,
  * writes what is buffered, and frees everything. Defined in pftrace.c. */
@@ -326,20 +340,50 @@ uint64_t pf_writers_events(struct pf_trace *t);
  * in pftrace.c. Continuous mode only. */
 void pf_drain_wake(struct pf_trace *t);
 
-/* Hot path lookup: the calling thread's writer, cached in TLS. Binds it on
- * first use. The cached trace is held by a reference, so it cannot be freed
- * and its address cannot be reused while the cache points at it. */
-struct pf_tls_cache {
-    struct pf_trace *trace;
-    struct pf_writer *writer;
-};
-extern __thread struct pf_tls_cache pf_tls;
+/* Hot path lookup: the calling thread's writer in @t. No TLS is read. The
+ * thread's id hashes to a starting slot, and the probe stops at the thread's
+ * own slot or at the first never-claimed one. Every load is on a line the
+ * thread already uses. Returns NULL if the thread has no slot in @t. */
+static inline uint32_t pf_writer_hash(uintptr_t self, uint32_t mask)
+{
+    return (uint32_t)((self * 0x9E3779B97F4A7C15ull) >> 32) & mask;
+}
+
+/* The calling thread's identity, for matching a writer slot to its thread. The
+ * thread pointer is unique among live threads and costs one fs-relative load.
+ * pthread_self() is an out-of-line call, and the emit path would pay it on
+ * every event. Other targets use pthread_self(). */
+static inline uintptr_t pf_thread_id(void)
+{
+#if defined(__GNUC__) && (defined(__x86_64__) || defined(__aarch64__))
+    return (uintptr_t)__builtin_thread_pointer();
+#else
+    return (uintptr_t)pthread_self();
+#endif
+}
+
+static inline struct pf_writer *pf_writer_find(struct pf_trace *t)
+{
+    uintptr_t self = pf_thread_id();
+    uint32_t mask = t->writer_count - 1;
+    uint32_t i = pf_writer_hash(self, mask);
+
+    for (uint32_t n = 0; n < t->writer_count; n++) {
+        struct pf_writer *w = &t->writers[i];
+        uintptr_t owner = atomic_load_explicit(&w->owner, memory_order_relaxed);
+        if (owner == self)
+            return w;
+        if (owner == PF_OWNER_NONE)
+            return NULL;
+        i = (i + 1) & mask;
+    }
+    return NULL;
+}
 
 static inline struct pf_writer *pf_writer_for(struct pf_trace *t)
 {
-    if (pf_tls.trace == t)
-        return pf_tls.writer;
-    return pf_writer_bind(t);
+    struct pf_writer *w = pf_writer_find(t);
+    return w ? w : pf_writer_bind(t);
 }
 
 /* --- Walking committed chunks ------------------------------------------

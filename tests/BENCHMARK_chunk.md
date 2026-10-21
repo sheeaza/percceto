@@ -48,3 +48,23 @@ writers share cache lines, so each producer's hot fields bounce between cores.
 One thread looks slower after alignment (4.5 → 6.3 ns). That gap is larger
 than the run-to-run noise seen elsewhere in this table, so it is not explained
 yet. Single-thread runs were not repeated to check it.
+
+## Writer lookup without TLS
+
+The writer is found by probing each trace's table for the thread's identity,
+not from a TLS slot. The `pf_thread_id()` identity is the thread pointer, which
+the emit path reads with one fs-relative load. Measured with the HEAD build and
+the working tree, both built as Release from copies, run interleaved, 8 cores,
+snapshot mode, `chunk_slots` 256. ns/event per thread, three runs each:
+
+| threads | TLS cache (HEAD) | probe, no TLS |
+|---:|---:|---:|
+| 1 | 5.1–6.7 | 7.2–8.2 |
+| 8 | 24.8–26.4 | 28.7–29.3 |
+
+The 1-thread cost is about 2 ns. Two earlier versions were slower. With the
+owner tag on the producer's hot line, 8 threads measured 50–60 ns, because each
+probe from another thread bounced a line the producer was writing. Moving the
+tag to its own line brought 8 threads back to about 28 ns. Calling
+`pthread_self()` on every event is an out-of-line call; the thread pointer read
+replaces it. At 1 thread the difference was within run-to-run noise.

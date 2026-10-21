@@ -11,7 +11,7 @@ sorts by timestamp on import.
      ├─ pool         one allocation at open: buffer_bytes / chunk_bytes chunks
      ├─ free list    chunks nobody holds
      ├─ committed    FIFO of full chunks, in commit order
-     ├─ writers[]    max_threads slots, bound on a thread's first emit
+     ├─ writers[]    power-of-two slots, claimed on a thread's first emit
      └─ refs         owner's reference, plus one per bound thread
 
     chunk: { next, used (atomic), writer, seq, recs[chunk_slots] }   (recs: struct pf_rec)
@@ -22,21 +22,25 @@ sorts by timestamp on import.
 
 - `buffer_bytes`: total buffering budget. Default 8 MiB. Must hold two chunks.
 - `chunk_slots`: records per chunk. Default 256. Chunk bytes follow from it.
-- `max_threads`: writer slots. Default 256.
+- `max_threads`: writer slots. Default 256. Rounded up to a power of two.
 
 ## Hot path
 
     emit:
       ts = now()
-      w = writer for this trace (TLS cache; bound on first use)
+      w = this thread's writer in this trace (probe the owner tags; claimed on first use)
       if w->used == chunk_slots: rotate (slow path, once per chunk)
       r = &w->cur->recs[w->used++]; fill the record
       w->cur->used = w->used   (release; publishes the record to a snapshot)
       w->events += 1   (relaxed; written only by this thread)
 
-The common path takes no lock and reads no shared state. The two stores go to
-lines only the owner writes: the chunk's `used`, which a snapshot dump reads,
-and the writer counter, which stats sums.
+The common path takes no lock and reads no shared state. The writer lookup
+reads no TLS: it hashes the thread's identity (the thread pointer) to a start
+slot and probes for the slot whose owner tag is that identity. The probe reads
+the owner tag, which sits on a line of its own and is written only on bind and
+unbind, so it does not contend with the producers. The two stores go to lines
+only the owner writes: the chunk's `used`, which a snapshot dump reads, and the
+writer counter, which stats sums.
 
 ## Commit and rotate
 
@@ -69,15 +73,20 @@ that count are final until the chunk is recycled, which needs the pool lock.
 
 ## Threads
 
-- A thread holds a reference to the trace it is bound to, from its first bind
-  until it unbinds. Unbinding commits the thread's partial chunk, then drops the
-  reference. A thread-exit destructor does this, so a thread that exits without
-  closing the trace still hands its records over. A thread binds one trace at a
-  time: binding another unbinds the first.
+- A thread holds a reference to each trace it has bound to, from its first emit
+  into that trace until it unbinds. A thread can be bound to several traces at
+  once, and each one holds a writer slot and a reference. Unbinding commits the
+  thread's partial chunk for that trace, frees the slot, then drops the
+  reference. Each trace has a pthread key whose value is the trace while the
+  thread holds a reference. Its destructor unbinds at thread exit, so a thread
+  that exits without closing the trace still hands its records over.
 - A thread past `max_threads` drops its events and counts them. It still holds a
   reference, so the trace stays open until it exits. A thread's slot is freed
   when it exits (after its partial chunk is committed), so a later thread can
   bind it. `max_threads` limits threads bound at once, not over the trace's life.
+- A thread past the limit pays for its miss on every event: the lookup probes the
+  whole table, then it checks its key. That is the cost of the overflow path,
+  not of the common one.
 
 ## Close and lifetime
 
@@ -93,19 +102,21 @@ So the file is complete when the last reference goes, which is:
 - otherwise, at the exit of the last bound thread. Close returns earlier, and
   such a thread may keep emitting until it exits.
 
-Only the reference count guards the trace. A bound thread's cached pointer is
-safe because the thread holds a reference, so the trace cannot be freed or its
-address reused while the cache points at it. This needs no registry.
+Only the reference count guards the trace. The emit path reads only the trace's
+own writer table, so it never touches a pointer that could outlive the trace.
+The thread's key value holds its reference, and that is what keeps the trace
+alive while the thread is bound.
 
 ## Known limits
 
 - A thread that never exits keeps the trace open, and its partial chunk is not
   written. A process that exits without its threads exiting loses those events.
-  This is the cost of close returning early; see TODO.md item 7 for the
-  one-trace-per-thread limit that comes with it.
+  This is the cost of close returning early.
 - Continuous mode has no timer flush. A low-rate thread's last events are lost
   only if the process dies before its chunk fills, its thread exits, or the
   trace's last reference goes.
+- The simple API's thread track uuid is still one per thread, not per trace.
+  See TODO.md item 7.
 
 ## Risks
 
@@ -115,9 +126,9 @@ address reused while the cache points at it. This needs no registry.
 - Close returns early. A caller that reads the file right after close, while a
   thread is still bound, sees an incomplete file. A bound thread may also keep
   emitting after close, so its events reach the file only at its exit.
-- Rebinding unbinds the old trace. A thread that binds a second trace gives up
-  its first, and its later events go to the second only. This is a behaviour
-  change from the old last-bound-trace rule; see TODO.md item 7.
+- A thread bound to two traces holds a reference in each, so each trace stays
+  open until that thread exits or unbinds from it. Before, binding a second
+  trace released the first, so close of the first could finish it at once.
 - Snapshot mode. Buffered events of a snapshot trace stay in memory until the
   last reference goes, and are lost then unless a dump was taken first. Close
   does not dump.

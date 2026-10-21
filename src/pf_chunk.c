@@ -2,8 +2,9 @@
  *
  * Producers take the pool lock only when they rotate to a new chunk, once per
  * chunk_slots events. The drain takes it to detach or walk the committed FIFO.
- * Nothing on the per-event path reads or writes shared state, apart from a
- * relaxed store to the thread's own writer counter. */
+ * On the per-event path nothing is written to shared state, apart from a relaxed
+ * store to the thread's own writer counter. The writer lookup reads owner tags
+ * of other slots while it probes; those are written only on bind and unbind. */
 
 #include <errno.h>
 #include <stdlib.h>
@@ -11,27 +12,19 @@
 
 #include "pftrace_internal.h"
 
-__thread struct pf_tls_cache pf_tls;
-
-static pthread_key_t g_exit_key;
-static pthread_once_t g_exit_key_once = PTHREAD_ONCE_INIT;
-
 static void commit_locked(struct pf_trace *t, struct pf_writer *w);
 
-/* Gives back the calling thread's binding. The partial chunk is committed, so
- * its records reach the drain without waiting for the trace to finish. The
- * writer slot is then free for another thread to bind, and the reference is
- * dropped last, since it may be the one that finishes the trace.
- * Runs at thread exit, on rebind, and from pf_trace_close on the closing thread. */
-void pf_unbind_thread(void)
+/* Gives back the calling thread's slot in @t and drops its reference. The
+ * partial chunk is committed, so its records reach the drain without waiting
+ * for the trace to finish. The slot is then free for another thread to bind,
+ * and the reference is dropped last, since it may be the one that finishes
+ * the trace. Runs on the thread's exit, on a second close, and from
+ * pf_trace_close on the closing thread. */
+static void unbind(struct pf_trace *t)
 {
-    struct pf_trace *t = pf_tls.trace;
-    struct pf_writer *w = pf_tls.writer;
-    pf_tls.trace = NULL;
-    pf_tls.writer = NULL;
-    if (!t)
-        return;
+    pthread_setspecific(t->bind_key, NULL);
 
+    struct pf_writer *w = pf_writer_find(t);
     if (w) {
         struct pf_chunk *spare = NULL;
 
@@ -45,24 +38,24 @@ void pf_unbind_thread(void)
         pthread_mutex_unlock(&t->pool_lock);
         pf_chunks_release(t, spare);
 
-        /* Bind resets the producer's fields, so the next owner starts clean.
-         * The event count is kept, so stats still count this slot's events. */
+        /* The event count is kept, so stats still count this slot's events.
+         * Bind resets the producer's fields for the next owner. */
         pthread_mutex_lock(&t->reg_lock);
-        w->bound = false;
+        atomic_store_explicit(&w->owner, PF_OWNER_RELEASED, memory_order_release);
         pthread_mutex_unlock(&t->reg_lock);
     }
     pf_trace_unref(t);
 }
 
-static void writer_exit(void *unused)
+void pf_unbind_thread(struct pf_trace *t)
 {
-    (void)unused;
-    pf_unbind_thread();
+    if (pthread_getspecific(t->bind_key) == t)
+        unbind(t);
 }
 
-static void make_exit_key(void)
+static void unbind_at_exit(void *v)
 {
-    pthread_key_create(&g_exit_key, writer_exit);
+    unbind(v);
 }
 
 int pf_pool_init(struct pf_trace *t)
@@ -77,6 +70,17 @@ int pf_pool_init(struct pf_trace *t)
         return -1;
     }
 
+    /* The writer table is a power of two, so a thread's probe start is a
+     * mask rather than a division. */
+    uint32_t writer_count = 1;
+    while (writer_count < t->cfg.max_threads) {
+        if (writer_count > UINT32_MAX / 2) {
+            errno = EINVAL;
+            return -1;
+        }
+        writer_count <<= 1;
+    }
+
     t->pool_mem = calloc(count, chunk_bytes);
     if (!t->pool_mem) {
         errno = ENOMEM;
@@ -85,10 +89,13 @@ int pf_pool_init(struct pf_trace *t)
 
     /* aligned_alloc, not calloc: the writers need a cache-line boundary, and
      * sizeof is a multiple of 64, as aligned_alloc requires. Zeroed by hand. */
-    t->writers = aligned_alloc(64, t->cfg.max_threads * sizeof(*t->writers));
+    t->writers = aligned_alloc(64, writer_count * sizeof(*t->writers));
     if (!t->writers)
         goto free_pool;
-    memset(t->writers, 0, t->cfg.max_threads * sizeof(*t->writers));
+    memset(t->writers, 0, writer_count * sizeof(*t->writers));
+
+    if (pthread_key_create(&t->bind_key, unbind_at_exit) != 0)
+        goto free_writers;
 
     /* Each chunk is linked onto the free list. chunk_bytes is a multiple of 8,
      * so every chunk's records stay 8-byte aligned. */
@@ -101,12 +108,16 @@ int pf_pool_init(struct pf_trace *t)
     t->chunk_bytes = chunk_bytes;
     t->chunk_count = (uint32_t)count;
     t->chunk_slots = slots;
+    t->writer_count = writer_count;
     t->watermark_chunks = (uint32_t)(count * t->cfg.watermark_pct / 100u);
 
     pthread_mutex_init(&t->pool_lock, NULL);
     pthread_mutex_init(&t->reg_lock, NULL);
     return 0;
 
+free_writers:
+    free(t->writers);
+    t->writers = NULL;
 free_pool:
     free(t->pool_mem);
     t->pool_mem = NULL;
@@ -116,6 +127,7 @@ free_pool:
 
 void pf_pool_destroy(struct pf_trace *t)
 {
+    pthread_key_delete(t->bind_key);
     pthread_mutex_destroy(&t->reg_lock);
     pthread_mutex_destroy(&t->pool_lock);
     free(t->writers);
@@ -126,42 +138,45 @@ void pf_pool_destroy(struct pf_trace *t)
 
 struct pf_writer *pf_writer_bind(struct pf_trace *t)
 {
+    /* A thread past the slot limit is bound with no slot. It keeps its
+     * reference and its key value, so it does not come back here as a new
+     * binding on every event. */
+    if (pthread_getspecific(t->bind_key) == t)
+        return NULL;
+
+    /* Taken even when no slot is free, so the thread's key always names a
+     * live trace. */
+    atomic_fetch_add_explicit(&t->refs, 1, memory_order_relaxed);
+    pthread_setspecific(t->bind_key, t);
+
+    uintptr_t self = pf_thread_id();
+    uint32_t mask = t->writer_count - 1;
     struct pf_writer *w = NULL;
 
-    if (pf_tls.trace)
-        pf_unbind_thread();
-
-    /* Taken even when no slot is free, so the cache always holds a live trace. */
-    atomic_fetch_add_explicit(&t->refs, 1, memory_order_relaxed);
-
+    /* Claim the first free slot on the probe chain from this thread's hash.
+     * Every slot before it is in use, so it is never NONE, and the lookup
+     * finds the claim. */
     pthread_mutex_lock(&t->reg_lock);
-    for (uint32_t i = 0; i < t->cfg.max_threads; i++) {
-        if (!t->writers[i].bound) {
+    uint32_t i = pf_writer_hash(self, mask);
+    for (uint32_t n = 0; n < t->writer_count; n++, i = (i + 1) & mask) {
+        uintptr_t owner = atomic_load_explicit(&t->writers[i].owner, memory_order_relaxed);
+        if (owner == PF_OWNER_NONE || owner == PF_OWNER_RELEASED) {
             w = &t->writers[i];
-            w->bound = true;
             w->id = i;
             break;
         }
     }
-    pthread_mutex_unlock(&t->reg_lock);
 
-    /* Fields owned by the producer are set here, before the thread uses the
-     * writer. used == slots makes the first emit rotate and take a chunk. */
+    /* Fields owned by the producer are set here, before the owner tag makes
+     * the slot visible to lookups. used == slots makes the first emit rotate
+     * and take a chunk. */
     if (w) {
         w->cur = NULL;
         w->used = t->chunk_slots;
         w->seq = 0;
+        atomic_store_explicit(&w->owner, self, memory_order_release);
     }
-
-    /* Set on every bind, NULL writer included, so the exit destructor runs and
-     * gives back the reference. */
-    pthread_once(&g_exit_key_once, make_exit_key);
-    pthread_setspecific(g_exit_key, &pf_tls);
-
-    /* Cached even when NULL, so a thread past max_threads does not take
-     * the registration lock on every event. */
-    pf_tls.trace = t;
-    pf_tls.writer = w;
+    pthread_mutex_unlock(&t->reg_lock);
     return w;
 }
 
@@ -236,7 +251,7 @@ uint64_t pf_writers_events(struct pf_trace *t)
 {
     uint64_t total = 0;
     pthread_mutex_lock(&t->reg_lock);
-    for (uint32_t i = 0; i < t->cfg.max_threads; i++)
+    for (uint32_t i = 0; i < t->writer_count; i++)
         total += atomic_load_explicit(&t->writers[i].events, memory_order_relaxed);
     pthread_mutex_unlock(&t->reg_lock);
     return total;
@@ -244,11 +259,8 @@ uint64_t pf_writers_events(struct pf_trace *t)
 
 void pf_writer_flush_own_locked(struct pf_trace *t)
 {
-    if (pf_tls.trace != t || !pf_tls.writer)
-        return;
-
-    struct pf_writer *w = pf_tls.writer;
-    if (!w->cur || w->used == 0)
+    struct pf_writer *w = pf_writer_find(t);
+    if (!w || !w->cur || w->used == 0)
         return;
     commit_locked(t, w);
     w->used = t->chunk_slots;
@@ -261,7 +273,7 @@ struct pf_chunk *pf_link_partials_locked(struct pf_trace *t)
 {
     struct pf_chunk *head = t->committed_head;
     struct pf_chunk *tail = t->committed_tail;
-    for (uint32_t i = 0; i < t->cfg.max_threads; i++) {
+    for (uint32_t i = 0; i < t->writer_count; i++) {
         struct pf_chunk *c = t->writers[i].cur;
         if (!c)
             continue;
@@ -278,7 +290,7 @@ void pf_unlink_partials_locked(struct pf_trace *t)
 {
     if (t->committed_tail)
         t->committed_tail->next = NULL;
-    for (uint32_t i = 0; i < t->cfg.max_threads; i++) {
+    for (uint32_t i = 0; i < t->writer_count; i++) {
         struct pf_chunk *c = t->writers[i].cur;
         if (c)
             c->next = NULL;

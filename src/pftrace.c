@@ -997,7 +997,6 @@ void pf_trace_close(struct pf_trace *t)
     /* The calling thread gives up its own reference first. A main thread never
      * runs the exit destructor, so it must do this here or the trace never
      * finishes. */
-    if (pf_tls.trace == t)
-        pf_unbind_thread();
+    pf_unbind_thread(t);
     pf_trace_unref(t);
 }
