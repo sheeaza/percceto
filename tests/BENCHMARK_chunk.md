@@ -48,3 +48,18 @@ writers share cache lines, so each producer's hot fields bounce between cores.
 One thread looks slower after alignment (4.5 → 6.3 ns). That gap is larger
 than the run-to-run noise seen elsewhere in this table, so it is not explained
 yet. Single-thread runs were not repeated to check it.
+
+## Per-trace TLS slots
+
+`pf_tls` holds one slot per open trace, indexed by the trace's index, so the
+writer lookup is a TLS base, an index load and a compare. Measured against HEAD,
+three interleaved runs each, Release builds, `chunk_slots` 256, ns/event:
+
+| threads | HEAD (single TLS slot) | per-trace slots |
+|---:|---:|---:|
+| 1 | 5.0–6.6 | 5.4–7.0 |
+| 8 | 24.7–26.5 | 23.9–26.1 |
+
+At 8 threads the two are within noise. At 1 thread the new build is about 0.5–1
+ns slower on these runs, which is about the size of the noise, so the cost is not
+settled.

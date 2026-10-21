@@ -179,6 +179,8 @@ struct track_def {
 /* --- Trace context ---------------------------------------------------- */
 
 struct pf_trace {
+    /* Position in every thread's pf_tls table; see pf_index_acquire. */
+    uint32_t index;
     /* Directory the output goes in, held for the life of the trace. */
     int dirfd;
     /* Continuous: the one output file, held open. Snapshot: -1 except while a
@@ -285,14 +287,19 @@ int pf_pool_init(struct pf_trace *t);
 void pf_pool_destroy(struct pf_trace *t);
 
 /* Binds the calling thread to @t and takes a reference to it, released by
- * pf_unbind_thread. Returns NULL when every slot is taken, and that answer is
- * cached for the thread. A thread binds one trace at a time: binding another
- * first unbinds the old one. */
+ * pf_unbind_thread. Returns NULL when every slot is taken; the thread is still
+ * bound, with no slot, and its miss is cached in its pf_tls entry. Called only
+ * when pf_writer_for misses. */
 struct pf_writer *pf_writer_bind(struct pf_trace *t);
 
-/* Commits the calling thread's partial chunk and drops its reference to the
- * trace it is bound to. Safe to call when unbound. */
-void pf_unbind_thread(void);
+/* Commits the calling thread's partial chunk for @t, frees its slot, and drops
+ * its reference to @t. Does nothing if the thread is not bound to @t. */
+void pf_unbind_thread(struct pf_trace *t);
+
+/* Claims a trace index, the position of the trace in every thread's pf_tls.
+ * Returns -1 with ENOSPC when PF_MAX_TRACES traces are open. */
+int pf_index_acquire(struct pf_trace *t);
+void pf_index_release(struct pf_trace *t);
 
 /* Drops one reference to @t. The last one finishes the trace: stops the drain,
  * writes what is buffered, and frees everything. Defined in pftrace.c. */
@@ -326,19 +333,30 @@ uint64_t pf_writers_events(struct pf_trace *t);
  * in pftrace.c. Continuous mode only. */
 void pf_drain_wake(struct pf_trace *t);
 
-/* Hot path lookup: the calling thread's writer, cached in TLS. Binds it on
- * first use. The cached trace is held by a reference, so it cannot be freed
- * and its address cannot be reused while the cache points at it. */
-struct pf_tls_cache {
+/* Per-thread writer table. One pf_tls per thread, for the whole process: each
+ * trace has an index, and the thread's slot at that index holds the trace and
+ * its writer. A slot is set only while the thread holds a reference to the
+ * trace, so the trace cannot finish, and its index cannot be reused, while the
+ * slot points at it. Overflow threads keep a slot with a NULL writer, so their
+ * miss is cached too. */
+#define PF_MAX_TRACES 8
+
+struct pf_tls_slot {
     struct pf_trace *trace;
     struct pf_writer *writer;
 };
-extern __thread struct pf_tls_cache pf_tls;
+
+struct pf_thread_state {
+    struct pf_tls_slot slots[PF_MAX_TRACES];
+};
+
+extern __thread struct pf_thread_state pf_tls;
 
 static inline struct pf_writer *pf_writer_for(struct pf_trace *t)
 {
-    if (pf_tls.trace == t)
-        return pf_tls.writer;
+    struct pf_tls_slot *s = &pf_tls.slots[t->index];
+    if (s->trace == t)
+        return s->writer;
     return pf_writer_bind(t);
 }
 

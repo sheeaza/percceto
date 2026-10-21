@@ -107,17 +107,14 @@ bitmap gains nothing in speed. Reverted.
 
 ## 7. Let a thread bind to more than one trace (low priority)
 
-A thread's binding (trace, writer) is one TLS slot, so a thread binds one trace
-at a time. Binding a second trace unbinds the first: its partial chunk is
-committed and its reference dropped, and the thread's later events go to the
-second trace only. The simple API keeps the thread's track uuid in one TLS slot
-too, so it has the same limit.
+Writers are done: `pf_tls` has one slot per open trace, indexed by the trace's
+index, so a thread holds a writer in every trace it emits to. Binding a second
+trace no longer releases the first. The cost is a cap of `PF_MAX_TRACES` (8)
+open traces. The simple API keeps the thread's track uuid in one TLS slot
+(`tl_slot` in `pftrace.c`), so the uuid is still for one trace only.
 
-Option: model the bindings as per-thread maps, a thread id to writer and a
-thread id to track uuid, so one thread holds a writer and a uuid in each trace
-it uses. The hot path must stay a TLS read and a compare. So the map would be a
-small per-thread cache in front of the table, touched only on bind and on
-thread exit. Measure with `bench_chunk` before and after.
+Option: give `tl_slot` the same per-trace indexing, so a thread has a uuid in
+each trace it uses. Measure with `bench_chunk` before and after.
 
 ## Notes
 

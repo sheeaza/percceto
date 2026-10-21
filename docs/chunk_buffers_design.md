@@ -28,7 +28,7 @@ sorts by timestamp on import.
 
     emit:
       ts = now()
-      w = writer for this trace (TLS cache; bound on first use)
+      w = this thread's writer for this trace (pf_tls slot by trace index; bound on first use)
       if w->used == chunk_slots: rotate (slow path, once per chunk)
       r = &w->cur->recs[w->used++]; fill the record
       w->cur->used = w->used   (release; publishes the record to a snapshot)
@@ -69,11 +69,16 @@ that count are final until the chunk is recycled, which needs the pool lock.
 
 ## Threads
 
-- A thread holds a reference to the trace it is bound to, from its first bind
-  until it unbinds. Unbinding commits the thread's partial chunk, then drops the
-  reference. A thread-exit destructor does this, so a thread that exits without
-  closing the trace still hands its records over. A thread binds one trace at a
-  time: binding another unbinds the first.
+- A thread holds a reference to each trace it is bound to, from its first emit
+  into that trace until it unbinds. A thread can be bound to several traces at
+  once: `pf_tls` has a slot per open trace, and each slot holds the trace and the
+  thread's writer in it. Unbinding commits the thread's partial chunk for that
+  trace, clears the slot, then drops the reference. One exit hook per thread
+  unbinds every slot, so a thread that exits without closing a trace still hands
+  its records over.
+- `pf_tls` is indexed by the trace's index, claimed at open. At most
+  `PF_MAX_TRACES` (8) traces can be open at once; open fails with `ENOSPC` past
+  that.
 - A thread past `max_threads` drops its events and counts them. It still holds a
   reference, so the trace stays open until it exits. A thread's slot is freed
   when it exits (after its partial chunk is committed), so a later thread can

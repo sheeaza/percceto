@@ -11,26 +11,52 @@
 
 #include "pftrace_internal.h"
 
-__thread struct pf_tls_cache pf_tls;
+__thread struct pf_thread_state pf_tls;
 
 static pthread_key_t g_exit_key;
 static pthread_once_t g_exit_key_once = PTHREAD_ONCE_INIT;
 
+/* Trace indices in use. Guarded by g_index_lock, taken only at open and finish. */
+static pthread_mutex_t g_index_lock = PTHREAD_MUTEX_INITIALIZER;
+static bool g_index_used[PF_MAX_TRACES];
+
 static void commit_locked(struct pf_trace *t, struct pf_writer *w);
 
-/* Gives back the calling thread's binding. The partial chunk is committed, so
- * its records reach the drain without waiting for the trace to finish. The
- * writer slot is then free for another thread to bind, and the reference is
- * dropped last, since it may be the one that finishes the trace.
- * Runs at thread exit, on rebind, and from pf_trace_close on the closing thread. */
-void pf_unbind_thread(void)
+int pf_index_acquire(struct pf_trace *t)
 {
-    struct pf_trace *t = pf_tls.trace;
-    struct pf_writer *w = pf_tls.writer;
-    pf_tls.trace = NULL;
-    pf_tls.writer = NULL;
-    if (!t)
-        return;
+    pthread_mutex_lock(&g_index_lock);
+    for (uint32_t i = 0; i < PF_MAX_TRACES; i++) {
+        if (!g_index_used[i]) {
+            g_index_used[i] = true;
+            t->index = i;
+            pthread_mutex_unlock(&g_index_lock);
+            return 0;
+        }
+    }
+    pthread_mutex_unlock(&g_index_lock);
+    errno = ENOSPC;
+    return -1;
+}
+
+void pf_index_release(struct pf_trace *t)
+{
+    pthread_mutex_lock(&g_index_lock);
+    g_index_used[t->index] = false;
+    pthread_mutex_unlock(&g_index_lock);
+}
+
+/* Gives back the calling thread's slot for @t. The partial chunk is committed,
+ * so its records reach the drain without waiting for the trace to finish. The
+ * slot is cleared first, so nothing can find it while it is being released, and
+ * the reference is dropped last, since it may be the one that finishes the trace.
+ * Runs on rebind-free paths: pf_trace_close on the closing thread, and the
+ * thread's exit. */
+static void unbind(struct pf_trace *t)
+{
+    struct pf_tls_slot *s = &pf_tls.slots[t->index];
+    struct pf_writer *w = s->writer;
+    s->trace = NULL;
+    s->writer = NULL;
 
     if (w) {
         struct pf_chunk *spare = NULL;
@@ -54,10 +80,21 @@ void pf_unbind_thread(void)
     pf_trace_unref(t);
 }
 
+void pf_unbind_thread(struct pf_trace *t)
+{
+    if (pf_tls.slots[t->index].trace == t)
+        unbind(t);
+}
+
+/* One exit hook per thread, for every trace it is bound to. */
 static void writer_exit(void *unused)
 {
     (void)unused;
-    pf_unbind_thread();
+    for (uint32_t i = 0; i < PF_MAX_TRACES; i++) {
+        struct pf_trace *t = pf_tls.slots[i].trace;
+        if (t)
+            unbind(t);
+    }
 }
 
 static void make_exit_key(void)
@@ -128,10 +165,12 @@ struct pf_writer *pf_writer_bind(struct pf_trace *t)
 {
     struct pf_writer *w = NULL;
 
-    if (pf_tls.trace)
-        pf_unbind_thread();
+    /* Registered on every bind, NULL writer included, so the exit hook runs
+     * and gives back the reference. */
+    pthread_once(&g_exit_key_once, make_exit_key);
+    pthread_setspecific(g_exit_key, &pf_tls);
 
-    /* Taken even when no slot is free, so the cache always holds a live trace. */
+    /* Taken even when no slot is free, so the slot always names a live trace. */
     atomic_fetch_add_explicit(&t->refs, 1, memory_order_relaxed);
 
     pthread_mutex_lock(&t->reg_lock);
@@ -153,15 +192,8 @@ struct pf_writer *pf_writer_bind(struct pf_trace *t)
         w->seq = 0;
     }
 
-    /* Set on every bind, NULL writer included, so the exit destructor runs and
-     * gives back the reference. */
-    pthread_once(&g_exit_key_once, make_exit_key);
-    pthread_setspecific(g_exit_key, &pf_tls);
-
-    /* Cached even when NULL, so a thread past max_threads does not take
-     * the registration lock on every event. */
-    pf_tls.trace = t;
-    pf_tls.writer = w;
+    pf_tls.slots[t->index].trace = t;
+    pf_tls.slots[t->index].writer = w;
     return w;
 }
 
@@ -244,10 +276,11 @@ uint64_t pf_writers_events(struct pf_trace *t)
 
 void pf_writer_flush_own_locked(struct pf_trace *t)
 {
-    if (pf_tls.trace != t || !pf_tls.writer)
+    struct pf_tls_slot *s = &pf_tls.slots[t->index];
+    if (s->trace != t || !s->writer)
         return;
 
-    struct pf_writer *w = pf_tls.writer;
+    struct pf_writer *w = s->writer;
     if (!w->cur || w->used == 0)
         return;
     commit_locked(t, w);

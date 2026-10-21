@@ -891,9 +891,16 @@ struct pf_trace *pf_trace_open(const struct pf_config *cfg)
         raw_write_header(t) != 0)
         goto destroy_sync;
 
-    if (t->cfg.mode == PF_MODE_CONTINUOUS &&
-        pthread_create(&t->drain_thread, NULL, drain_thread_fn, t) != 0)
+    /* Last failure point: once the index is claimed, nothing else can fail
+     * before the trace is returned. */
+    if (pf_index_acquire(t) != 0)
         goto destroy_sync;
+
+    if (t->cfg.mode == PF_MODE_CONTINUOUS &&
+        pthread_create(&t->drain_thread, NULL, drain_thread_fn, t) != 0) {
+        pf_index_release(t);
+        goto destroy_sync;
+    }
     return t;
 
     /* Only continuous mode gets this far with a file open, so the close of
@@ -980,6 +987,7 @@ static void trace_finish(struct pf_trace *t)
     pthread_mutex_destroy(&t->drain_lock);
     pthread_mutex_destroy(&t->track_lock);
     pthread_mutex_destroy(&t->out_lock);
+    pf_index_release(t);
     free(t);
 }
 
@@ -997,7 +1005,6 @@ void pf_trace_close(struct pf_trace *t)
     /* The calling thread gives up its own reference first. A main thread never
      * runs the exit destructor, so it must do this here or the trace never
      * finishes. */
-    if (pf_tls.trace == t)
-        pf_unbind_thread();
+    pf_unbind_thread(t);
     pf_trace_unref(t);
 }
