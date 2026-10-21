@@ -11,9 +11,7 @@
 
 #include "pftrace_internal.h"
 
-__thread struct pf_trace *pf_tls_trace;
-__thread uint64_t pf_tls_gen;
-__thread struct pf_writer *pf_tls_writer;
+__thread struct pf_tls_cache pf_tls;
 
 /* Source of trace generations. Only ever incremented, so a generation is
  * never reused, even when a trace address is. */
@@ -37,15 +35,15 @@ static void commit_locked(struct pf_trace *t, struct pf_writer *w);
 static void writer_exit(void *unused)
 {
     (void)unused;
-    struct pf_trace *t = pf_tls_trace;
-    struct pf_writer *w = pf_tls_writer;
+    struct pf_trace *t = pf_tls.trace;
+    struct pf_writer *w = pf_tls.writer;
     if (!t || !w)
         return;
 
     pthread_mutex_lock(&g_registry_lock);
     bool live = false;
     for (struct pf_trace *p = g_open_traces; p && !live; p = p->open_next)
-        live = p == t && t->gen == pf_tls_gen;
+        live = p == t && t->gen == pf_tls.gen;
     if (live) {
         pthread_mutex_lock(&t->pool_lock);
         if (w->cur && w->used > 0)
@@ -164,14 +162,14 @@ struct pf_writer *pf_writer_bind(struct pf_trace *t)
         w->used = t->chunk_slots;
         w->seq = 0;
         pthread_once(&g_exit_key_once, make_exit_key);
-        pthread_setspecific(g_exit_key, &pf_tls_writer);
+        pthread_setspecific(g_exit_key, &pf_tls.writer);
     }
 
     /* Cached even when NULL, so a thread past max_threads does not take
      * the registration lock on every event. */
-    pf_tls_trace = t;
-    pf_tls_gen = t->gen;
-    pf_tls_writer = w;
+    pf_tls.trace = t;
+    pf_tls.gen = t->gen;
+    pf_tls.writer = w;
     return w;
 }
 
@@ -275,10 +273,10 @@ uint64_t pf_writers_events(struct pf_trace *t)
 
 void pf_writer_flush_own_locked(struct pf_trace *t)
 {
-    if (pf_tls_trace != t || pf_tls_gen != t->gen || !pf_tls_writer)
+    if (pf_tls.trace != t || pf_tls.gen != t->gen || !pf_tls.writer)
         return;
 
-    struct pf_writer *w = pf_tls_writer;
+    struct pf_writer *w = pf_tls.writer;
     if (!w->cur || w->used == 0)
         return;
     commit_locked(t, w);

@@ -325,14 +325,17 @@ void pf_drain_wake(struct pf_trace *t);
 
 /* Hot path lookup: the calling thread's writer, cached in TLS. Binds it on
  * first use. */
-extern __thread struct pf_trace *pf_tls_trace;
-extern __thread uint64_t pf_tls_gen;
-extern __thread struct pf_writer *pf_tls_writer;
+struct pf_tls_cache {
+    struct pf_trace *trace;
+    uint64_t gen;
+    struct pf_writer *writer;
+};
+extern __thread struct pf_tls_cache pf_tls;
 
 static inline struct pf_writer *pf_writer_for(struct pf_trace *t)
 {
-    if (pf_tls_trace == t && pf_tls_gen == t->gen)
-        return pf_tls_writer;
+    if (pf_tls.trace == t && pf_tls.gen == t->gen)
+        return pf_tls.writer;
     return pf_writer_bind(t);
 }
 
