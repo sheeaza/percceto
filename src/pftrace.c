@@ -170,6 +170,10 @@ static int drain_locked(struct pf_trace *t)
 
     if (t->cfg.mode == PF_MODE_SNAPSHOT) {
         pthread_mutex_lock(&t->pool_lock);
+        /* TODO(TODO.md item 2): this commits only the calling thread's partial
+         * chunk. A live thread that dumps from another thread still has its
+         * unfilled chunk left out of the dump. Fix this, e.g. by stalling the
+         * dump until each live writer acknowledges a flush request. */
         pf_writer_flush_own_locked(t);
         int rc = write_chunks(t, t->committed_head);
         pthread_mutex_unlock(&t->pool_lock);
