@@ -41,6 +41,30 @@ fixed-slot layout and `chunk_slots` as a record count no longer hold. Encoding
 needs interned names and track ids available on the producer. Measure with
 `bench_chunk` before and after.
 
+Baseline, before the change, from `tests/bench_side.c` in continuous mode with
+the drain live. Each thread emits 2M begin/end pairs (4M events), `chunk_slots`
+4096, 2 GiB buffer, default watermark and drain interval. Single runs.
+
+Hardware: Intel Core i7-12700 (12th gen), 12 cores with 2 threads each, 20
+logical CPUs, one socket, one NUMA node. Max 4.9 GHz, min 800 MHz. Caches: 48
+KiB L1d per core, 1.25 MiB L2 per core, 25 MiB L3 shared. 31 GiB RAM. Linux
+5.15.0-198-generic.
+
+| threads | producer ns/event | consumer tail ns/event | dropped |
+|---:|---:|---:|---:|
+| 1 | 7.0 | 73.6 | 0 |
+| 4 | 7.9 | 69.9 | 0 |
+| 8 | 14.3 | 69.6 | 0 |
+
+The producer column is the caller's cost per event. The consumer tail is the
+drain's backlog after the producers stop, divided by events. It is a lower
+bound on the drain's per-event cost, since the drain also runs during the
+producer phase. At 12 threads the drain falls behind even with a 2 GiB buffer,
+dropping events at every chunk size tried (256 to 65536), so 12 threads is left
+out of the baseline. The drain's cost, about 70 ns/event, is what this change
+should move off the drain thread. The producer cost should rise, and the drop
+count at 8 and 12 threads is the number to watch.
+
 ## ~~4. Chunk boundaries may share a cache line~~ (done)
 
 ~~Done. `chunk_bytes` is rounded up to a multiple of 64, and the pool is

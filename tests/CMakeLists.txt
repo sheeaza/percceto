@@ -78,6 +78,10 @@ target_link_libraries(bench_args PRIVATE pftrace Threads::Threads)
 add_executable(bench_chunk bench_chunk.c)
 target_link_libraries(bench_chunk PRIVATE pftrace Threads::Threads)
 
+# Producer and consumer cost per event in continuous mode, with the drain live.
+add_executable(bench_side bench_side.c)
+target_link_libraries(bench_side PRIVATE pftrace Threads::Threads)
+
 # The stress test and the selected tests again, against the sanitized
 # libraries, so ASan and TSan see their accesses. Each sanitized build runs in
 # its own directory under PFTRACE_RUN_DIR, so its trace files do not collide
