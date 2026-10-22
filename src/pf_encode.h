@@ -92,8 +92,9 @@ size_t pf_pb_encode(uint8_t *dst, const struct pb_event *v);
  * current chunk. Read-only, so nothing changes until the record is placed. */
 int pf_pb_lookup(const struct pf_writer *w, const char *name, bool *define);
 
-/* Records that @slot now holds @name, defined in the current chunk. */
-void pf_pb_commit_name(struct pf_writer *w, int slot, const char *name);
+/* Records that @slot now holds @name, of length @nlen, defined in the current
+ * chunk. */
+void pf_pb_commit_name(struct pf_writer *w, int slot, const char *name, size_t nlen);
 
 /* Encodes one event of @w's thread into its chunk, rotating first if it does
  * not fit. A record bigger than a whole chunk, or one with no free chunk to

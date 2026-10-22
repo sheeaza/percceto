@@ -110,6 +110,7 @@ struct pf_chunk {
 
 struct pb_intern_slot {
     const char *key; /* NULL until first used */
+    size_t len; /* strlen(key), so a hit does not measure the name again */
     uint32_t epoch;
 };
 

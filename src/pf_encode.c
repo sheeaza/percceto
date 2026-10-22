@@ -192,9 +192,10 @@ int pf_pb_lookup(const struct pf_writer *w, const char *name, bool *define)
     return stale;
 }
 
-void pf_pb_commit_name(struct pf_writer *w, int slot, const char *name)
+void pf_pb_commit_name(struct pf_writer *w, int slot, const char *name, size_t nlen)
 {
     w->intern[slot].key = name;
+    w->intern[slot].len = nlen;
     w->intern[slot].epoch = w->epoch;
 }
 
@@ -208,15 +209,14 @@ void pf_pb_emit(struct pf_trace *t, struct pf_writer *w, uint64_t ts, uint32_t t
     char formatted[PF_FORMAT_NAME_MAX];
     bool dynamic = nargs > 0 && name != NULL && !has_value;
     const char *shown = has_value ? NULL : name;
-    size_t nlen = shown ? strlen(shown) : 0;
+    size_t nlen = 0;
     if (dynamic) {
         uint64_t arg[2] = { a0, a1 };
         uint32_t flags = (nargs > 0 && a0_dbl ? RF_ARG0_IS_DOUBLE : 0u) |
                          (nargs > 1 && a1_dbl ? RF_ARG1_IS_DOUBLE : 0u);
-        if (pf_format_name(formatted, sizeof formatted, name, flags, arg, nargs)) {
+        if (pf_format_name(formatted, sizeof formatted, name, flags, arg, nargs))
             shown = formatted;
-            nlen = strlen(formatted);
-        }
+        nlen = strlen(shown);
     }
 
     struct pb_event v;
@@ -236,8 +236,12 @@ void pf_pb_emit(struct pf_trace *t, struct pf_writer *w, uint64_t ts, uint32_t t
 
         slot = -1;
         define = false;
-        if (nlen && !dynamic)
+        if (!dynamic && shown && shown[0])
             slot = pf_pb_lookup(w, shown, &define);
+        /* A hit carries the name's length from when it was defined. */
+        if (!dynamic && shown)
+            nlen = (slot >= 0 && w->intern[slot].key == shown) ? w->intern[slot].len :
+                                                                 strlen(shown);
         v.use_iid = slot >= 0;
         v.define = v.use_iid && define;
         v.iid = (uint64_t)slot + 1;
@@ -258,7 +262,7 @@ void pf_pb_emit(struct pf_trace *t, struct pf_writer *w, uint64_t ts, uint32_t t
     }
 
     if (v.define)
-        pf_pb_commit_name(w, slot, shown);
+        pf_pb_commit_name(w, slot, shown, nlen);
     pf_pb_encode(w->cur->bytes + w->used, &v);
     w->used += (uint32_t)size;
 
