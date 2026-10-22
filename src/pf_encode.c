@@ -15,6 +15,33 @@ struct enc {
     size_t pos;
 };
 
+/* One event, as the encoder takes it. */
+struct pb_event {
+    clockid_t clk; /* trace clock, named on the packet's timestamp */
+    uint64_t ts;
+    uint32_t seq_id; /* trusted_packet_sequence_id: the writer's sequence */
+    uint32_t type; /* TYPE_* */
+    uint64_t track; /* track_uuid */
+
+    /* The name. A name the writer has interned is sent as iid, and its
+     * definition rides in this packet when @define is set. Otherwise the
+     * characters go inline, which is how formatted names and names the cache
+     * cannot hold are sent. */
+    bool use_iid;
+    bool define;
+    uint64_t iid;
+    const char *name;
+    size_t nlen;
+
+    bool has_value; /* counters: the value replaces the name */
+    bool value_is_double;
+    uint64_t value;
+
+    /* Body lengths, set by pf_pb_size: the TrackEvent and the Trace.packet. */
+    size_t event_len;
+    size_t body_len;
+};
+
 static void e_byte(struct enc *e, uint8_t b)
 {
     e->base[e->pos++] = b;
@@ -149,7 +176,10 @@ static void enc_packet_body(struct enc *e, const struct pb_event *v)
     enc_event_body(e, v);
 }
 
-size_t pf_pb_size(struct pb_event *v)
+/* Sizes @v: sets its body lengths and returns the length of @v encoded as one
+ * Trace.packet, length prefix included, without encoding it. The encoder reuses
+ * the lengths, so each is computed once per event. */
+static size_t pf_pb_size(struct pb_event *v)
 {
     v->event_len = event_body_len(v);
     v->body_len = vfield_len(FN_PACKET_TIMESTAMP, v->ts) +
@@ -163,7 +193,9 @@ size_t pf_pb_size(struct pb_event *v)
     return msg_len(FN_TRACE_PACKET, v->body_len);
 }
 
-size_t pf_pb_encode(uint8_t *dst, const struct pb_event *v)
+/* Encodes @v, sized by pf_pb_size, as one Trace.packet into @dst, which must hold
+ * the length pf_pb_size returned. Returns the length. */
+static size_t pf_pb_encode(uint8_t *dst, const struct pb_event *v)
 {
     struct enc e = { dst, 0 };
     e_tag(&e, FN_TRACE_PACKET, 2);
@@ -176,7 +208,10 @@ size_t pf_pb_encode(uint8_t *dst, const struct pb_event *v)
  * slot holding it in an older epoch is redefined here. A new name takes the
  * first slot whose definition is from an older epoch, since a slot defined in
  * this chunk may already be named by a record above it. */
-int pf_pb_lookup(const struct pf_writer *w, const char *name, bool *define)
+/* Looks up @name in @w's cache. Returns its slot, or -1 when the cache has no
+ * slot free for it. Sets *define when the name's definition must go into the
+ * current chunk. Read-only, so nothing changes until the record is placed. */
+static int pf_pb_lookup(const struct pf_writer *w, const char *name, bool *define)
 {
     int stale = -1;
     for (int i = 0; i < PF_PB_INTERN_SLOTS; i++) {
@@ -192,7 +227,9 @@ int pf_pb_lookup(const struct pf_writer *w, const char *name, bool *define)
     return stale;
 }
 
-void pf_pb_commit_name(struct pf_writer *w, int slot, const char *name, size_t nlen)
+/* Records that @slot now holds @name, of length @nlen, defined in the current
+ * chunk. */
+static void pf_pb_commit_name(struct pf_writer *w, int slot, const char *name, size_t nlen)
 {
     w->intern[slot].key = name;
     w->intern[slot].len = nlen;

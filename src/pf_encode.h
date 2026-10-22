@@ -51,51 +51,6 @@ static inline uint32_t builtin_clock(clockid_t clk)
     return BUILTIN_CLOCK_BOOTTIME;
 }
 
-/* One event, as the encoder takes it. */
-struct pb_event {
-    clockid_t clk; /* trace clock, named on the packet's timestamp */
-    uint64_t ts;
-    uint32_t seq_id; /* trusted_packet_sequence_id: the writer's sequence */
-    uint32_t type; /* TYPE_* */
-    uint64_t track; /* track_uuid */
-
-    /* The name. A name the writer has interned is sent as iid, and its
-     * definition rides in this packet when @define is set. Otherwise the
-     * characters go inline, which is how formatted names and names the cache
-     * cannot hold are sent. */
-    bool use_iid;
-    bool define;
-    uint64_t iid;
-    const char *name;
-    size_t nlen;
-
-    bool has_value; /* counters: the value replaces the name */
-    bool value_is_double;
-    uint64_t value;
-
-    /* Body lengths, set by pf_pb_size: the TrackEvent and the Trace.packet. */
-    size_t event_len;
-    size_t body_len;
-};
-
-/* Sizes @v: sets its body lengths and returns the length of @v encoded as one
- * Trace.packet, length prefix included, without encoding it. The encoder reuses
- * the lengths, so each is computed once per event. */
-size_t pf_pb_size(struct pb_event *v);
-
-/* Encodes @v, sized by pf_pb_size, as one Trace.packet into @dst, which must hold
- * the length pf_pb_size returned. Returns the length. */
-size_t pf_pb_encode(uint8_t *dst, const struct pb_event *v);
-
-/* Looks up @name in @w's cache. Returns its slot, or -1 when the cache has no
- * slot free for it. Sets *define when the name's definition must go into the
- * current chunk. Read-only, so nothing changes until the record is placed. */
-int pf_pb_lookup(const struct pf_writer *w, const char *name, bool *define);
-
-/* Records that @slot now holds @name, of length @nlen, defined in the current
- * chunk. */
-void pf_pb_commit_name(struct pf_writer *w, int slot, const char *name, size_t nlen);
-
 /* Encodes one event of @w's thread into its chunk, rotating first if it does
  * not fit. A record bigger than a whole chunk, or one with no free chunk to
  * go to, is dropped and counted. The caller holds nothing; the timestamp is
