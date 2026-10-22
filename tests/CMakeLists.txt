@@ -30,6 +30,7 @@ add_test(NAME packet_clock COMMAND test_packet_clock WORKING_DIRECTORY ${PFTRACE
 
 # Chunk pool sizing, writer limits, and the drop accounting.
 add_executable(test_chunk test_chunk.c)
+target_include_directories(test_chunk PRIVATE ${PROJECT_SOURCE_DIR}/src)
 target_link_libraries(test_chunk PRIVATE pftrace Threads::Threads)
 add_test(NAME chunk COMMAND test_chunk WORKING_DIRECTORY ${PFTRACE_RUN_DIR})
 

@@ -283,6 +283,7 @@ struct pf_trace {
 
 /* Allocates the pool and writer table. The pool is the trace's only sizeable
  * allocation. Returns 0, or -1 with errno set. */
+size_t pf_chunk_bytes(uint32_t slots);
 int pf_pool_init(struct pf_trace *t);
 void pf_pool_destroy(struct pf_trace *t);
 

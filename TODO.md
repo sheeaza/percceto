@@ -56,8 +56,11 @@ The 8-thread gain is about 2.7 ns/event. The 1-thread runs are within noise.
 All 46 ctest tests pass.~~
 
 ~~Trade-off: each chunk is padded to a line, so the pool holds fewer chunks in
-the same `buffer_bytes`. At the 256-slot default the padding is small, and the
-chunk count is still well above the two that `pf_pool_init` requires.~~
+the same `buffer_bytes`. At the 256-slot default the padding is small. For small
+buffers it is not: a 4-slot chunk is 216 bytes and pads to 256, so a buffer sized
+for two unpadded chunks holds only one, and `pf_pool_init` fails with `EINVAL`.
+`test_chunk` was sized from the unpadded size and failed on this; its
+`CHUNK_BYTES` now rounds up the same way.~~
 
 ## ~~5. Return a writer slot when its thread exits~~ (done)
 

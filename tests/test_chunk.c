@@ -21,6 +21,7 @@
 #include <unistd.h>
 
 #include "pftrace.h"
+#include "pftrace_internal.h"
 
 static int failures;
 
@@ -35,7 +36,8 @@ static int failures;
     } while (0)
 
 /* Chunk bytes for a given slot count: header plus records. Mirrors pf_pool_init. */
-#define CHUNK_BYTES(slots) (24u + (slots) * 48u)
+/* The library's own chunk size, so the test follows any change to padding. */
+#define CHUNK_BYTES(slots) pf_chunk_bytes(slots)
 
 static void setup(struct pf_config *cfg, enum pf_mode mode, const char *dir)
 {

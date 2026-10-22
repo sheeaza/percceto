@@ -103,12 +103,17 @@ static void make_exit_key(void)
     pthread_key_create(&g_exit_key, writer_exit);
 }
 
+/* A chunk's size, padded to a cache line so no two chunks share one. */
+size_t pf_chunk_bytes(uint32_t slots)
+{
+    size_t bytes = sizeof(struct pf_chunk) + slots * sizeof(struct pf_rec);
+    return (bytes + 63) & ~(size_t)63;
+}
+
 int pf_pool_init(struct pf_trace *t)
 {
     uint32_t slots = (uint32_t)t->cfg.chunk_slots;
-    /* Round up to a cache line, so no two chunks share one. */
-    size_t chunk_bytes = sizeof(struct pf_chunk) + slots * sizeof(struct pf_rec);
-    chunk_bytes = (chunk_bytes + 63) & ~(size_t)63;
+    size_t chunk_bytes = pf_chunk_bytes(slots);
     size_t count = t->cfg.buffer_bytes / chunk_bytes;
 
     /* A writer needs a spare chunk while its full one is committed. */
