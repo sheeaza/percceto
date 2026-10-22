@@ -96,3 +96,10 @@ Declare a function or type in a header only when a file other than its own
 - Macros and inline functions that other files use stay in the header.
 - Rebuild and run the tests after moving a symbol. A removed prototype that
   another file still needs fails at compile or link time.
+
+## Self-contained headers
+
+Every header must compile on its own. A `.c` file that contains only
+`#include "header.h"` must compile cleanly with the project's flags, including
+`-Werror`. The header includes everything it uses, so no includer has to add
+headers first.

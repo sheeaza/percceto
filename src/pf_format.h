@@ -1,6 +1,7 @@
 #ifndef PF_FORMAT_H
 #define PF_FORMAT_H
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
