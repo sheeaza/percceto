@@ -41,6 +41,20 @@ fixed-slot layout and `chunk_slots` as a record count no longer hold. Encoding
 needs interned names and track ids available on the producer. Measure with
 `bench_chunk` before and after.
 
+Decided: a record that does not fit the rest of its chunk moves to the next
+chunk. It is not split across two chunks. Perfetto's SDK does split, with
+continuation flags in the chunk header (`kLastPacketContinuesOnNextChunk`,
+`kFirstPacketContinuesFromPrevChunk`) and a reader that joins the pieces by
+writer id and chunk id. Splitting would need the drain to hold partial records
+and join them, and to patch nested size fields (`kChunkNeedsPatching`). Not
+splitting keeps every chunk complete on its own, so the drain only copies bytes.
+The cost is the unused tail of each chunk.
+
+Interned names are per writer, as in Perfetto. The dictionary lives in the
+writer's incremental state (`TrackEventIncrementalState`, packet-sequence
+scoped), and is reset with `SEQ_INCREMENTAL_STATE_CLEARED`. Each thread interns
+its own names, so the producer needs no shared table on the hot path.
+
 Baseline, before the change, from `tests/bench_side.c` in continuous mode with
 the drain live. Each thread emits 2M begin/end pairs (4M events), `chunk_slots`
 4096, 2 GiB buffer, default watermark and drain interval. Single runs.

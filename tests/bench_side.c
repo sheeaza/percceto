@@ -18,6 +18,16 @@
  * time. Drops are reported, since a drain that cannot keep up shows up there
  * first.
  *
+ * Two workloads run at each thread count:
+ *
+ *  - simple: one name, begin and end, nothing else. The floor for the cost of
+ *    a record.
+ *  - realistic: a mix closer to a real program. Each iteration begins a slice
+ *    from a set of 16 reused names, ends it, and every 8th, 16th and 32nd
+ *    iteration adds an instant with an argument, a plain instant, and a
+ *    counter sample. About 1.4 records per iteration, so events per thread are
+ *    counted from the emits, not assumed.
+ *
  * The library reads the clock on every event, so this program stubs it with a
  * counter, as bench_chunk does. The timing loops use a direct syscall.
  */
@@ -57,10 +67,24 @@ static uint64_t now_ns(void)
     return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
 }
 
+/* Names for the realistic workload. String literals are static, so the
+ * library may keep the pointers, as pf_slice_begin_impl requires. */
+static const char *const kNames[16] = {
+    "parse", "decode", "lookup", "encode", "validate", "fetch", "merge", "sort",
+    "hash",  "copy",   "filter", "reduce", "index",    "flush", "wait",  "notify",
+};
+
+enum workload {
+    SIMPLE,
+    REALISTIC
+};
+
 struct worker {
     struct pf_trace *t;
     uint64_t trk;
     uint64_t pairs;
+    enum workload load;
+    uint64_t events;
     uint64_t t0, t1;
 };
 
@@ -72,8 +96,28 @@ static void *emit_loop(void *arg)
     pthread_barrier_wait(&go);
     w->t0 = now_ns();
     for (uint64_t i = 0; i < w->pairs; i++) {
-        pf_slice_begin(w->t, w->trk, "compute");
+        if (w->load == SIMPLE) {
+            pf_slice_begin(w->t, w->trk, "compute");
+            pf_slice_end(w->t, w->trk);
+            w->events += 2;
+            continue;
+        }
+        pf_slice_begin_impl(w->t, w->trk, kNames[i & 15]);
+        w->events += 1;
+        if ((i & 7) == 0) {
+            pf_instant_event_args(w->t, w->trk, "job %d took %f", (int)(i & 255), 2.5);
+            w->events += 1;
+        }
+        if ((i & 15) == 0) {
+            pf_instant_event(w->t, w->trk, "tick");
+            w->events += 1;
+        }
+        if ((i & 31) == 0) {
+            pf_counter_set_int(w->t, w->trk, (int64_t)i);
+            w->events += 1;
+        }
         pf_slice_end(w->t, w->trk);
+        w->events += 1;
     }
     w->t1 = now_ns();
     return NULL;
@@ -81,7 +125,7 @@ static void *emit_loop(void *arg)
 
 /* Runs @threads producers in continuous mode with @slots records per chunk,
  * then prints one line with both sides. */
-static void run(unsigned threads, size_t slots, uint64_t pairs)
+static void run(unsigned threads, size_t slots, uint64_t pairs, enum workload load)
 {
     dir_reset(DIR);
 
@@ -107,6 +151,8 @@ static void run(unsigned threads, size_t slots, uint64_t pairs)
         w[i].t = t;
         w[i].trk = pf_track_thread(t, 1, (int32_t)i + 1, NULL);
         w[i].pairs = pairs;
+        w[i].load = load;
+        w[i].events = 0;
         pthread_create(&th[i], NULL, emit_loop, &w[i]);
     }
     pthread_barrier_wait(&go);
@@ -121,16 +167,19 @@ static void run(unsigned threads, size_t slots, uint64_t pairs)
     pf_trace_close(t);
     uint64_t closed = now_ns();
 
-    uint64_t emitted = (uint64_t)threads * pairs * 2;
+    uint64_t emitted = 0;
     double producer_ns = 0;
-    for (unsigned i = 0; i < threads; i++)
-        producer_ns += (double)(w[i].t1 - w[i].t0) / (2.0 * pairs);
+    for (unsigned i = 0; i < threads; i++) {
+        emitted += w[i].events;
+        producer_ns += (double)(w[i].t1 - w[i].t0) / (double)w[i].events;
+    }
     producer_ns /= threads;
     double consumer_ns = (double)(closed - producers_done) / emitted;
 
-    printf("threads %u, chunk_slots %5zu: producer %6.1f ns/event, "
+    printf("%-9s threads %2u, chunk_slots %5zu: producer %6.1f ns/event, "
            "consumer tail %6.1f ns/event, %" PRIu64 " events, %" PRIu64 " dropped\n",
-           threads, slots, producer_ns, consumer_ns, emitted, s.dropped);
+           load == SIMPLE ? "simple" : "realistic", threads, slots, producer_ns, consumer_ns,
+           emitted, s.dropped);
     dir_reset(DIR);
 }
 
@@ -138,12 +187,14 @@ int main(void)
 {
     printf("cores online: %ld\n", sysconf(_SC_NPROCESSORS_ONLN));
 
-    printf("\nContinuous mode, %u events per thread:\n", EVENTS_PER_THREAD * 2);
+    printf("\nContinuous mode, %u iterations per thread:\n", EVENTS_PER_THREAD);
     static const unsigned threads[] = { 1, 4, 8 };
     static const size_t slots[] = { 4096 };
+    static const enum workload loads[] = { SIMPLE, REALISTIC };
     for (unsigned s = 0; s < sizeof(slots) / sizeof(slots[0]); s++)
-        for (unsigned i = 0; i < sizeof(threads) / sizeof(threads[0]); i++)
-            run(threads[i], slots[s], EVENTS_PER_THREAD);
+        for (unsigned l = 0; l < sizeof(loads) / sizeof(loads[0]); l++)
+            for (unsigned i = 0; i < sizeof(threads) / sizeof(threads[0]); i++)
+                run(threads[i], slots[s], EVENTS_PER_THREAD, loads[l]);
 
     pthread_barrier_destroy(&go);
     return 0;
