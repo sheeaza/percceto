@@ -6,8 +6,8 @@
 #include <stdint.h>
 
 /* Minimal, growable protobuf byte-buffer writer. No schema knowledge lives
- * here — just wire-format primitives (varint / tag / length-delimited /
- * fixed64 fields, and nested submessages). */
+ * here — just wire-format primitives (varint / tag / length-delimited
+ * fields, and nested submessages). */
 
 struct pb_buf {
     uint8_t *data;
@@ -73,14 +73,6 @@ void pb_put_tag(struct pb_buf *b, uint32_t field_no, unsigned wire_type);
 void pb_put_varint_field(struct pb_buf *b, uint32_t field_no, uint64_t v);
 
 /**
- * pb_put_bool_field() - Append a tag followed by a bool payload.
- * @b: Destination buffer.
- * @field_no: Field number.
- * @v: Value to encode.
- */
-void pb_put_bool_field(struct pb_buf *b, uint32_t field_no, bool v);
-
-/**
  * pb_put_string_field() - Append a tag followed by a length-delimited
  *      string payload.
  * @b: Destination buffer.
@@ -89,22 +81,6 @@ void pb_put_bool_field(struct pb_buf *b, uint32_t field_no, bool v);
  * @len: Number of bytes in @s.
  */
 void pb_put_string_field(struct pb_buf *b, uint32_t field_no, const char *s, size_t len);
-
-/**
- * pb_put_fixed64_field() - Append a tag followed by a raw 64-bit payload.
- * @b: Destination buffer.
- * @field_no: Field number.
- * @raw_bits: Bits to encode, written little-endian.
- */
-void pb_put_fixed64_field(struct pb_buf *b, uint32_t field_no, uint64_t raw_bits);
-
-/**
- * pb_put_double_field() - Append a tag followed by a double payload.
- * @b: Destination buffer.
- * @field_no: Field number.
- * @v: Value to encode.
- */
-void pb_put_double_field(struct pb_buf *b, uint32_t field_no, double v);
 
 /**
  * pb_put_submessage_field() - Embed a submessage's bytes as a
