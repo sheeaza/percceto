@@ -82,6 +82,11 @@ target_link_libraries(bench_chunk PRIVATE pftrace Threads::Threads)
 add_executable(bench_side bench_side.c)
 target_link_libraries(bench_side PRIVATE pftrace Threads::Threads)
 
+# Prototype for TODO item 3: protobuf encoding cost on the producer.
+add_executable(bench_encode bench_encode.c)
+target_link_libraries(bench_encode PRIVATE pftrace)
+target_include_directories(bench_encode PRIVATE ${PROJECT_SOURCE_DIR}/src)
+
 # The stress test and the selected tests again, against the sanitized
 # libraries, so ASan and TSan see their accesses. Each sanitized build runs in
 # its own directory under PFTRACE_RUN_DIR, so its trace files do not collide

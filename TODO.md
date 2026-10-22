@@ -55,6 +55,61 @@ writer's incremental state (`TrackEventIncrementalState`, packet-sequence
 scoped), and is reset with `SEQ_INCREMENTAL_STATE_CLEARED`. Each thread interns
 its own names, so the producer needs no shared table on the hot path.
 
+Proposal:
+
+1. Chunk layout. Chunks become byte buffers. The header records used bytes
+   instead of a record count, and `chunk_slots` becomes a byte capacity or is
+   dropped.
+2. Producer encoding. Each event is encoded into the thread's current chunk. If
+   the record does not fit, the chunk is committed and the record starts a new
+   one.
+3. Producer-side intern cache. Each writer keeps its own name and track id map.
+   A first use emits the definition into the same chunk, ahead of the record
+   that uses it.
+4. Drain. Copies committed chunk bytes into the output. It no longer calls the
+   encoder.
+5. Snapshot dumps and close. The partial-chunk walk (item 2) reads a published
+   byte offset instead of a record count.
+6. Raw format stays on the current path. Producer encoding applies to protobuf
+   only.
+
+Expected: chunk storage falls from 48 to about 25 bytes per event on the simple
+workload, about 1.9 times as many events per pool, so drops at 8 and 12 threads
+should fall. The drain's per-event cost should drop well below 70 ns. The
+producer cost rises by the encoding time per event, and that rise is the main
+open question.
+
+Steps:
+
+1. Prototype: encode a fixed record on the producer and measure with
+   `bench_chunk` and `bench_side`. This checks whether the producer can absorb
+   the encoding cost.
+2. Implement the byte-chunk layout, the intern cache, and the drain copy.
+3. Update snapshot dump and close to use byte offsets.
+4. Measure both workloads at 1, 4, 8 threads against the baseline below. Success
+   means a lower consumer tail, and fewer or no drops at 8 threads.
+5. Run the full ctest suite and the sanitized builds.
+
+Step 1 result, from `tests/bench_encode.c` on one thread, 20M events, 4096
+records per chunk:
+
+| encoder | ns/event | bytes/event |
+|---|---:|---:|
+| plain 48-byte store (today's producer) | 1.4 | 48.0 |
+| encoded, copied through scratch buffers | 51.0 | 19.2 |
+| encoded, written direct into the chunk | 3.8 | 27.2 |
+
+Copying through scratch buffers costs too much: each submessage is built in a
+buffer and then copied into its parent, and the packet is copied into the chunk.
+Writing direct avoids the copies. Each length is reserved as a 5-byte padded
+varint and filled in when the body is written, which is valid protobuf. The
+padding is why it takes 27.2 bytes against 19.2 minimal, and chunk storage still
+falls from 48 to 27 bytes per event.
+
+The 3.8 ns is a floor. The real encoder adds a fits-in-chunk check per record
+and a per-writer intern lookup on each event, and the realistic mix adds argument
+instants. None of those are in the bench yet.
+
 Baseline, before the change, from `tests/bench_side.c` in continuous mode with
 the drain live. Each thread emits 2M begin/end pairs (4M events), `chunk_slots`
 4096, 2 GiB buffer, default watermark and drain interval. Single runs.
