@@ -173,3 +173,30 @@ set_target_properties(pftrace_hpp_compile PROPERTIES
 target_include_directories(pftrace_hpp_compile PRIVATE
   ${PROJECT_SOURCE_DIR}/include
 )
+
+# Each header must compile on its own (see CODING_STYLE.md). For every header
+# under include/ and src/, generate a translation unit that includes only that
+# header, and compile it as an object-only build with the same warnings as the
+# library. They are part of the default build, so a header that stops compiling
+# on its own fails the build itself, like pftrace_hpp_compile.
+set(PFTRACE_HEADER_CHECK_DIR ${CMAKE_CURRENT_BINARY_DIR}/header_check)
+file(MAKE_DIRECTORY ${PFTRACE_HEADER_CHECK_DIR})
+file(GLOB PFTRACE_PUBLIC_HEADERS CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/include/*.h)
+file(GLOB PFTRACE_INTERNAL_HEADERS CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/src/*.h)
+
+foreach(header IN LISTS PFTRACE_PUBLIC_HEADERS PFTRACE_INTERNAL_HEADERS)
+  get_filename_component(stem ${header} NAME_WE)
+  get_filename_component(dir ${header} DIRECTORY)
+  get_filename_component(dir_name ${dir} NAME)
+  set(target header_check_${dir_name}_${stem})
+  set(unit ${PFTRACE_HEADER_CHECK_DIR}/${dir_name}_${stem}.c)
+  file(WRITE ${unit} "#include \"${header}\"\n")
+
+  add_library(${target} OBJECT ${unit})
+  target_include_directories(${target} PRIVATE
+    ${PROJECT_SOURCE_DIR}/include
+    ${PROJECT_SOURCE_DIR}/src
+  )
+  target_compile_definitions(${target} PRIVATE _DEFAULT_SOURCE)
+  target_compile_options(${target} PRIVATE -Wall -Wextra -Werror)
+endforeach()
