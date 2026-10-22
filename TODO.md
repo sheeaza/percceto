@@ -174,6 +174,30 @@ What this shows:
 - Drops at 12 threads were not re-measured. The drain now costs less, so this is
   the first place to look for a change.
 
+Repeat with the name-length cache (`d7da722`), same bench and hardware. Two runs
+of threads 1, 4, 8 and one run of 12 threads, each with 0 dropped. The producer
+column is the mean of the two runs for 1, 4 and 8 threads; the spread between
+runs was 10 to 20 percent.
+
+| workload | threads | run 1 | run 2 | mean producer ns/event | consumer tail ns/event (run 1, run 2) |
+|---|---:|---:|---:|---:|---:|
+| simple | 1 | 24.9 | 24.8 | 24.9 | 15.4, 10.6 |
+| simple | 4 | 39.5 | 47.7 | 43.6 | 4.1, 2.7 |
+| simple | 8 | 49.3 | 43.7 | 46.5 | 2.2, 1.5 |
+| realistic | 1 | 39.0 | 47.5 | 43.3 | 16.0, 10.0 |
+| realistic | 4 | 57.9 | 69.2 | 63.6 | 4.0, 2.5 |
+| realistic | 8 | 63.7 | 61.3 | 62.5 | 2.0, 1.2 |
+| simple | 12 | 43.9 | | | 1.7 |
+| realistic | 12 | 77.5 | | | 0.9 |
+
+Removing the per-event `strlen` is within the run-to-run noise on these numbers.
+The realistic 4 and 8 thread means are lower than the table above, but the
+realistic 1 thread mean is higher, so no producer gain is claimed.
+
+At 12 threads there are no drops in either workload, so the drop note above no
+longer holds for the current code. It was one run each, with the 12-thread row
+built as a temporary variant of `tests/bench_side.c` that runs only 12 threads.
+
 ## ~~4. Chunk boundaries may share a cache line~~ (done)
 
 ~~Done. `chunk_bytes` is rounded up to a multiple of 64, and the pool is
