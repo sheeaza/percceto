@@ -134,6 +134,24 @@ out of the baseline. The drain's cost, about 70 ns/event, is what this change
 should move off the drain thread. The producer cost should rise, and the drop
 count at 8 and 12 threads is the number to watch.
 
+Second baseline, on a different machine: Intel Core i5-12500H, 8 logical CPUs,
+one thread per core, 144 MiB L3, kernel 6.18.52. Built outside CMake with
+`cc -O2 -g -fno-omit-frame-pointer` from a copy of `tests/bench_side.c` in
+`/tmp`, one workload per binary. Five runs per workload, producer ns/event per
+emitting thread:
+
+| workload | threads | mean | min | max |
+|---|---:|---:|---:|---:|
+| simple | 1 | 17.0 | 16.8 | 17.3 |
+| simple | 4 | 31.1 | 24.1 | 40.9 |
+| simple | 8 | 44.6 | 43.7 | 47.3 |
+| realistic | 1 | 26.9 | 25.7 | 27.9 |
+| realistic | 4 | 55.4 | 46.3 | 64.4 |
+| realistic | 8 | 71.0 | 63.3 | 76.0 |
+
+Run-to-run spread is small at 1 thread and wide at 4 and 8, so compare before and
+after with interleaved runs in one session.
+
 Status: steps 1 to 5 are done for protobuf. Raw keeps the record walk, since it
 is fixed-size. Snapshot and close use the same drain, which copies each chunk up
 to its published byte count.
