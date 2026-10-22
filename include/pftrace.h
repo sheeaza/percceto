@@ -114,6 +114,16 @@ struct pf_config {
 /**
  * struct pf_stats - Cumulative counters, for checking a trace is honest.
  * @events: Records committed to chunks. Excludes the tail still in each thread's chunk.
+ * @chunk_bytes: Size of one chunk in bytes, after padding to a cache line.
+ * @chunk_count: Chunks in the pool, fixed at open.
+ * @pool_bytes: Bytes allocated for the chunk pool, %chunk_bytes times
+ *      %chunk_count. This is the trace's main memory cost.
+ * @meta_bytes: Bytes allocated for the writer table and the track table,
+ *      both sized at open. The staging buffers are not included: they grow
+ *      with use.
+ * @chunk_slots: Event records per chunk, from &pf_config.chunk_slots.
+ * @slot_bytes: Size of one event record in bytes. A chunk holds
+ *      %chunk_slots of them, plus its header and padding.
  * @bytes_written: Bytes handed to write() across all dumps.
  * @dropped: Events discarded rather than recorded, which means the output
  *      file has a gap. Never counts the events %PF_MODE_SNAPSHOT
@@ -128,6 +138,12 @@ struct pf_stats {
     uint64_t events;
     uint64_t bytes_written;
     uint64_t dropped;
+    uint64_t chunk_bytes;
+    uint64_t chunk_count;
+    uint64_t pool_bytes;
+    uint64_t meta_bytes;
+    uint64_t chunk_slots;
+    uint64_t slot_bytes;
 };
 
 /**

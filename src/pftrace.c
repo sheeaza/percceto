@@ -953,6 +953,14 @@ void pf_trace_stats(const struct pf_trace *t, struct pf_stats *out)
     out->events = pf_writers_events(m);
     out->dropped = atomic_load_explicit(&m->dropped, memory_order_relaxed);
     out->bytes_written = atomic_load_explicit(&m->bytes_written, memory_order_relaxed);
+    /* Fixed at open, so no lock is needed to read them. */
+    out->chunk_bytes = m->chunk_bytes;
+    out->chunk_slots = m->chunk_slots;
+    out->slot_bytes = sizeof(struct pf_rec);
+    out->chunk_count = m->chunk_count;
+    out->pool_bytes = (uint64_t)m->chunk_bytes * m->chunk_count;
+    out->meta_bytes =
+        m->cfg.max_threads * sizeof(*m->writers) + m->cfg.max_tracks * sizeof(*m->tracks);
 }
 
 /* Runs once, from the last reference. Nothing can emit into the trace now: a
