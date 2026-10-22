@@ -83,3 +83,16 @@ release_a:
     errno = ENOMEM;
     return -1;
 ```
+
+## File-local symbols
+
+Declare a function or type in a header only when a file other than its own
+`.c` uses it. Everything else stays file-local.
+
+- Mark helpers that only the `.c` calls as `static`, and define them before
+  their first use so no forward declaration is needed.
+- Move a struct used only inside the `.c` out of the header and into the `.c`.
+- Remove the matching prototypes from the header when you make a symbol static.
+- Macros and inline functions that other files use stay in the header.
+- Rebuild and run the tests after moving a symbol. A removed prototype that
+  another file still needs fails at compile or link time.
