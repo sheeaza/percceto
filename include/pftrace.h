@@ -44,7 +44,8 @@ enum pf_mode {
 
 /**
  * enum pf_format - What the output file contains.
- * @PF_FORMAT_PROTOBUF: Perfetto protobuf, encoded by the drain thread. The
+ * @PF_FORMAT_PROTOBUF: Perfetto protobuf. Each event is encoded into its
+ *      thread's chunk when it is emitted, so the drain only copies bytes. The
  *      file opens directly in the Perfetto UI.
  * @PF_FORMAT_RAW: Fixed-size records plus name and track sidecars,
  *      copied with little encoding work. Converted to protobuf offline by
@@ -66,12 +67,15 @@ enum pf_format {
  *      is extended rather than truncated. Snapshot: must be %NULL, since
  *      each pf_trace_dump() names its own file.
  * @buffer_bytes: Total in-RAM buffering. Divided into chunks of
- *      @chunk_slots records each; the count is rounded down. Must hold at
- *      least two chunks. 0 selects 8 MiB. This is the only sizeable
- *      allocation the library makes, and it happens once, at open.
- * @chunk_slots: Records per chunk. A thread fills one chunk at a time and
- *      hands it over when it is full, so this sets how often a thread takes
- *      shared state. 0 is rejected at open. pf_config_init() selects 256.
+ *      @chunk_slots records' worth of bytes each; the count is rounded down.
+ *      Must hold at least two chunks. 0 selects 8 MiB. This is the only
+ *      sizeable allocation the library makes, and it happens once, at open.
+ * @chunk_slots: Size of a chunk, in records. A chunk holds this many
+ *      fixed-size records in raw format, and this many times 48 bytes of
+ *      encoded events in protobuf, where an event takes fewer bytes, so more
+ *      events fit. A thread fills one chunk at a time and hands it over when
+ *      it is full, so this sets how often a thread takes shared state. 0 is
+ *      rejected at open. pf_config_init() selects 256.
  * @max_threads: Threads that may be bound to this trace at once. A thread
  *      past the limit drops its events and counts them. A thread's slot is
  *      freed when it exits, so later threads can bind it. 0 is rejected at
@@ -122,8 +126,9 @@ struct pf_config {
  *      both sized at open. The staging buffers are not included: they grow
  *      with use.
  * @chunk_slots: Event records per chunk, from &pf_config.chunk_slots.
- * @slot_bytes: Size of one event record in bytes. A chunk holds
- *      %chunk_slots of them, plus its header and padding.
+ * @slot_bytes: Size of one raw event record in bytes. A protobuf event is
+ *      variable length, so its size is not fixed; a chunk holds %chunk_slots
+ *      times this many bytes of them, plus its header and padding.
  * @bytes_written: Bytes handed to write() across all dumps.
  * @dropped: Events discarded rather than recorded, which means the output
  *      file has a gap. Never counts the events %PF_MODE_SNAPSHOT
@@ -321,7 +326,7 @@ PF_API uint64_t pf_track_counter(struct pf_trace *t, uint64_t parent_uuid, const
  *
  * Writes into this thread's chunk and returns; no allocation and no I/O.
  * Takes no lock on the common path. The thread takes the pool lock once
- * per chunk_slots events, to exchange a full chunk for an empty one. The name itself is not
+ * per chunk, to exchange a full chunk for an empty one. The name itself is not
  * copied, only its address, which is why it has to be a literal.
  *
  * Slices on a given track must be ended in stack (LIFO) order via

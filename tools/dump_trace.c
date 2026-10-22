@@ -45,6 +45,7 @@
 
 #define MAX_TRACKS 4096
 #define MAX_IIDS 65536
+#define MAX_SEQS 64 /* trusted_packet_sequence_id values the writer can emit */
 
 static int failures;
 
@@ -114,9 +115,10 @@ struct state {
     uint64_t tracks[MAX_TRACKS];
     size_t n_tracks;
 
-    /* Interning is per-sequence and reset by INCREMENTAL_STATE_CLEARED,
-     * so a snapshot dump's window resolves independently of earlier ones. */
-    bool name_iid[MAX_IIDS];
+    /* Interning is per trusted sequence, one sequence per writer, and reset by
+     * INCREMENTAL_STATE_CLEARED on that sequence, so a snapshot dump's window
+     * resolves independently of earlier ones. */
+    bool name_iid[MAX_SEQS][MAX_IIDS];
 
     uint64_t depth[MAX_TRACKS]; /* open slices per track, parallel to tracks */
     uint64_t last_ts;
@@ -147,7 +149,7 @@ static void track_add(struct state *s, uint64_t uuid)
     }
 }
 
-static void parse_interned(struct state *s, const uint8_t *p, size_t len)
+static void parse_interned(struct state *s, uint64_t seq, const uint8_t *p, size_t len)
 {
     struct cursor c = { p, p + len, false };
     while (c.p < c.end && !c.bad) {
@@ -172,7 +174,7 @@ static void parse_interned(struct state *s, const uint8_t *p, size_t len)
                     break;
             }
             if (iid && iid < MAX_IIDS)
-                s->name_iid[iid] = true;
+                s->name_iid[seq][iid] = true;
             c.p += sub_len;
         } else if (!skip_field(&c, wt)) {
             break;
@@ -180,7 +182,8 @@ static void parse_interned(struct state *s, const uint8_t *p, size_t len)
     }
 }
 
-static void parse_track_event(struct state *s, const uint8_t *p, size_t len, uint64_t ts)
+static void parse_track_event(struct state *s, uint64_t seq, const uint8_t *p, size_t len,
+                              uint64_t ts)
 {
     struct cursor c = { p, p + len, false };
     uint64_t type = 0, track_uuid = 0, name_iid = 0;
@@ -223,7 +226,7 @@ static void parse_track_event(struct state *s, const uint8_t *p, size_t len, uin
     if (ti == (size_t)-1)
         s->unknown_track++;
 
-    if (name_iid && name_iid < MAX_IIDS && !s->name_iid[name_iid] && !has_name_str)
+    if (name_iid && name_iid < MAX_IIDS && !s->name_iid[seq][name_iid] && !has_name_str)
         s->unresolved_name++;
 
     if (ts < s->last_ts) {
@@ -263,7 +266,7 @@ static void parse_track_event(struct state *s, const uint8_t *p, size_t len, uin
 static void parse_packet(struct state *s, const uint8_t *p, size_t len)
 {
     struct cursor c = { p, p + len, false };
-    uint64_t ts = 0, flags = 0;
+    uint64_t ts = 0, flags = 0, seq = 0;
     const uint8_t *event = NULL, *interned = NULL, *descriptor = NULL;
     size_t event_len = 0, interned_len = 0, descriptor_len = 0;
 
@@ -281,7 +284,7 @@ static void parse_packet(struct state *s, const uint8_t *p, size_t len)
             else if (field == FN_PACKET_SEQUENCE_FLAGS)
                 flags = v;
             else if (field == FN_PACKET_TRUSTED_SEQ_ID)
-                CHECK(v == 1, "unexpected trusted_packet_sequence_id %" PRIu64, v);
+                seq = v;
         } else if (wt == 2) {
             uint64_t sub_len = get_varint(&c);
             if (c.bad || (uint64_t)(c.end - c.p) < sub_len) {
@@ -305,11 +308,12 @@ static void parse_packet(struct state *s, const uint8_t *p, size_t len)
         }
     }
     CHECK(!c.bad, "malformed TracePacket at offset");
+    CHECK(seq < MAX_SEQS, "trusted_packet_sequence_id %" PRIu64 " out of range", seq);
 
-    /* A state clear restarts interning for the sequence; anything still
-     * referring to an older iid afterwards would be unreadable. */
+    /* A state clear restarts interning for this packet's sequence; anything
+     * still referring to an older iid afterwards would be unreadable. */
     if (flags & SEQ_INCREMENTAL_STATE_CLEARED) {
-        memset(s->name_iid, 0, sizeof(s->name_iid));
+        memset(s->name_iid[seq], 0, sizeof(s->name_iid[seq]));
         s->n_state_clears++;
     }
 
@@ -332,9 +336,9 @@ static void parse_packet(struct state *s, const uint8_t *p, size_t len)
 
     /* Interning must be processed before the event that uses it. */
     if (interned)
-        parse_interned(s, interned, interned_len);
+        parse_interned(s, seq, interned, interned_len);
     if (event)
-        parse_track_event(s, event, event_len, ts);
+        parse_track_event(s, seq, event, event_len, ts);
 
     s->n_packets++;
 }

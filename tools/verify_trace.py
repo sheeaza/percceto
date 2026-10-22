@@ -63,31 +63,35 @@ def main():
     counter_events = 0
     instant_events = 0
     event_names_seen = defaultdict(set)
-    interned_names = {}
+    # Interned names are per trusted sequence: each writer owns one sequence,
+    # and its iids mean nothing to any other sequence.
+    interned_names = defaultdict(dict)
     stray_cat = 0
     unknown_track = 0
     unresolved_name = 0
 
     for p in trace.packet:
-        # A state clear restarts interning for the sequence, which is how a
+        seq = p.trusted_packet_sequence_id
+        # A state clear restarts interning for that sequence, which is how a
         # snapshot window stays self-contained.
         if p.sequence_flags & 1:
-            interned_names.clear()
+            interned_names.pop(seq, None)
+        names = interned_names[seq]
         if p.HasField("interned_data"):
             for en in p.interned_data.event_names:
-                interned_names[en.iid] = en.name
+                names[en.iid] = en.name
             stray_cat += len(p.interned_data.event_categories)
         if not p.HasField("track_event"):
             continue
         ev = p.track_event
         if ev.track_uuid not in uuids:
             unknown_track += 1
-        if ev.name_iid and ev.name_iid not in interned_names:
+        if ev.name_iid and ev.name_iid not in names:
             unresolved_name += 1
         stray_cat += len(ev.category_iids) + len(ev.categories)
         if ev.type == TrackEvent.TYPE_SLICE_BEGIN:
             begins[ev.track_uuid] += 1
-            name = interned_names.get(ev.name_iid, ev.name) if (ev.name_iid or ev.name) else None
+            name = names.get(ev.name_iid, ev.name) if (ev.name_iid or ev.name) else None
             event_names_seen[ev.track_uuid].add(name)
         elif ev.type == TrackEvent.TYPE_SLICE_END:
             ends[ev.track_uuid] += 1
@@ -100,7 +104,7 @@ def main():
     print(f"slice ends per track:   {dict(ends)}")
     print(f"counter events: {counter_events}")
     print(f"instant events: {instant_events}")
-    print(f"interned event names (current generation): {interned_names}")
+    print(f"interned event names (current generation, per sequence): {dict(interned_names)}")
 
     # Every event must resolve against data present in this same file --
     # the property that actually breaks if a buffer overwrites a descriptor
@@ -130,7 +134,7 @@ def main():
     # Interning must actually deduplicate: far more slice events than
     # distinct names.
     if total_begins > 10:
-        assert total_begins > len(interned_names), \
+        assert total_begins > sum(len(names) for names in interned_names.values()), \
             "interning should deduplicate repeated names into fewer entries than occurrences"
 
     print("\nALL CHECKS PASSED")

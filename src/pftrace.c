@@ -14,6 +14,7 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "pf_encode.h"
 #include "pftrace_internal.h"
 
 /* --- Interning table --------------------------------------------------
@@ -407,10 +408,20 @@ static void emit_event(struct pf_trace *t, uint32_t type, uint64_t track_uuid, c
         atomic_fetch_add_explicit(&t->dropped, 1, memory_order_relaxed);
         return;
     }
-    if (w->used == t->chunk_slots && !pf_writer_rotate(t, w))
+    /* Protobuf records are encoded here, on the producer. */
+    if (t->cfg.format == PF_FORMAT_PROTOBUF) {
+        pf_pb_emit(t, w, ts, type, track_uuid, name, has_value, raw_value, value_is_double, nargs,
+                   a0, a0_dbl, a1, a1_dbl);
+        return;
+    }
+
+    /* A record that does not fit the rest of the chunk goes to the next one.
+     * Records are never split; see TODO item 3. */
+    if (w->used + PF_PAYLOAD_BYTES > t->chunk_payload && !pf_writer_rotate(t, w))
         return; /* no chunk free; pf_writer_rotate counted the drop */
 
-    struct pf_rec *r = &w->cur->recs[w->used++];
+    struct pf_rec *r = (struct pf_rec *)(w->cur->bytes + w->used);
+    w->used += PF_PAYLOAD_BYTES;
     r->ts = ts;
     r->track = track_uuid;
     /* Mutually exclusive by construction -- see the layout comment. */

@@ -14,29 +14,55 @@ sorts by timestamp on import.
      ├─ writers[]    max_threads slots, bound on a thread's first emit
      └─ refs         owner's reference, plus one per bound thread
 
-    chunk: { next, used (atomic), writer, seq, recs[chunk_slots] }   (recs: struct pf_rec)
+    chunk: { next, used (bytes, atomic), writer, seq, bytes[chunk_slots * PF_PAYLOAD_BYTES] }
 
     chunk_bytes = header + chunk_slots * PF_PAYLOAD_BYTES
+
+Each chunk's bytes hold whole entries: raw records, which are fixed size, or
+protobuf Trace.packet entries, which are variable length. A chunk never holds
+part of an entry. See "Protobuf" below.
 
 ## Config
 
 - `buffer_bytes`: total buffering budget. Default 8 MiB. Must hold two chunks.
-- `chunk_slots`: records per chunk. Default 256. Chunk bytes follow from it.
+- `chunk_slots`: chunk size in records. Default 256. Chunk bytes follow from it.
 - `max_threads`: writer slots. Default 256.
 
 ## Hot path
 
-    emit:
+    emit (raw):
       ts = now()
       w = this thread's writer for this trace (pf_tls slot by trace index; bound on first use)
-      if w->used == chunk_slots: rotate (slow path, once per chunk)
-      r = &w->cur->recs[w->used++]; fill the record
+      if w->used + PF_PAYLOAD_BYTES > chunk_payload: rotate (slow path, once per chunk)
+      r = &w->cur->bytes[w->used]; fill the record; w->used += PF_PAYLOAD_BYTES
       w->cur->used = w->used   (release; publishes the record to a snapshot)
       w->events += 1   (relaxed; written only by this thread)
+
+    emit (protobuf): the same, with the event encoded into the chunk, and the
+      name's definition placed in the same chunk when the writer's cache needs it.
 
 The common path takes no lock and reads no shared state. The two stores go to
 lines only the owner writes: the chunk's `used`, which a snapshot dump reads,
 and the writer counter, which stats sums.
+
+## Protobuf
+
+Encoding happens on the emitting thread, so the drain copies bytes and does not
+encode. Each event is one `Trace.packet`, encoded in one pass into the chunk. The
+length of each submessage is computed from its fields before the packet is
+written, so every byte is written once.
+
+Interned names are per writer. A writer owns trusted sequence `id + 1`, and its
+slot `i` is interned as iid `i + 1` in that sequence. The writer's cache holds 32
+names, each stamped with the epoch of the chunk its definition went into. A
+rotation advances the epoch, so a name used in a new chunk is defined again there.
+Each chunk is therefore self-contained.
+
+A record that does not fit the rest of its chunk moves to the next chunk; it is
+never split. A record larger than a whole chunk is dropped and counted.
+
+The track descriptors and the clock snapshot go on sequence 1 and are written by
+the drain, not by producers.
 
 ## Commit and rotate
 

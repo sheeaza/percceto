@@ -94,12 +94,23 @@ _Static_assert(PF_MAX_ARGS <= 3, "RF_NARGS_MASK holds counts up to 3");
  * docs/chunk_buffers_design.md. */
 struct pf_chunk {
     struct pf_chunk *next; /* committed FIFO or free list */
-    /* Records published to the drain. The owner stores it after each record,
-     * so a snapshot dump can read a chunk that is still being filled. */
+    /* Bytes of @bytes published to the drain. The owner stores it after each
+     * record, so a snapshot dump can read a chunk that is still being filled. */
     _Atomic uint32_t used;
     uint32_t writer; /* owning writer slot */
     uint64_t seq; /* per-writer chunk number */
-    struct pf_rec recs[]; /* cfg.chunk_slots records */
+    /* Records back to back, PF_PAYLOAD_BYTES each. Records never split across
+     * chunks: one that does not fit the rest rotates to the next chunk. */
+    _Alignas(8) unsigned char bytes[];
+};
+
+/* One interned name in a writer's cache: the literal's address, and the epoch
+ * of the chunk its definition was last written into. */
+#define PF_PB_INTERN_SLOTS 32
+
+struct pb_intern_slot {
+    const char *key; /* NULL until first used */
+    uint32_t epoch;
 };
 
 /* One per bound thread. The producer owns @cur, @used and @seq. @bound is
@@ -107,9 +118,15 @@ struct pf_chunk {
  * producers' hot fields never share one; the array is allocated to match. */
 struct pf_writer {
     _Alignas(64) struct pf_chunk *cur; /* NULL until the first rotation */
-    uint32_t used; /* records in @cur; chunk_slots forces a rotation */
+    uint32_t used; /* bytes in @cur; a record that would pass chunk_payload rotates */
     uint32_t id;
     uint64_t seq;
+    /* Bumped on every rotation. A name's definition is in the current chunk
+     * only if its cache slot was stamped with this epoch. */
+    uint32_t epoch;
+    /* Protobuf: this writer's interned names. Slot i is iid i + 1 in the
+     * writer's own sequence, so iids never collide across writers. */
+    struct pb_intern_slot intern[PF_PB_INTERN_SLOTS];
     /* Records this writer has emitted into its chunks, including any that a
      * snapshot later overwrites. Written only by the owner, read by stats. */
     _Atomic uint64_t events;
@@ -199,6 +216,9 @@ struct pf_trace {
     size_t chunk_bytes;
     uint32_t chunk_count;
     uint32_t chunk_slots;
+    /* Record bytes a chunk holds: chunk_slots records. A writer's @used
+     * reaches this and rotates. */
+    uint32_t chunk_payload;
     struct pf_chunk *free_list;
     struct pf_chunk *committed_head;
     struct pf_chunk *committed_tail;
@@ -376,10 +396,11 @@ static inline struct pf_writer *pf_writer_for(struct pf_trace *t)
  * Perfetto sorts by timestamp on import. */
 struct pf_walk {
     const struct pf_chunk *c;
+    /* Byte offset into @c->bytes of the next record. */
     uint32_t i;
-    /* Records of @c to walk, read once when the walk enters the chunk. A
-     * live chunk's count can rise during the walk, and records below the
-     * count it was read with are never rewritten before the chunk is freed. */
+    /* Bytes of @c to walk, read once when the walk enters the chunk. A live
+     * chunk's count can rise during the walk, and bytes below the count it
+     * was read with are never rewritten before the chunk is freed. */
     uint32_t end;
 };
 
@@ -401,7 +422,9 @@ static inline const struct pf_rec *pf_walk_next(struct pf_walk *w)
         pf_walk_enter(w, w->c->next);
     if (!w->c)
         return NULL;
-    return &w->c->recs[w->i++];
+    const struct pf_rec *r = (const struct pf_rec *)(w->c->bytes + w->i);
+    w->i += PF_PAYLOAD_BYTES;
+    return r;
 }
 
 /* --- Shared helpers, defined in pftrace.c ------------------------------ */

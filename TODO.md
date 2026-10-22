@@ -134,6 +134,46 @@ out of the baseline. The drain's cost, about 70 ns/event, is what this change
 should move off the drain thread. The producer cost should rise, and the drop
 count at 8 and 12 threads is the number to watch.
 
+Status: steps 1 to 5 are done for protobuf. Raw keeps the record walk, since it
+is fixed-size. Snapshot and close use the same drain, which copies each chunk up
+to its published byte count.
+
+Result, after the change, same bench and hardware, single runs, 0 dropped in every
+row:
+
+| workload | threads | producer ns/event | consumer tail ns/event | baseline producer | baseline tail |
+|---|---:|---:|---:|---:|---:|
+| simple | 1 | 25.2 | 10.9 | 7.0 | 73.6 |
+| simple | 4 | 44.9 | 2.7 | 7.9 | 69.9 |
+| simple | 8 | 45.1 | 1.4 | 14.3 | 69.6 |
+| realistic | 1 | 39.7 | 10.0 | 8.7 | 86.5 |
+| realistic | 4 | 73.0 | 2.6 | 12.6 | 75.7 |
+| realistic | 8 | 68.5 | 1.3 | 22.8 | 75.5 |
+
+The realistic baseline is HEAD measured in the same session, before the byte
+layout; the simple baseline is the table above.
+
+What this shows:
+
+- The drain's per-event cost fell from about 70 ns to 1 to 3 ns. That was the goal
+  of the change, and it is met.
+- The producer cost rose. At one thread on the simple workload it went from 7.0
+  to 25.2 ns, about 3.6 times the baseline. This is the open trade-off. The
+  encoder floor measured in step 1 was 3.8 ns, so the real encoder costs about 6
+  times that floor.
+- Profiling one thread with callgrind found the producer's time in the encoder.
+  The first version recomputed each submessage's length by encoding it again,
+  which cost about twice the instructions. Computing each length once, from the
+  fields, brought the one-thread run from 145G to 78G instructions. The later
+  change to reuse the lengths within an event gave about 20% on the one-thread
+  simple run.
+- The remaining producer cost is the encoder itself: byte-at-a-time writes, a
+  32-slot name lookup per event, and per-event bookkeeping. Writing the fields
+  straight into the chunk without a length pass is the next candidate, and is not
+  tried yet.
+- Drops at 12 threads were not re-measured. The drain now costs less, so this is
+  the first place to look for a change.
+
 ## ~~4. Chunk boundaries may share a cache line~~ (done)
 
 ~~Done. `chunk_bytes` is rounded up to a multiple of 64, and the pool is

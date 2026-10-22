@@ -106,7 +106,7 @@ static void make_exit_key(void)
 /* A chunk's size, padded to a cache line so no two chunks share one. */
 size_t pf_chunk_bytes(uint32_t slots)
 {
-    size_t bytes = sizeof(struct pf_chunk) + slots * sizeof(struct pf_rec);
+    size_t bytes = sizeof(struct pf_chunk) + slots * PF_PAYLOAD_BYTES;
     return (bytes + 63) & ~(size_t)63;
 }
 
@@ -149,6 +149,7 @@ int pf_pool_init(struct pf_trace *t)
     t->chunk_bytes = chunk_bytes;
     t->chunk_count = (uint32_t)count;
     t->chunk_slots = slots;
+    t->chunk_payload = slots * PF_PAYLOAD_BYTES;
     t->watermark_chunks = (uint32_t)(count * t->cfg.watermark_pct / 100u);
 
     pthread_mutex_init(&t->pool_lock, NULL);
@@ -199,7 +200,7 @@ struct pf_writer *pf_writer_bind(struct pf_trace *t)
      * writer. used == slots makes the first emit rotate and take a chunk. */
     if (w) {
         w->cur = NULL;
-        w->used = t->chunk_slots;
+        w->used = t->chunk_payload;
         w->seq = 0;
     }
 
@@ -260,9 +261,10 @@ bool pf_writer_rotate(struct pf_trace *t, struct pf_writer *w)
         c->used = 0;
         c->writer = w->id;
         c->seq = w->seq++;
+        w->epoch++;
     }
     w->cur = c;
-    w->used = c ? 0 : t->chunk_slots;
+    w->used = c ? 0 : t->chunk_payload;
 
     bool over_watermark = t->cfg.mode == PF_MODE_CONTINUOUS &&
                           t->committed_count >= t->watermark_chunks;
@@ -295,7 +297,7 @@ void pf_writer_flush_own_locked(struct pf_trace *t)
     if (!w->cur || w->used == 0)
         return;
     commit_locked(t, w);
-    w->used = t->chunk_slots;
+    w->used = t->chunk_payload;
 }
 
 /* A live partial chunk has next == NULL, like every chunk a writer holds, and
