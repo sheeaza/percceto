@@ -198,6 +198,24 @@ At 12 threads there are no drops in either workload, so the drop note above no
 longer holds for the current code. It was one run each, with the 12-thread row
 built as a temporary variant of `tests/bench_side.c` that runs only 12 threads.
 
+Tried: padded 5-byte length prefixes, reserved while the record is written and
+filled in at the end of its body, so the writer no longer computes nested
+lengths or runs the varint loops. The size pass stays for the chunk fit check.
+`bench_side` instructions fell from 57.8G to 56.9G, 1.4%, and all 46 ctest tests
+passed. `bench_chunk`, RelWithDebInfo, two runs each, ns/event per thread:
+
+| threads | HEAD | padded lengths |
+|---:|---:|---:|
+| 1 | 15.5, 16.5 | 16.5, 16.1 |
+| 2 | 16.4, 15.9 | 16.9, 16.9 |
+| 4 | 17.7, 17.6 | 18.8, 19.0 |
+| 8 | 23.7, 26.8 | 28.6, 29.2 |
+
+No gain at 1 or 2 threads, and 6 to 10 percent slower at 4 and 8. The padding
+adds bytes per event, which may rotate chunks more often; not profiled. Reverted.
+The encoder's length work is not where the time goes. `memcpy` is 6% of
+instructions, and the encoder accounts for about 1% of that.
+
 ## ~~4. Chunk boundaries may share a cache line~~ (done)
 
 ~~Done. `chunk_bytes` is rounded up to a multiple of 64, and the pool is
