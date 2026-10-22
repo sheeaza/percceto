@@ -128,6 +128,26 @@ size of the noise, so this is not settled. The simple API's thread track uuid is
 still one TLS slot (`tl_slot` in `pftrace.c`), so the uuid is for one trace
 only; that is left as it is.~~
 
+## 8. Bounded, rotating output in continuous mode
+
+Continuous mode writes one file that grows without limit. Make the output
+bounded and rotating, with both limits off by default so the current single-file
+behaviour stays the same:
+
+1. Size limit: a config field sets a maximum file size. When the next write would
+   exceed it, the drain closes the file and opens a new one.
+2. File count limit: a config field sets the maximum number of files. Past that,
+   the new file overwrites the oldest one.
+3. Default off: both fields are 0, which gives today's single unbounded file.
+
+Trade-off: the drain has to check the size before each write and close and open
+files at the boundary, so the size check is on the drain path, not the producer
+path. A record must not straddle two files, so a file can end short of the limit
+and the boundary goes between drain batches. Overwriting the oldest file loses
+events, so the dropped count (or a new counter) must say so, and the stats
+should report the files written. Only `PF_MODE_CONTINUOUS` rotates; snapshot
+dumps keep their own file naming.
+
 ## Notes
 
 - Continuous mode has no timer flush. A thread's partial chunk is written when
