@@ -106,7 +106,9 @@ static void make_exit_key(void)
 int pf_pool_init(struct pf_trace *t)
 {
     uint32_t slots = (uint32_t)t->cfg.chunk_slots;
+    /* Round up to a cache line, so no two chunks share one. */
     size_t chunk_bytes = sizeof(struct pf_chunk) + slots * sizeof(struct pf_rec);
+    chunk_bytes = (chunk_bytes + 63) & ~(size_t)63;
     size_t count = t->cfg.buffer_bytes / chunk_bytes;
 
     /* A writer needs a spare chunk while its full one is committed. */
@@ -115,11 +117,14 @@ int pf_pool_init(struct pf_trace *t)
         return -1;
     }
 
-    t->pool_mem = calloc(count, chunk_bytes);
+    /* chunk_bytes is a multiple of 64, so the pool is too, as aligned_alloc
+     * requires. Zeroed by hand, as for the writers. */
+    t->pool_mem = aligned_alloc(64, count * chunk_bytes);
     if (!t->pool_mem) {
         errno = ENOMEM;
         return -1;
     }
+    memset(t->pool_mem, 0, count * chunk_bytes);
 
     /* aligned_alloc, not calloc: the writers need a cache-line boundary, and
      * sizeof is a multiple of 64, as aligned_alloc requires. Zeroed by hand. */
@@ -128,8 +133,8 @@ int pf_pool_init(struct pf_trace *t)
         goto free_pool;
     memset(t->writers, 0, t->cfg.max_threads * sizeof(*t->writers));
 
-    /* Each chunk is linked onto the free list. chunk_bytes is a multiple of 8,
-     * so every chunk's records stay 8-byte aligned. */
+    /* Each chunk is linked onto the free list. chunk_bytes is a multiple of 64,
+     * so every chunk starts on a cache line and its records stay 8-byte aligned. */
     for (size_t i = count; i-- > 0;) {
         struct pf_chunk *c = (struct pf_chunk *)((char *)t->pool_mem + i * chunk_bytes);
         c->next = t->free_list;

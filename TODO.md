@@ -41,16 +41,23 @@ fixed-slot layout and `chunk_slots` as a record count no longer hold. Encoding
 needs interned names and track ids available on the producer. Measure with
 `bench_chunk` before and after.
 
-## 4. Chunk boundaries may share a cache line
+## ~~4. Chunk boundaries may share a cache line~~ (done)
 
-The writers array is cache-line aligned (`pf_writer` is `aligned(64)`), which
-cut the 8-thread producer cost from about 30 to 22 ns/event in `bench_chunk`.
-Pool chunks are only 8-byte aligned, so the last line of one chunk can share a
-line with the first line of the next. Each chunk has one owner while it fills,
-so this should matter only at the boundary. Not measured.
+~~Done. `chunk_bytes` is rounded up to a multiple of 64, and the pool is
+allocated with `aligned_alloc(64, …)` and zeroed by hand, so no two chunks share
+a line. `bench_chunk`, `chunk_slots` 256, ns/event, three runs each:
 
-Option: round `chunk_bytes` up to a multiple of 64 and align the pool, at the
-cost of padding each chunk. Measure with `bench_chunk` first.
+| threads | before | after |
+|---:|---:|---:|
+| 1 | 5.0, 6.6, 5.9 | 5.6, 5.6, 5.6 (and 5.1, 6.7, 6.0, 5.1 in a second set) |
+| 8 | 11.4, 11.7, 11.6 | 8.8, 9.1, 8.8 |
+
+The 8-thread gain is about 2.7 ns/event. The 1-thread runs are within noise.
+All 46 ctest tests pass.~~
+
+~~Trade-off: each chunk is padded to a line, so the pool holds fewer chunks in
+the same `buffer_bytes`. At the 256-slot default the padding is small, and the
+chunk count is still well above the two that `pf_pool_init` requires.~~
 
 ## ~~5. Return a writer slot when its thread exits~~ (done)
 
