@@ -17,7 +17,6 @@ Usage:
 import argparse
 import ctypes
 import logging
-import re
 import sys
 from collections import Counter
 
@@ -29,7 +28,7 @@ from perfetto.protos.perfetto.trace.perfetto_trace_pb2 import (
 )
 
 MAGIC = b"PFRAWv1\0"
-VERSION = 4
+VERSION = 5
 
 
 # On-disk layouts, little-endian and unpadded, as in docs/raw_format.md.
@@ -78,6 +77,7 @@ class TrackEntry(ctypes.LittleEndianStructure):
 
 
 class Event(ctypes.LittleEndianStructure):
+    # The fixed head of a record. A copied name follows it when RF_NAME_COPIED.
     _pack_ = 1
     _fields_ = [
         ("ts", ctypes.c_uint64),
@@ -85,14 +85,15 @@ class Event(ctypes.LittleEndianStructure):
         ("u", ctypes.c_uint64),
         ("type", ctypes.c_uint32),
         ("flags", ctypes.c_uint32),
-        ("a0", ctypes.c_uint64),
-        ("a1", ctypes.c_uint64),
     ]
 
 
-RECORD_SIZE = ctypes.sizeof(Event)
+RECORD_HEAD_BYTES = ctypes.sizeof(Event)
 TRACK_SIZE = ctypes.sizeof(TrackEntry)
-assert RECORD_SIZE == 48 and TRACK_SIZE == 104
+assert RECORD_HEAD_BYTES == 32 and TRACK_SIZE == 104
+# A copied name is padded to 8 bytes and capped, as in the C library.
+REC_ALIGN = 8
+DYN_NAME_MAX = 128
 
 
 class _Bits(ctypes.Union):
@@ -127,9 +128,7 @@ RAW_CLOCK_TO_PERFETTO = {
 
 RF_HAS_VALUE = 0x1
 RF_VALUE_IS_DOUBLE = 0x2
-RF_NARGS_SHIFT = 2
-RF_NARGS_MASK = 0x3 << 2
-RF_ARG_IS_DOUBLE = (0x10, 0x20)
+RF_NAME_COPIED = 0x4
 
 TRACK_PROCESS = 0
 TRACK_THREAD = 1
@@ -175,8 +174,8 @@ class RawReader:
             raise RawFormatError("bad magic: not a raw pftrace file")
         if hdr.version != VERSION:
             raise RawFormatError(f"unsupported version {hdr.version}")
-        if hdr.record_size != RECORD_SIZE:
-            raise RawFormatError(f"record_size {hdr.record_size}, want {RECORD_SIZE}")
+        if hdr.record_size != RECORD_HEAD_BYTES:
+            raise RawFormatError(f"record_size {hdr.record_size}, want {RECORD_HEAD_BYTES}")
         if hdr.flags != 0:
             raise RawFormatError(f"reserved flags set: {hdr.flags:#x}")
         self.clock_id = hdr.clock_id
@@ -342,14 +341,27 @@ class Converter:
         return desc
 
     def events_chunk(self, payload):
-        if len(payload) % RECORD_SIZE:
-            raise RawFormatError(
-                f"events chunk is not a multiple of {RECORD_SIZE} bytes")
         batch = Trace()
-        for off in range(0, len(payload), RECORD_SIZE):
+        off = 0
+        while off < len(payload):
+            if len(payload) - off < RECORD_HEAD_BYTES:
+                raise RawFormatError("events chunk ends inside a record head")
             rec = Event.from_buffer_copy(payload, off)
+            off += RECORD_HEAD_BYTES
             ts, track, u, etype, flags = rec.ts, rec.track, rec.u, rec.type, rec.flags
-            a0, a1 = rec.a0, rec.a1
+
+            # A copied name follows the head: @u is its length, and the bytes
+            # are padded to REC_ALIGN.
+            copied = None
+            if flags & RF_NAME_COPIED:
+                if u > DYN_NAME_MAX:
+                    raise RawFormatError(f"copied name of {u} bytes is over {DYN_NAME_MAX}")
+                padded = (u + REC_ALIGN - 1) & ~(REC_ALIGN - 1)
+                if len(payload) - off < padded:
+                    raise RawFormatError("copied name runs past the events chunk")
+                copied = bytes(payload[off:off + u]).decode("utf-8", "replace")
+                off += padded
+
             if track not in self._tracks:
                 raise RawFormatError(f"event refers to undefined track {track}")
             if etype not in RAW_TYPE_TO_PERFETTO:
@@ -362,29 +374,16 @@ class Converter:
             ev.type = RAW_TYPE_TO_PERFETTO[etype]
             ev.track_uuid = track
 
-            nargs = (flags & RF_NARGS_MASK) >> RF_NARGS_SHIFT
             if flags & RF_HAS_VALUE:
                 if flags & RF_VALUE_IS_DOUBLE:
                     ev.double_counter_value = bits_to_double(u)
                 else:
                     # The buffer stores the two's-complement bits of an int64.
                     ev.counter_value = u - (1 << 64) if u & INT64_SIGN else u
-            elif nargs:
-                # The name is a format; its args are rendered per event, so
-                # the text is written inline rather than interned.
-                if u not in self._names:
-                    raise RawFormatError(f"event refers to undefined name {u:#x}")
-                args = [(a0, bool(flags & RF_ARG_IS_DOUBLE[0])),
-                        (a1, bool(flags & RF_ARG_IS_DOUBLE[1]))][:nargs]
-                try:
-                    ev.name = format_args(self._names[u], args)
-                except RawFormatError as err:
-                    # Same fallback as the C drain: the bare format is
-                    # written, so the event is kept and the mismatch shows.
-                    log.warning("event at ts %d: %s; writing the bare format",
-                                ts, err)
-                    ev.name = self._names[u]
-                    self.stats["bad_format"] += 1
+            elif copied is not None:
+                # A caller-built name differs per event, so it is written inline
+                # rather than interned.
+                ev.name = copied
             elif u:
                 if u not in self._names:
                     raise RawFormatError(f"event refers to undefined name {u:#x}")
@@ -401,80 +400,6 @@ class Converter:
 
 # One conversion: "%[flags][width][.prec][len]conv". Mirrors parse_spec() and
 # render_arg() in src/pftrace_pb.c, so both writers agree on every name.
-SPEC_RE = re.compile(r"([-+ 0]*)(\d{0,3})(?:\.(\d{1,3}))?(ll|l)?([diuxXoceEfFgGp])")
-# Longest rendered name, NUL included, as in PF_FORMAT_NAME_MAX in C.
-FORMAT_NAME_MAX = 128
-
-
-def format_args(fmt, args):
-    """Renders a format with its args. args is a list of (bits, is_double).
-    Raises RawFormatError on any mismatch, or if the result is too long."""
-    out = []
-    k = 0
-    i = 0
-    while i < len(fmt):
-        if fmt[i] != "%":
-            out.append(fmt[i])
-            i += 1
-            continue
-        if fmt[i + 1:i + 2] == "%":
-            out.append("%")
-            i += 2
-            continue
-        m = SPEC_RE.match(fmt, i + 1)
-        if not m or k >= len(args):
-            raise RawFormatError(f"format {fmt!r}: unsupported or extra conversion")
-        flags, width, prec, lenmod, conv = m.groups()
-        i = m.end()
-        bits, is_double = args[k]
-        k += 1
-        out.append(_render_arg(fmt, flags, width, prec, lenmod, conv,
-                               bits, is_double))
-    if k != len(args):
-        raise RawFormatError(f"format {fmt!r} has fewer placeholders than args")
-    text = "".join(out)
-    if len(text) >= FORMAT_NAME_MAX:
-        raise RawFormatError(f"format {fmt!r}: result is longer than {FORMAT_NAME_MAX - 1}")
-    return text
-
-
-def _render_arg(fmt, flags, width, prec, lenmod, conv, bits, is_double):
-    def bad(why):
-        return RawFormatError(f"format {fmt!r}: {why}")
-
-    if conv in "uxXo" and ("+" in flags or " " in flags):
-        raise bad(f"%{conv} takes no sign flag")
-    if conv in "cp":
-        if "+" in flags or " " in flags or "0" in flags or prec or lenmod:
-            raise bad(f"%{conv} takes only '-' and a width")
-    if conv in "fFeEgG" and lenmod:
-        raise bad(f"%{conv} takes no length modifier")
-    spec_prec = f".{prec}" if prec else ""
-
-    if conv in "diuxXo":
-        if is_double:
-            raise bad(f"%{conv} given a double")
-        if conv in "di":
-            value = bits - (1 << 64) if bits & INT64_SIGN else bits
-            return ("%" + flags + width + spec_prec + "d") % value
-        return ("%" + flags + width + spec_prec + conv) % bits
-    if conv == "c":
-        if is_double or not 1 <= bits <= 127:
-            raise bad("%c needs an int from 1 to 127")
-        return ("%" + flags + width + "c") % chr(bits)
-    if conv == "p":
-        if is_double:
-            raise bad("%p given a double")
-        text = "0x%x" % bits
-        w = int(width) if width else 0
-        return text.ljust(w) if "-" in flags else text.rjust(w)
-    # Float conversions.
-    if not is_double:
-        raise bad(f"%{conv} given an int")
-    value = bits_to_double(bits)
-    return ("%" + flags + width + spec_prec + conv) % value
-
-
 def convert(src, dst):
     """Converts src (a path) to dst (a path). Returns the stats Counter and
     the number of torn bytes at the end of the input."""

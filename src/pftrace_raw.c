@@ -16,7 +16,7 @@
  * the events that reference them. */
 
 #define RAW_MAGIC "PFRAWv1"
-#define RAW_VERSION 4u
+#define RAW_VERSION 5u
 #define RAW_CHUNK_NAMES 1u
 #define RAW_CHUNK_TRACKS 2u
 #define RAW_CHUNK_EVENTS 3u
@@ -141,12 +141,14 @@ static int raw_flush(struct pf_trace *t)
     return raw_write_chunk(t, RAW_CHUNK_EVENTS, &t->raw.events);
 }
 
-/* Queues one record for the raw file. The name is queued as a definition
- * the first time the drain sees its pointer. Caller holds out_lock. */
+/* Queues one record for the raw file. A static name is queued as a definition
+ * the first time the drain sees its pointer. A copied name travels inside the
+ * record, so it needs no definition. Caller holds out_lock. */
 static int raw_emit_record(struct pf_trace *t, const struct pf_rec *r)
 {
     bool has_value = (r->flags & RF_HAS_VALUE) != 0;
-    const char *name = has_value ? NULL : r->u.name;
+    bool copied = (r->flags & RF_NAME_COPIED) != 0;
+    const char *name = has_value || copied ? NULL : r->u.name;
 
     if (name) {
         uint64_t iid;
@@ -158,8 +160,8 @@ static int raw_emit_record(struct pf_trace *t, const struct pf_rec *r)
             raw_put_name(&t->raw.names, name, strlen(name));
     }
 
-    /* The record is copied as is; see struct pf_rec for the layout. */
-    pb_put_bytes(&t->raw.events, r, PF_PAYLOAD_BYTES);
+    /* The record is copied as is, with its copied name; see struct pf_rec. */
+    pb_put_bytes(&t->raw.events, r, pf_rec_size(r));
     if (t->raw.events.len >= PF_OUT_FLUSH_THRESHOLD)
         return raw_flush(t);
     return 0;

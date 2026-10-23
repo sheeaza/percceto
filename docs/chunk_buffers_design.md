@@ -58,8 +58,8 @@ trade-offs are the same as for protobuf entries, and are set out in
   The unused tail of a chunk therefore grows with the names it holds.
 - A copied name costs a `memcpy` on the producer's hot path. Static names do
   not.
-- A name longer than `PF_DYN_NAME_MAX` is truncated, and the truncation is
-  counted. A record larger than a whole chunk payload is dropped and counted,
+- A name longer than `PF_DYN_NAME_MAX` is cut to the cap, ending in `...`, and
+  the cut is counted. A record larger than a whole chunk payload is dropped and counted,
   as protobuf entries are.
 - `chunk_slots`, a record count, no longer bounds a chunk for raw. The chunk is
   bounded by its payload in bytes.

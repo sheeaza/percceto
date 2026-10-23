@@ -54,9 +54,10 @@ static inline uint32_t builtin_clock(clockid_t clk)
 /* Encodes one event of @w's thread into its chunk, rotating first if it does
  * not fit. A record bigger than a whole chunk, or one with no free chunk to
  * go to, is dropped and counted. The caller holds nothing; the timestamp is
- * taken by the caller, before any of this. */
+ * taken by the caller, before any of this. A @dynamic name is sent inline and
+ * not interned; a static one is interned by its pointer. */
 void pf_pb_emit(struct pf_trace *t, struct pf_writer *w, uint64_t ts, uint32_t type, uint64_t track,
-                const char *name, bool has_value, uint64_t raw_value, bool value_is_double,
-                unsigned nargs, uint64_t a0, bool a0_dbl, uint64_t a1, bool a1_dbl);
+                const char *name, bool dynamic, bool has_value, uint64_t raw_value,
+                bool value_is_double);
 
 #endif /* PF_ENCODE_H */

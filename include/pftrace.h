@@ -126,9 +126,10 @@ struct pf_config {
  *      both sized at open. The staging buffers are not included: they grow
  *      with use.
  * @chunk_slots: Event records per chunk, from &pf_config.chunk_slots.
- * @slot_bytes: Size of one raw event record in bytes. A protobuf event is
- *      variable length, so its size is not fixed; a chunk holds %chunk_slots
- *      times this many bytes of them, plus its header and padding.
+ * @slot_bytes: Size of the fixed head of one raw event record, in bytes. A
+ *      record with a dynamic name is longer by the name, padded to 8 bytes.
+ *      A protobuf event is variable length, so its size is not fixed.
+ *      %chunk_slots times this many bytes gives the chunk payload.
  * @bytes_written: Bytes handed to write() across all dumps.
  * @dropped: Events discarded rather than recorded, which means the output
  *      file has a gap. Never counts the events %PF_MODE_SNAPSHOT
@@ -137,7 +138,10 @@ struct pf_config {
  *      %PF_MODE_CONTINUOUS, when every chunk is committed or in use and the drain
  *      thread has not yet written them: either the buffer or the drain
  *      interval is too small. A thread past &pf_config.max_threads drops
- *      every event it emits.
+ *      every event it emits. Also counts a dynamic name too large for one
+ *      record.
+ * @truncated: Dynamic names cut to the length cap. The event is kept, with
+ *      its name shortened to the cap and ending in "...".
  */
 struct pf_stats {
     uint64_t events;
@@ -149,6 +153,7 @@ struct pf_stats {
     uint64_t meta_bytes;
     uint64_t chunk_slots;
     uint64_t slot_bytes;
+    uint64_t truncated;
 };
 
 /**
@@ -378,137 +383,37 @@ PF_API void pf_slice_end(struct pf_trace *t, uint64_t track_uuid);
  */
 PF_API void pf_instant_event_impl(struct pf_trace *t, uint64_t track_uuid, const char *name);
 
-/* --- Event arguments ----------------------------------------------------
- * A slice or instant may carry up to PF_MAX_ARGS numeric arguments. The
- * @name is then a printf-style format with one placeholder per argument:
- * %d %i (signed), %u %x %X (unsigned), %f %g %e (double). Only these bare
- * conversions are accepted -- no width, precision or %s -- so the format
- * can be checked against the arguments without parsing C.
- *
- * Each argument is an int or a double, chosen at compile time from its
- * type. Anything else (a pointer, a string) fails to compile.
- *
- * Every record pays for PF_MAX_ARGS argument words in its chunk, whether or not
- * it has arguments. Raising PF_MAX_ARGS costs buffer space for all events.
+/* --- Dynamic names -----------------------------------------------------
+ * The name is built by the caller, with snprintf or any other means, and is
+ * copied in, so the buffer may be reused as soon as the call returns. Percceto
+ * does not parse it. A dynamic name is longer than a literal costs: the raw
+ * format copies it into the record, and the protobuf format sends it inline.
+ * Longer than 128 bytes, the name is cut to 125 bytes and ends in "...", and
+ * the cut is counted in pf_stats.truncated.
  */
-#define PF_MAX_ARGS 2
 
 /**
- * pf_slice_begin_args() - pf_slice_begin() with 1 to PF_MAX_ARGS arguments.
+ * pf_slice_begin_dyn() - pf_slice_begin() with a name the caller built.
  * @t: Trace context.
  * @track_uuid: Track to begin the slice on.
- * @name: Format string, a literal -- see PF_NAME_LITERAL().
- * @...: One int or double per %-placeholder in @name. Each may be
- *      evaluated more than once, so it must have no side effects.
- *
- * Passing more arguments than PF_MAX_ARGS does not compile. Passing none
- * does not either: use pf_slice_begin() for a slice with no arguments.
+ * @name: Slice name. Copied before the call returns.
  */
-#define pf_slice_begin_args(t, track_uuid, name, ...)                                         \
-    PF_PACK_CAT(PF_PACK_, PF_NARGS(__VA_ARGS__))(pf_slice_begin_args_impl, (t), (track_uuid), \
-                                                 PF_NAME_LITERAL(name), __VA_ARGS__)
+#define pf_slice_begin_dyn(t, track_uuid, name) pf_slice_begin_dyn_impl((t), (track_uuid), (name))
+
+/** pf_slice_begin_dyn_impl() - Real function behind pf_slice_begin_dyn(). */
+PF_API void pf_slice_begin_dyn_impl(struct pf_trace *t, uint64_t track_uuid, const char *name);
 
 /**
- * pf_instant_event_args() - pf_instant_event() with 1 to PF_MAX_ARGS
- * arguments. See pf_slice_begin_args().
+ * pf_instant_event_dyn() - pf_instant_event() with a name the caller built.
+ * @t: Trace context.
+ * @track_uuid: Track to record the marker on.
+ * @name: Marker name. Copied before the call returns.
  */
-#define pf_instant_event_args(t, track_uuid, name, ...)                                         \
-    PF_PACK_CAT(PF_PACK_, PF_NARGS(__VA_ARGS__))(pf_instant_event_args_impl, (t), (track_uuid), \
-                                                 PF_NAME_LITERAL(name), __VA_ARGS__)
+#define pf_instant_event_dyn(t, track_uuid, name) \
+    pf_instant_event_dyn_impl((t), (track_uuid), (name))
 
-/**
- * pf_slice_begin_args_impl() - pf_slice_begin_args() without the macro.
- * @nargs: Number of arguments, 1 to PF_MAX_ARGS.
- * @a0, @a1: Argument bits: an int64 as two's complement, or a double's
- *      IEEE-754 bits. Only the first @nargs are used.
- * @a0_dbl, @a1_dbl: True when the matching argument is a double.
- *
- * Call the macro instead; these are its expansion targets.
- */
-PF_API void pf_slice_begin_args_impl(struct pf_trace *t, uint64_t track_uuid, const char *name,
-                                     unsigned nargs, uint64_t a0, bool a0_dbl, uint64_t a1,
-                                     bool a1_dbl);
-
-/** pf_instant_event_args_impl() - pf_instant_event_args() without the macro. */
-PF_API void pf_instant_event_args_impl(struct pf_trace *t, uint64_t track_uuid, const char *name,
-                                       unsigned nargs, uint64_t a0, bool a0_dbl, uint64_t a1,
-                                       bool a1_dbl);
-
-/* Counts a macro's arguments, up to four. Used only to pick PF_PACK_n. */
-#define PF_NARGS(...) PF_NARGS_(__VA_ARGS__, 4, 3, 2, 1, 0)
-#define PF_NARGS_(_1, _2, _3, _4, N, ...) N
-#define PF_PACK_CAT(a, b) PF_PACK_CAT_(a, b)
-#define PF_PACK_CAT_(a, b) a##b
-
-/* Converts one argument to its 64-bit bits. The default arm is the int
- * path, so a pointer or string lands there and the implicit conversion
- * is rejected by the compiler. */
-static inline uint64_t pf_arg_bits_int_(int64_t v)
-{
-    return (uint64_t)v;
-}
-
-static inline uint64_t pf_arg_bits_double_(double v)
-{
-    uint64_t bits;
-    __builtin_memcpy(&bits, &v, sizeof bits);
-    return bits;
-}
-
-#define PF_ARG_BITS(v)               \
-    _Generic((v),                    \
-        float: pf_arg_bits_double_,  \
-        double: pf_arg_bits_double_, \
-        default: pf_arg_bits_int_)(v)
-#define PF_ARG_IS_DOUBLE(v) _Generic((v), float: 1, double: 1, default: 0)
-
-/* Expansion targets for the argument counts. Each takes the impl to call,
- * then the same arguments the impl takes, minus the packed ones. */
-#define PF_PACK_1(fn, t, uuid, name, a) \
-    fn((t), (uuid), (name), 1, PF_ARG_BITS(a), PF_ARG_IS_DOUBLE(a), 0, 0)
-#define PF_PACK_2(fn, t, uuid, name, a, b)                                          \
-    fn((t), (uuid), (name), 2, PF_ARG_BITS(a), PF_ARG_IS_DOUBLE(a), PF_ARG_BITS(b), \
-       PF_ARG_IS_DOUBLE(b))
-/* More than PF_MAX_ARGS: this name is never defined, so the call fails
- * to compile at the call site. */
-#define PF_PACK_3(...) pf_too_many_args_for_PF_MAX_ARGS(__VA_ARGS__)
-#define PF_PACK_4(...) pf_too_many_args_for_PF_MAX_ARGS(__VA_ARGS__)
-
-/* --- Event arguments on the calling thread's track ---------------------
- * The _g forms of the argument macros above. Same rules: the format is a
- * literal, one argument per placeholder, up to PF_MAX_ARGS. */
-#define PF_PACKG_1(fn, name, a) fn((name), 1, PF_ARG_BITS(a), PF_ARG_IS_DOUBLE(a), 0, 0)
-#define PF_PACKG_2(fn, name, a, b) \
-    fn((name), 2, PF_ARG_BITS(a), PF_ARG_IS_DOUBLE(a), PF_ARG_BITS(b), PF_ARG_IS_DOUBLE(b))
-#define PF_PACKG_3(...) pf_too_many_args_for_PF_MAX_ARGS(__VA_ARGS__)
-#define PF_PACKG_4(...) pf_too_many_args_for_PF_MAX_ARGS(__VA_ARGS__)
-
-/**
- * pf_slice_begin_args_g() - pf_slice_begin_g() with 1 to PF_MAX_ARGS
- * arguments. See pf_slice_begin_args().
- */
-#define pf_slice_begin_args_g(name, ...)                                      \
-    PF_PACK_CAT(PF_PACKG_, PF_NARGS(__VA_ARGS__))(pf_slice_begin_args_g_impl, \
-                                                  PF_NAME_LITERAL(name), __VA_ARGS__)
-
-/**
- * pf_instant_event_args_g() - pf_instant_event_g() with 1 to PF_MAX_ARGS
- * arguments. See pf_slice_begin_args().
- */
-#define pf_instant_event_args_g(name, ...)                                      \
-    PF_PACK_CAT(PF_PACKG_, PF_NARGS(__VA_ARGS__))(pf_instant_event_args_g_impl, \
-                                                  PF_NAME_LITERAL(name), __VA_ARGS__)
-
-/**
- * pf_slice_begin_args_g_impl() - pf_slice_begin_args_g() without the macro.
- * Takes the same argument encoding as pf_slice_begin_args_impl().
- */
-PF_API void pf_slice_begin_args_g_impl(const char *name, unsigned nargs, uint64_t a0, bool a0_dbl,
-                                       uint64_t a1, bool a1_dbl);
-
-/** pf_instant_event_args_g_impl() - pf_instant_event_args_g() without the macro. */
-PF_API void pf_instant_event_args_g_impl(const char *name, unsigned nargs, uint64_t a0, bool a0_dbl,
-                                         uint64_t a1, bool a1_dbl);
+/** pf_instant_event_dyn_impl() - Real function behind pf_instant_event_dyn(). */
+PF_API void pf_instant_event_dyn_impl(struct pf_trace *t, uint64_t track_uuid, const char *name);
 
 /**
  * pf_counter_set_int() - Sample a counter track with an integer value.

@@ -7,6 +7,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 #include <time.h>
 
 #include "pb_writer.h"
@@ -23,69 +24,88 @@
 #define TYPE_COUNTER 4
 
 /* --- Record layout ------------------------------------------------------
- * The payload one event occupies in a chunk, written by the owning
- * producer alone. Fixed size, so a chunk is an array of these.
+ * The head one event occupies in a chunk, written by the owning producer
+ * alone. The head is fixed size. A dynamic name is copied after it, so the
+ * record's size is PF_REC_HEAD_BYTES, plus the copied name padded to
+ * PF_REC_ALIGN when RF_NAME_COPIED is set. See docs/raw_format.md.
  *
- * The name is a borrowed pointer rather than inline bytes: names are string
- * literals, so copying them would spend up to 255 bytes and a memcpy per
- * event to duplicate something immortal. The drain dereferences the pointer
- * and interns it, which keeps the strlen and the hashing off the hot path.
+ * A static name is a borrowed pointer: names are string literals, so copying
+ * them would spend bytes and a memcpy per event to duplicate something
+ * immortal. The drain dereferences the pointer and interns it.
  *
  * @name and @value share eight bytes because no event carries both. A slice
  * or instant has a name and no value; a counter has a value and no name,
  * which is Perfetto's own rule -- "most other TrackEvent fields (e.g.
  * categories, name, ..) are not supported for TYPE_COUNTER events".
- * RF_HAS_VALUE selects the arm.
+ * RF_HAS_VALUE selects the arm. With RF_NAME_COPIED, the same eight bytes
+ * hold the copied name's length instead.
  *
- *   0       8       16      24   28   32      40      48
- *   +-------+-------+-------+----+----+-------+-------+
- *   | ts    | track | name  |type|flag| arg0  | arg1  |
- *   |       |       | value |    |    |       |       |
- *   +-------+-------+-------+----+----+-------+-------+
+ *   0       8       16      24   28
+ *   +-------+-------+-------+----+----+
+ *   | ts    | track | name  |type|flag|
+ *   |       |       | value |    |    |
+ *   +-------+-------+-------+----+----+
  *
- * arg0 and arg1 hold up to PF_MAX_ARGS event arguments, as int64 bits or
- * double bits. RF_NARGS_MASK gives how many are used and the RF_ARG*_IS_DOUBLE
- * bits give each one's type. They are zeroed on events with no args, so a
- * chunk never carries stale bytes. Counters never carry args. */
-#define PF_PAYLOAD_BYTES 48u
+ * Counters never carry a name, copied or not. */
+#define PF_REC_HEAD_BYTES 32u
 #define PF_REC_ALIGN 8u
+
+/* Longest dynamic name stored, in bytes, not counting the NUL. A longer name
+ * is cut to this length, the last three bytes become "...", and the cut is
+ * counted. The reader sees the "..." and knows the name was cut. */
+#define PF_DYN_NAME_MAX 128u
+
+/* The length a dynamic name is stored at: its own, or PF_DYN_NAME_MAX when it
+ * is longer. @cut is set when it is longer. */
+static inline size_t pf_dyn_name_fit(const char *name, bool *cut)
+{
+    size_t n = strlen(name);
+    *cut = n > PF_DYN_NAME_MAX;
+    return *cut ? PF_DYN_NAME_MAX : n;
+}
+
+/* Copies @n bytes of @name to @dst, which is @n bytes long. When @cut, the last
+ * three bytes are "..." in place of the cut text. */
+static inline void pf_dyn_name_copy(char *dst, const char *name, size_t n, bool cut)
+{
+    if (!cut) {
+        memcpy(dst, name, n);
+        return;
+    }
+    memcpy(dst, name, n - 3);
+    memcpy(dst + n - 3, "...", 3);
+}
 
 struct pf_rec {
     uint64_t ts; /* timestamp, ns */
     uint64_t track; /* track_uuid */
 
-    /* Borrowed string literal, or a counter's value; see RF_HAS_VALUE. For
-     * an event with args, the name is the format string. */
+    /* Borrowed string literal, or a counter's value; see RF_HAS_VALUE. With
+     * RF_NAME_COPIED, the length of the name copied after the head. */
     union {
         const char *name;
         uint64_t value;
+        uint64_t name_len;
     } u;
 
     uint32_t type; /* TYPE_* */
     uint32_t flags; /* see RF_* */
-
-    uint64_t arg[PF_MAX_ARGS];
 };
 
 enum pf_rec_flag {
     RF_HAS_VALUE = 0x1u,
     RF_VALUE_IS_DOUBLE = 0x2u,
-    /* Argument count, 0 to PF_MAX_ARGS, in bits 2-3. */
-    RF_NARGS_SHIFT = 2,
-    RF_NARGS_MASK = 0x3u << 2,
-    RF_ARG0_IS_DOUBLE = 0x10u,
-    RF_ARG1_IS_DOUBLE = 0x20u
+    /* The name's bytes follow the head, padded to PF_REC_ALIGN. */
+    RF_NAME_COPIED = 0x4u
 };
 
 /* The layout is the on-chunk wire format, so pin it. */
-_Static_assert(sizeof(struct pf_rec) == PF_PAYLOAD_BYTES, "the record is exactly PF_PAYLOAD_BYTES");
+_Static_assert(sizeof(struct pf_rec) == PF_REC_HEAD_BYTES, "the head is exactly PF_REC_HEAD_BYTES");
 _Static_assert(offsetof(struct pf_rec, ts) == 0, "ts leads the record");
 _Static_assert(offsetof(struct pf_rec, track) == 8, "track follows ts");
 _Static_assert(offsetof(struct pf_rec, u) == 16, "name/value follows track");
 _Static_assert(offsetof(struct pf_rec, type) == 24, "type follows name/value");
 _Static_assert(offsetof(struct pf_rec, flags) == 28, "no padding before flags");
-_Static_assert(offsetof(struct pf_rec, arg) == 32, "args follow the header");
-_Static_assert(PF_MAX_ARGS <= 3, "RF_NARGS_MASK holds counts up to 3");
 
 /* --- Chunks and writers -------------------------------------------------
  * A chunk is one thread's run of records, plus the link that puts it on the
@@ -99,8 +119,9 @@ struct pf_chunk {
     _Atomic uint32_t used;
     uint32_t writer; /* owning writer slot */
     uint64_t seq; /* per-writer chunk number */
-    /* Records back to back, PF_PAYLOAD_BYTES each. Records never split across
-     * chunks: one that does not fit the rest rotates to the next chunk. */
+    /* Records back to back: a head of PF_REC_HEAD_BYTES, plus a copied name.
+     * Records never split across chunks: one that does not fit the rest
+     * rotates to the next chunk. */
     _Alignas(8) unsigned char bytes[];
 };
 
@@ -142,11 +163,10 @@ struct pf_writer {
  * an event name is a borrowed literal of any length, so pb_buf grows if one
  * exceeds this. */
 #define PF_NAME_WARM 256u
-#define PF_PACKET_WARM (PF_PAYLOAD_BYTES + PF_NAME_WARM)
+#define PF_PACKET_WARM (PF_REC_HEAD_BYTES + PF_NAME_WARM)
 
 /* Longest name an event with args may take once its arguments are rendered,
  * including the NUL. A longer result falls back to the bare format string. */
-#define PF_FORMAT_NAME_MAX 128u
 
 /* Flush the staging buffer once it passes this, so one write() carries many
  * packets instead of one syscall per event. */
@@ -236,6 +256,7 @@ struct pf_trace {
     /* Records lost to a full pool in continuous mode. Atomic because the
      * producer that loses an event does not take pool_lock. */
     _Atomic uint64_t dropped;
+    _Atomic uint64_t truncated;
 
     /* Serializes drains: a caller's pf_trace_dump() against the drain
      * thread, and against another caller's. Also covers the intern tables,
@@ -417,6 +438,16 @@ static inline void pf_walk_begin(struct pf_walk *w, const struct pf_chunk *head)
     pf_walk_enter(w, head);
 }
 
+/* A record's size in its chunk: the head, plus any copied name padded to
+ * PF_REC_ALIGN. Read from the head, so the walk needs no index. */
+static inline uint32_t pf_rec_size(const struct pf_rec *r)
+{
+    if (!(r->flags & RF_NAME_COPIED))
+        return PF_REC_HEAD_BYTES;
+    uint32_t len = (uint32_t)r->u.name_len;
+    return PF_REC_HEAD_BYTES + ((len + PF_REC_ALIGN - 1) & ~(PF_REC_ALIGN - 1));
+}
+
 static inline const struct pf_rec *pf_walk_next(struct pf_walk *w)
 {
     while (w->c && w->i >= w->end)
@@ -424,7 +455,7 @@ static inline const struct pf_rec *pf_walk_next(struct pf_walk *w)
     if (!w->c)
         return NULL;
     const struct pf_rec *r = (const struct pf_rec *)(w->c->bytes + w->i);
-    w->i += PF_PAYLOAD_BYTES;
+    w->i += pf_rec_size(r);
     return r;
 }
 

@@ -164,9 +164,9 @@ header's `record_size` assumed. The trade-offs:
   with the length of the names in it.
 - Hot path. A copied name costs a `memcpy` of its bytes into the chunk on the
   producer. Static-name records cost the same as before.
-- Size limit. A copied name is capped at `PF_DYN_NAME_MAX` bytes. A longer name
-  is truncated to the cap, and the truncation is counted. The cap is set when
-  this is implemented.
+- Size limit. A copied name is capped at `PF_DYN_NAME_MAX`, 128 bytes. A longer
+  name is cut to 125 bytes and the last three bytes are `...`, so a reader can
+  see the cut. The truncation is counted in the stats.
 - Chunk capacity. `chunk_slots`, a record count, no longer bounds a chunk. The
   chunk is bounded by its payload size in bytes.
 - Format version. The change bumps `version` to 5 and `record_size` to 32. A

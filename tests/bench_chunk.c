@@ -19,7 +19,7 @@
  *
  * The library reads the clock on every event. Where clock_gettime() is a real
  * syscall rather than a vDSO read, that cost dwarfs the buffer work, so this
- * program stubs the library's clock with a counter, as bench_args does. The
+ * program stubs the library's clock with a counter, as the other benches do. The
  * timing loops use a direct syscall so their numbers are real. The raw clock
  * cost is printed on the first line for comparison.
  */

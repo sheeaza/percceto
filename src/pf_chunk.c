@@ -106,7 +106,7 @@ static void make_exit_key(void)
 /* A chunk's size, padded to a cache line so no two chunks share one. */
 size_t pf_chunk_bytes(uint32_t slots)
 {
-    size_t bytes = sizeof(struct pf_chunk) + slots * PF_PAYLOAD_BYTES;
+    size_t bytes = sizeof(struct pf_chunk) + slots * PF_REC_HEAD_BYTES;
     return (bytes + 63) & ~(size_t)63;
 }
 
@@ -149,7 +149,7 @@ int pf_pool_init(struct pf_trace *t)
     t->chunk_bytes = chunk_bytes;
     t->chunk_count = (uint32_t)count;
     t->chunk_slots = slots;
-    t->chunk_payload = slots * PF_PAYLOAD_BYTES;
+    t->chunk_payload = slots * PF_REC_HEAD_BYTES;
     t->watermark_chunks = (uint32_t)(count * t->cfg.watermark_pct / 100u);
 
     pthread_mutex_init(&t->pool_lock, NULL);

@@ -19,11 +19,6 @@ add_executable(test_noalloc test_noalloc.c)
 target_link_libraries(test_noalloc PRIVATE pftrace Threads::Threads ${CMAKE_DL_LIBS})
 add_test(NAME noalloc COMMAND test_noalloc WORKING_DIRECTORY ${PFTRACE_RUN_DIR})
 
-# Event arguments rendered into names by the protobuf drain.
-add_executable(test_args_pb test_args_pb.c)
-target_link_libraries(test_args_pb PRIVATE pftrace Threads::Threads)
-add_test(NAME args_pb COMMAND test_args_pb WORKING_DIRECTORY ${PFTRACE_RUN_DIR})
-
 add_executable(test_packet_clock test_packet_clock.c)
 target_link_libraries(test_packet_clock PRIVATE pftrace Threads::Threads)
 add_test(NAME packet_clock COMMAND test_packet_clock WORKING_DIRECTORY ${PFTRACE_RUN_DIR})
@@ -70,10 +65,6 @@ set_tests_properties(raw_roundtrip PROPERTIES FIXTURES_SETUP raw_traces)
 add_executable(bench bench.c)
 target_link_libraries(bench PRIVATE pftrace Threads::Threads)
 
-# Cost of the record-size change and of event arguments; see the file header.
-add_executable(bench_args bench_args.c)
-target_link_libraries(bench_args PRIVATE pftrace Threads::Threads)
-
 # Chunk-buffer cost: rotation per chunk_slots, and scaling across threads.
 add_executable(bench_chunk bench_chunk.c)
 target_link_libraries(bench_chunk PRIVATE pftrace Threads::Threads)
@@ -98,7 +89,6 @@ if(PFTRACE_BUILD_SANITIZED)
     test_counter_name
     test_process_track
     test_counter_g
-    test_args_pb
     test_raw_roundtrip
   )
   foreach(sanitizer asan tsan)

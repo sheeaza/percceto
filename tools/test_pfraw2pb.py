@@ -22,7 +22,7 @@ RAW_SLICE_BEGIN, RAW_SLICE_END, RAW_INSTANT, RAW_COUNTER = 1, 2, 3, 4
 
 
 def raw_file(*chunks, clock=7, offset=0, boottime=0):
-    header = struct.pack("<8sIIIIqq", b"PFRAWv1\0", 4, 48, clock, 0, offset,
+    header = struct.pack("<8sIIIIqq", b"PFRAWv1\0", 5, 32, clock, 0, offset,
                          boottime)
     body = b"".join(struct.pack("<II", kind, len(payload)) + payload
                     for kind, payload in chunks)
@@ -40,8 +40,14 @@ def track_entry(uuid, parent, kind, pid, tid, unit, name):
                        1 if raw else 0, len(raw), raw.ljust(64, b"\0"))
 
 
-def event(ts, track, u, etype, flags=0, a0=0, a1=0):
-    return struct.pack("<QQQII2Q", ts, track, u, etype, flags, a0, a1)
+def event(ts, track, u, etype, flags=0):
+    return struct.pack("<QQQII", ts, track, u, etype, flags)
+
+
+def event_copied(ts, track, name, etype):
+    """A record whose name is copied after the head, padded to 8 bytes."""
+    head = struct.pack("<QQQII", ts, track, len(name), etype, pb.RF_NAME_COPIED)
+    return head + name + b"\0" * (-len(name) % 8)
 
 
 def convert_bytes(data, keep_clock=False):
@@ -178,9 +184,9 @@ class ConvertTest(unittest.TestCase):
                   event(1, 1, NAME_PTR, RAW_SLICE_BEGIN)
                   + event(2, 1, 0, RAW_SLICE_END))
         data = raw_file(self.thread_tracks(), names, events)
-        # The events chunk is 8 + 96 bytes; 5 are cut, so 99 remain of it.
+        # The events chunk is 8 + 64 bytes; 5 are cut, so 67 remain of it.
         packets, stats, torn = convert_bytes(data[:-5])
-        self.assertEqual(torn, 99)
+        self.assertEqual(torn, 67)
         self.assertEqual(stats["events"], 0)
         self.assertEqual(len(packets), 1)  # descriptor only; events lost
 
@@ -239,74 +245,54 @@ class ConvertTest(unittest.TestCase):
         with self.assertRaisesRegex(pb.RawFormatError, "bad magic"):
             pb.RawReader(io.BytesIO(data))
 
-    def test_args_are_rendered_into_event_name(self):
-        names = (pb.CHUNK_NAMES, name_entry(NAME_PTR, "job %d took %f"))
-        bits = struct.unpack("<Q", struct.pack("<d", 2.5))[0]
-        # Two args: arg0 is an int, arg1 is a double (RF_ARG1_IS_DOUBLE).
-        flags = (2 << pb.RF_NARGS_SHIFT) | 0x20
+    def test_dynamic_name_is_written_inline(self):
         events = (pb.CHUNK_EVENTS,
-                  event(100, 1, NAME_PTR, RAW_SLICE_BEGIN, flags, 7, bits))
-        packets, _, _ = convert_bytes(
-            raw_file(self.thread_tracks(), names, events))
+                  event_copied(100, 1, b"job 7 took 2.500000", RAW_SLICE_BEGIN))
+        packets, stats, torn = convert_bytes(
+            raw_file(self.thread_tracks(), events))
+        self.assertEqual(torn, 0)
         self.assertEqual(packets[1].track_event.name, "job 7 took 2.500000")
+        # Not interned: the name is per event, so no definition is written.
+        self.assertEqual(len(packets[1].interned_data.event_names), 0)
+        self.assertEqual(stats["events"], 1)
 
-    def test_unsigned_and_hex_conversions(self):
-        names = (pb.CHUNK_NAMES, name_entry(NAME_PTR, "n=%u x=%x 100%%"))
-        flags = 2 << pb.RF_NARGS_SHIFT
+    def test_copied_names_of_mixed_lengths_keep_records_aligned(self):
+        # 3, 8 and 5 bytes: the padding must put each head on the next record.
         events = (pb.CHUNK_EVENTS,
-                  event(100, 1, NAME_PTR, RAW_INSTANT, flags, 42, 255))
+                  event_copied(1, 1, b"abc", RAW_INSTANT)
+                  + event_copied(2, 1, b"12345678", RAW_INSTANT)
+                  + event_copied(3, 1, b"xyzuv", RAW_INSTANT))
+        packets, stats, torn = convert_bytes(
+            raw_file(self.thread_tracks(), events))
+        self.assertEqual(torn, 0)
+        self.assertEqual([p.track_event.name for p in packets[1:]],
+                         ["abc", "12345678", "xyzuv"])
+        self.assertEqual(stats["events"], 3)
+
+    def test_static_and_dynamic_names_mix(self):
+        names = (pb.CHUNK_NAMES, name_entry(NAME_PTR, "compute"))
+        events = (pb.CHUNK_EVENTS,
+                  event(100, 1, NAME_PTR, RAW_SLICE_BEGIN)
+                  + event_copied(110, 1, b"job 3", RAW_INSTANT))
         packets, _, _ = convert_bytes(
             raw_file(self.thread_tracks(), names, events))
-        self.assertEqual(packets[1].track_event.name, "n=42 x=ff 100%")
+        self.assertEqual(packets[1].track_event.name_iid, 1)
+        self.assertEqual(packets[2].track_event.name, "job 3")
 
-    def test_arg_count_mismatch_writes_bare_format_and_warns(self):
-        names = (pb.CHUNK_NAMES, name_entry(NAME_PTR, "job %d"))
-        flags = 2 << pb.RF_NARGS_SHIFT
-        events = (pb.CHUNK_EVENTS,
-                  event(100, 1, NAME_PTR, RAW_SLICE_BEGIN, flags, 7, 0))
-        with self.assertLogs("pfraw2pb", level="WARNING") as logs:
-            packets, stats, _ = convert_bytes(
-                raw_file(self.thread_tracks(), names, events))
-        self.assertEqual(packets[1].track_event.name, "job %d")
-        self.assertEqual(stats["bad_format"], 1)
-        self.assertIn("fewer placeholders", logs.output[0])
+    def test_copied_name_over_limit_is_rejected(self):
+        # 129 bytes: one past the 128 the writer copies.
+        big = b"x" * 129
+        data = raw_file(self.thread_tracks(),
+                        (pb.CHUNK_EVENTS, event_copied(1, 1, big, RAW_INSTANT)))
+        with self.assertRaisesRegex(pb.RawFormatError, "over 128"):
+            convert_bytes(data)
 
-    def test_arg_type_mismatch_writes_bare_format_and_warns(self):
-        names = (pb.CHUNK_NAMES, name_entry(NAME_PTR, "%d"))
-        flags = (1 << pb.RF_NARGS_SHIFT) | 0x10  # arg0 is a double
-        events = (pb.CHUNK_EVENTS,
-                  event(100, 1, NAME_PTR, RAW_SLICE_BEGIN, flags, 0, 0))
-        with self.assertLogs("pfraw2pb", level="WARNING") as logs:
-            packets, stats, _ = convert_bytes(
-                raw_file(self.thread_tracks(), names, events))
-        self.assertEqual(packets[1].track_event.name, "%d")
-        self.assertIn("given a double", logs.output[0])
-
-    def test_width_flags_and_precision(self):
-        bits = struct.unpack("<Q", struct.pack("<d", 2.5))[0]
-        self.assertEqual(
-            pb.format_args("[%8d][%-6d][%+d][%08.3f][%.2e]",
-                           [(5, False), (3, False), (3, False),
-                            (bits, True), (bits, True)]),
-            "[       5][3     ][+3][0002.500][2.50e+00]")
-
-    def test_char_and_pointer(self):
-        self.assertEqual(
-            pb.format_args("%c%c p=%p P=%8p",
-                           [(104, False), (105, False),
-                            (4096, False), (255, False)]),
-            "hi p=0x1000 P=    0xff")
-
-    def test_hash_flag_is_rejected(self):
-        with self.assertRaises(pb.RawFormatError):
-            pb.format_args("%#x", [(255, False)])
-
-    def test_name_length_limit_matches_C(self):
-        # 127 characters fit; 128 do not, as in PF_FORMAT_NAME_MAX.
-        self.assertEqual(len(pb.format_args("x" * 127, [])), 127)
-        with self.assertRaisesRegex(pb.RawFormatError, "longer than 127"):
-            pb.format_args("x" * 128, [])
-
+    def test_copied_name_past_chunk_end_is_rejected(self):
+        # The head says 20 name bytes, but the chunk ends after the head.
+        head = struct.pack("<QQQII", 1, 1, 20, RAW_INSTANT, pb.RF_NAME_COPIED)
+        data = raw_file(self.thread_tracks(), (pb.CHUNK_EVENTS, head))
+        with self.assertRaisesRegex(pb.RawFormatError, "runs past"):
+            convert_bytes(data)
 
 if __name__ == "__main__":
     unittest.main()

@@ -105,7 +105,9 @@ static void *emit_loop(void *arg)
         pf_slice_begin_impl(w->t, w->trk, kNames[i & 15]);
         w->events += 1;
         if ((i & 7) == 0) {
-            pf_instant_event_args(w->t, w->trk, "job %d took %f", (int)(i & 255), 2.5);
+            char job[32];
+            snprintf(job, sizeof job, "job %d took %f", (int)(i & 255), 2.5);
+            pf_instant_event_dyn(w->t, w->trk, job);
             w->events += 1;
         }
         if ((i & 15) == 0) {

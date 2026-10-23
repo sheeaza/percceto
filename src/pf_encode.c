@@ -7,7 +7,6 @@
 #include <string.h>
 
 #include "pf_encode.h"
-#include "pf_format.h"
 #include "pftrace_internal.h"
 
 struct enc {
@@ -237,23 +236,23 @@ static void pf_pb_commit_name(struct pf_writer *w, int slot, const char *name, s
 }
 
 void pf_pb_emit(struct pf_trace *t, struct pf_writer *w, uint64_t ts, uint32_t type, uint64_t track,
-                const char *name, bool has_value, uint64_t raw_value, bool value_is_double,
-                unsigned nargs, uint64_t a0, bool a0_dbl, uint64_t a1, bool a1_dbl)
+                const char *name, bool dynamic, bool has_value, uint64_t raw_value,
+                bool value_is_double)
 {
-    /* An event with args gets a name built from its format and values. That
-     * name is per event, so it is sent inline and never interned. The buffer
-     * is on the stack, so this does not allocate. */
-    char formatted[PF_FORMAT_NAME_MAX];
-    bool dynamic = nargs > 0 && name != NULL && !has_value;
+    /* A dynamic name is built by the caller, so it differs per event. It is
+     * sent inline and never interned: a pointer key would name the wrong
+     * string once the caller reuses its buffer. */
     const char *shown = has_value ? NULL : name;
     size_t nlen = 0;
-    if (dynamic) {
-        uint64_t arg[2] = { a0, a1 };
-        uint32_t flags = (nargs > 0 && a0_dbl ? RF_ARG0_IS_DOUBLE : 0u) |
-                         (nargs > 1 && a1_dbl ? RF_ARG1_IS_DOUBLE : 0u);
-        if (pf_format_name(formatted, sizeof formatted, name, flags, arg, nargs))
-            shown = formatted;
-        nlen = strlen(shown);
+    char fit[PF_DYN_NAME_MAX + 1];
+    if (dynamic && shown) {
+        bool cut = false;
+        nlen = pf_dyn_name_fit(shown, &cut);
+        pf_dyn_name_copy(fit, shown, nlen, cut);
+        fit[nlen] = '\0';
+        shown = fit;
+        if (cut)
+            atomic_fetch_add_explicit(&t->truncated, 1, memory_order_relaxed);
     }
 
     struct pb_event v;

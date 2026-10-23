@@ -346,33 +346,23 @@ events, so the dropped count (or a new counter) must say so, and the stats
 should report the files written. Only `PF_MODE_CONTINUOUS` rotates; snapshot
 dumps keep their own file naming.
 
-## 9. Name formatting for args events
+## ~~9. Name formatting for args events~~ (done: caller formats)
 
-An event with args builds its name on the producer. `pf_pb_emit` calls
-`pf_format_name` (`src/pf_format.c`), which runs `snprintf` for each conversion,
-and the expanded text is sent inline. In the realistic workload this is about
-20% of producer thread time: `pf_format_name` about 5.8% of total samples and
-`snprintf` 4.9%, from `pf_instant_event_args_impl`. The simple workload has none
-of it. Measured in `tests/bench_side.c`; see the second baseline under item 3.
+Decided: the caller formats its own name and passes it in, as Perfetto does.
+Percceto no longer expands `%` specs, and the `uint64_t arg[PF_MAX_ARGS]` words
+are gone, so an event's record is a fixed head plus, for a dynamic name, a copy
+of the name. `pf_format.c` and the `_args` API were removed.
 
-Options:
+- `pf_slice_begin_dyn` and `pf_instant_event_dyn` take a name built by the caller.
+  Protobuf sends it inline and does not intern it. Raw copies it into the record
+  (`RF_NAME_COPIED`, format version 5). Names over 128 bytes are truncated and
+  counted in `pf_stats.truncated`.
+- Static names are unchanged: protobuf interns them by pointer, raw keeps a
+  pointer and defines it in the names chunk.
 
-1. Fast path for plain integer specs (`%d`, `%u`, `%x` with no flags, width or
-   precision): write the digits directly, and keep `snprintf` for everything
-   else. The output must match `snprintf`, so test both over a range of values.
-2. Typed args, as Perfetto does. The name is the static format, interned, and
-   each arg is a typed debug annotation. Removes expansion from the producer,
-   but changes the trace: the slice bar shows the format text, and values appear
-   in the details panel. Readers that use the expanded name need checking first.
-3. Cache expanded names. Helps only if values repeat, which the realistic mix
-   has not been checked for.
-
-Perfetto takes the typed route. Its SDK has no printf-style formatting. A
-dynamic name is built by the caller and set with `set_name`
-(`include/perfetto/tracing/track_event.h`). Args are typed values, not text.
-
-Open: check whether any reader in this repo depends on the expanded name, and
-check how the realistic mix's args values repeat, before choosing 1 or 2.
+The trade-offs are in `docs/raw_format.md` ("Variable-size records") and
+`docs/chunk_buffers_design.md`. The cost of formatting moves to the caller.
+Typed debug annotations on the protobuf path are item 10.
 
 ## 10. Typed args on the protobuf path
 

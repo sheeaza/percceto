@@ -11,7 +11,7 @@ Producer cost of the chunk buffers, from `tests/bench_chunk.c`. Run with
 - Each event is a `pf_slice_begin` / `pf_slice_end` pair; ns/event counts
   records, so one pair is two events.
 - The library's `clock_gettime` is stubbed with a thread-local counter, as
-  `bench_args` does. A raw `clock_gettime` costs about 8.5 µs on this machine,
+  the other benches do. A raw `clock_gettime` costs about 8.5 µs on this machine,
   which would otherwise dominate every number.
 - Single runs. Expect a few ns of run-to-run noise.
 
