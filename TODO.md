@@ -353,7 +353,7 @@ Percceto no longer expands `%` specs, and the `uint64_t arg[PF_MAX_ARGS]` words
 are gone, so an event's record is a fixed head plus, for a dynamic name, a copy
 of the name. `pf_format.c` and the `_args` API were removed.
 
-- `pf_slice_begin_dyn` and `pf_instant_event_dyn` take a name built by the caller.
+- `pf_slice_begin` and `pf_instant_event` take a name built by the caller too: a literal goes static, anything else takes the dynamic path.
   Protobuf sends it inline and does not intern it. Raw copies it into the record
   (`RF_NAME_COPIED`, format version 5). Names over 128 bytes are truncated and
   counted in `pf_stats.truncated`.
@@ -382,6 +382,16 @@ annotation encoding, not `snprintf`. The `PF_MAX_ARGS` limit of 2 matches the
 
 Depends on item 9: the caller-formatted name path is removed first. Measure
 with `bench_side`'s realistic workload before and after.
+
+## 11. C++ scoped-slice macros take caller-built names
+
+`PF_SCOPED_SLICE` and `PF_SCOPED_SLICE_G` in `include/pftrace.hpp` still use
+`PF_NAME_LITERAL`, so they reject a name the caller built. The C macros
+`pf_slice_begin`, `pf_instant_event` and their `_g` forms dispatch on constness
+now, and the C++ ones should follow. Once they do, `PF_NAME_LITERAL` has no
+callers and can go. Check the C++ wrapper's `pf::Slice` and `pf::ThreadSlice`
+constructors against the dispatching macros, since they take `const char *`
+and are the other place a static-buffer pointer can be kept.
 
 ## Notes
 

@@ -327,31 +327,47 @@ PF_API uint64_t pf_track_counter(struct pf_trace *t, uint64_t parent_uuid, const
  * pf_slice_begin() - Begin a slice on a track.
  * @t: Trace context.
  * @track_uuid: Track to begin the slice on.
- * @name: Slice name. Must be a string literal -- see PF_NAME_LITERAL().
+ * @name: Slice name. A string literal, or a name the caller built.
+ *
+ * The macro picks the path from the name at compile time. A string literal
+ * takes the static path: its address is kept, not copied, so it is free. Any
+ * other name takes the dynamic path, pf_slice_begin_dyn_impl(). The choice uses
+ * __builtin_constant_p (GCC and Clang).
+ *
+ * A string literal is kept by address and never copied. A name that is not a
+ * literal but still has a constant address, such as a `static` array, takes
+ * the same static path, so its contents must not change once passed:
+ *
+ *     static char name[32];
+ *     snprintf(name, sizeof name, "req-%d", i);
+ *     pf_slice_begin(t, trk, name); // BAD: a later snprintf rewrites the name the drain reads
+ *
+ * A buffer that is not static (a local, or heap memory) takes the dynamic
+ * path, which copies the characters, so reusing it is safe.
  *
  * Writes into this thread's chunk and returns; no allocation and no I/O.
  * Takes no lock on the common path. The thread takes the pool lock once
- * per chunk, to exchange a full chunk for an empty one. The name itself is not
- * copied, only its address, which is why it has to be a literal.
+ * per chunk, to exchange a full chunk for an empty one.
  *
  * Slices on a given track must be ended in stack (LIFO) order via
  * pf_slice_end().
  */
-#define pf_slice_begin(t, track_uuid, name) \
-    pf_slice_begin_impl((t), (track_uuid), PF_NAME_LITERAL(name))
+#define pf_slice_begin(t, track_uuid, name)                                        \
+    (__builtin_constant_p(name) ? pf_slice_begin_impl((t), (track_uuid), (name)) : \
+                                  pf_slice_begin_dyn_impl((t), (track_uuid), (name)))
 
 /**
- * pf_slice_begin_impl() - pf_slice_begin() without the literal check.
+ * pf_slice_begin_impl() - pf_slice_begin() for a static name, without the dispatch.
  * @t: Trace context.
  * @track_uuid: Track to begin the slice on.
  * @name: Slice name, or %NULL. Borrowed, not copied: it must remain valid
  *      and unchanged until the trace is closed.
  *
- * Call pf_slice_begin() instead. This is the real function behind that
- * macro, exposed for the rare caller whose name is genuinely not a
- * literal but is still immortal -- a pointer into a string table, say.
- * The lifetime requirement is then yours to honour, and violating it is
- * undiagnosed: the drain thread may read the name long after the call.
+ * Call pf_slice_begin() instead. The macro sends a literal here, so this is
+ * the function a literal takes. A caller can call it directly for a name
+ * that is not a literal but is still immortal -- a pointer into a string
+ * table, say. The lifetime requirement is then yours to honour, and violating
+ * it is undiagnosed: the drain thread may read the name long after the call.
  */
 PF_API void pf_slice_begin_impl(struct pf_trace *t, uint64_t track_uuid, const char *name);
 
@@ -367,15 +383,18 @@ PF_API void pf_slice_end(struct pf_trace *t, uint64_t track_uuid);
  * pf_instant_event() - Record a single-point-in-time marker.
  * @t: Trace context.
  * @track_uuid: Track to record the marker on.
- * @name: Marker name. Must be a string literal -- see PF_NAME_LITERAL().
+ * @name: Marker name. A string literal, or a name the caller built.
  *
- * Emits Perfetto's TYPE_INSTANT event -- there is no matching _end call.
+ * Emits Perfetto's TYPE_INSTANT event -- there is no matching _end call. The
+ * name takes the same dispatch as pf_slice_begin(), including the constraint
+ * on static buffers.
  */
-#define pf_instant_event(t, track_uuid, name) \
-    pf_instant_event_impl((t), (track_uuid), PF_NAME_LITERAL(name))
+#define pf_instant_event(t, track_uuid, name)                                        \
+    (__builtin_constant_p(name) ? pf_instant_event_impl((t), (track_uuid), (name)) : \
+                                  pf_instant_event_dyn_impl((t), (track_uuid), (name)))
 
 /**
- * pf_instant_event_impl() - pf_instant_event() without the literal check.
+ * pf_instant_event_impl() - pf_instant_event() for a static name, without the dispatch.
  * @t: Trace context.
  * @track_uuid: Track to record the marker on.
  * @name: Marker name, or %NULL. Borrowed, not copied; see
@@ -393,26 +412,25 @@ PF_API void pf_instant_event_impl(struct pf_trace *t, uint64_t track_uuid, const
  */
 
 /**
- * pf_slice_begin_dyn() - pf_slice_begin() with a name the caller built.
+ * pf_slice_begin_dyn_impl() - Dynamic path of pf_slice_begin().
  * @t: Trace context.
  * @track_uuid: Track to begin the slice on.
  * @name: Slice name. Copied before the call returns.
+ *
+ * pf_slice_begin() calls this for any name that is not a literal. Call
+ * pf_slice_begin() instead.
  */
-#define pf_slice_begin_dyn(t, track_uuid, name) pf_slice_begin_dyn_impl((t), (track_uuid), (name))
-
-/** pf_slice_begin_dyn_impl() - Real function behind pf_slice_begin_dyn(). */
 PF_API void pf_slice_begin_dyn_impl(struct pf_trace *t, uint64_t track_uuid, const char *name);
 
 /**
- * pf_instant_event_dyn() - pf_instant_event() with a name the caller built.
+ * pf_instant_event_dyn_impl() - Dynamic path of pf_instant_event().
  * @t: Trace context.
  * @track_uuid: Track to record the marker on.
  * @name: Marker name. Copied before the call returns.
+ *
+ * pf_instant_event() calls this for any name that is not a literal. Call
+ * pf_instant_event() instead.
  */
-#define pf_instant_event_dyn(t, track_uuid, name) \
-    pf_instant_event_dyn_impl((t), (track_uuid), (name))
-
-/** pf_instant_event_dyn_impl() - Real function behind pf_instant_event_dyn(). */
 PF_API void pf_instant_event_dyn_impl(struct pf_trace *t, uint64_t track_uuid, const char *name);
 
 /**
@@ -459,16 +477,24 @@ PF_API void pf_counter_set_double(struct pf_trace *t, uint64_t counter_track_uui
 
 /**
  * pf_slice_begin_g() - Begin a slice on the calling thread's track.
- * @name: Slice name. Must be a string literal -- see PF_NAME_LITERAL().
+ * @name: Slice name. A string literal, or a name the caller built. Dispatched
+ *      as pf_slice_begin() is, including the constraint on static buffers.
  */
-#define pf_slice_begin_g(name) pf_slice_begin_g_impl(PF_NAME_LITERAL(name))
+#define pf_slice_begin_g(name) \
+    (__builtin_constant_p(name) ? pf_slice_begin_g_impl(name) : pf_slice_begin_g_dyn_impl(name))
 
 /**
- * pf_slice_begin_g_impl() - pf_slice_begin_g() without the literal check.
+ * pf_slice_begin_g_impl() - Static path of pf_slice_begin_g().
  * @name: Slice name, or %NULL. Borrowed, not copied; see
  *      pf_slice_begin_impl() for the lifetime requirement.
  */
 PF_API void pf_slice_begin_g_impl(const char *name);
+
+/**
+ * pf_slice_begin_g_dyn_impl() - Dynamic path of pf_slice_begin_g().
+ * @name: Slice name. Copied before the call returns.
+ */
+PF_API void pf_slice_begin_g_dyn_impl(const char *name);
 
 /**
  * pf_slice_end_g() - End the calling thread's most recently begun slice.
@@ -477,16 +503,23 @@ PF_API void pf_slice_end_g(void);
 
 /**
  * pf_instant_event_g() - Record a marker on the calling thread's track.
- * @name: Marker name. Must be a string literal -- see PF_NAME_LITERAL().
+ * @name: Marker name. A string literal, or a name the caller built. Dispatched
+ *      as pf_instant_event() is, including the constraint on static buffers.
  */
-#define pf_instant_event_g(name) pf_instant_event_g_impl(PF_NAME_LITERAL(name))
+#define pf_instant_event_g(name) \
+    (__builtin_constant_p(name) ? pf_instant_event_g_impl(name) : pf_instant_event_g_dyn_impl(name))
 
 /**
- * pf_instant_event_g_impl() - pf_instant_event_g() without the literal
- *      check.
+ * pf_instant_event_g_impl() - Static path of pf_instant_event_g().
  * @name: Marker name, or %NULL. Borrowed, not copied.
  */
 PF_API void pf_instant_event_g_impl(const char *name);
+
+/**
+ * pf_instant_event_g_dyn_impl() - Dynamic path of pf_instant_event_g().
+ * @name: Marker name. Copied before the call returns.
+ */
+PF_API void pf_instant_event_g_dyn_impl(const char *name);
 
 /**
  * pf_thread_name() - Name the calling thread's track.

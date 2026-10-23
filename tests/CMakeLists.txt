@@ -121,35 +121,11 @@ if(PFTRACE_BUILD_SANITIZED)
   endforeach()
 endif()
 
-# The name contract is enforced by the compiler, so the test for it has to
-# be a compilation. Each mode is an object-only build of the same file:
-# name_literal_ok must succeed, and the other three must fail, which is
-# what WILL_FAIL asserts. Without the negative cases a macro that stopped
-# rejecting anything would look exactly like a passing test suite.
-#
-# EXCLUDE_FROM_ALL so a deliberately-failing compile is not part of a
-# normal build; each test drives its own via --target.
-foreach(mode OK VARIABLE STACK_BUFFER EMPTY)
-  string(TOLOWER "${mode}" lower)
-  add_library(name_literal_${lower} OBJECT EXCLUDE_FROM_ALL
-    test_name_literal.c
-  )
-  target_include_directories(name_literal_${lower} PRIVATE
-    ${PROJECT_SOURCE_DIR}/include
-  )
-  target_compile_definitions(name_literal_${lower} PRIVATE MODE_${mode})
-
-  add_test(NAME name_literal_${lower}
-    COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR}
-            --target name_literal_${lower} --config $<CONFIG>
-  )
-endforeach()
-
-# Only the literal form may compile.
-set_tests_properties(name_literal_variable name_literal_stack_buffer
-                     name_literal_empty
-  PROPERTIES WILL_FAIL TRUE
-)
+# The name macros take a literal or a name the caller built, and dispatch on
+# which one it is. This object must compile with every form. Object-only, so
+# nothing runs.
+add_library(name_dispatch OBJECT test_name_dispatch.c)
+target_include_directories(name_dispatch PRIVATE ${PROJECT_SOURCE_DIR}/include)
 
 # The C++ wrapper must compile as C++11. Object-only, so nothing is linked or
 # run and the library is not needed. It is part of the default build: a header

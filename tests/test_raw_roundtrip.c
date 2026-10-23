@@ -717,7 +717,7 @@ static void dyn_roundtrip(const char *path)
     uint64_t trk = pf_track_thread(t, getpid(), 1, "dyn");
     char name[64];
     snprintf(name, sizeof name, "job %d took %f", 7, 2.5);
-    pf_slice_begin_dyn(t, trk, name);
+    pf_slice_begin(t, trk, name);
     /* The record holds its own copy, so the buffer can change at once. */
     memset(name, 'x', sizeof name - 1);
     name[sizeof name - 1] = '\0';
@@ -725,7 +725,7 @@ static void dyn_roundtrip(const char *path)
     char big[DYN_NAME_MAX + 72];
     memset(big, 'y', sizeof big - 1);
     big[sizeof big - 1] = '\0';
-    pf_instant_event_dyn(t, trk, big);
+    pf_instant_event(t, trk, big);
     pf_slice_begin(t, trk, "plain");
     pf_slice_end(t, trk);
 

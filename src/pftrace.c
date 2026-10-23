@@ -709,6 +709,20 @@ void pf_instant_event_g_impl(const char *name)
         pf_instant_event_impl(t, thread_track(t), name);
 }
 
+void pf_slice_begin_g_dyn_impl(const char *name)
+{
+    struct pf_trace *t = default_trace();
+    if (t)
+        pf_slice_begin_dyn_impl(t, thread_track(t), name);
+}
+
+void pf_instant_event_g_dyn_impl(const char *name)
+{
+    struct pf_trace *t = default_trace();
+    if (t)
+        pf_instant_event_dyn_impl(t, thread_track(t), name);
+}
+
 void pf_thread_name(const char *name)
 {
     if (!name)
