@@ -355,14 +355,30 @@ of the name. `pf_format.c` and the `_args` API were removed.
 
 - `pf_slice_begin` and `pf_instant_event` take a name built by the caller too: a literal goes static, anything else takes the dynamic path.
   Protobuf sends it inline and does not intern it. Raw copies it into the record
-  (`RF_NAME_COPIED`, format version 5). Names over 128 bytes are truncated and
-  counted in `pf_stats.truncated`.
+  (`RF_NAME_COPIED`, format version 5). Names over 128 bytes are cut to 125 bytes
+  ending in `...`, and the cut is counted in `pf_stats.truncated`.
+- A printf format with arguments is also accepted (`pf_slice_begin(t, trk, "req-%u", n)`).
+  The macro formats into a buffer for the call, then takes the dynamic path.
 - Static names are unchanged: protobuf interns them by pointer, raw keeps a
   pointer and defines it in the names chunk.
 
 The trade-offs are in `docs/raw_format.md` ("Variable-size records") and
 `docs/chunk_buffers_design.md`. The cost of formatting moves to the caller.
 Typed debug annotations on the protobuf path are item 10.
+
+Benchmark (`tests/bench_side.c`, Release build, continuous mode, 2M iterations
+per thread, 0 dropped in every row). Producer ns per event; the simple workload
+is one begin and end per iteration:
+
+| variant | 1 thread | 4 threads | 8 threads |
+|---|---:|---:|---:|
+| literal, `pf_slice_begin(t, trk, "compute")` | 19.9 | 31.4 | 38.3 |
+| formatted, `pf_slice_begin(t, trk, "req-%u", n)` | 52.1 | 49.2 | 54.9 |
+| manual, `snprintf` then `pf_slice_begin_dyn_impl` | 50.4 | 55.2 | 59.9 |
+
+The formatted macro costs the same as formatting by hand, and about 30 ns per
+event more than a literal at one thread. These rows come from a 20-core machine,
+not the i5-12500H in the table above, so compare within a table only.
 
 ## 10. Typed args on the protobuf path
 
