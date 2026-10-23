@@ -424,9 +424,17 @@ empty `pb_args` on that path recovered it, at 28.5 ns. The mechanism is not
 confirmed; padding the stack frame alone did not recover it. `src/pf_encode.c`
 is back at `146f39c` for readability.
 
-Still open: no `bench_side` workload measures args events yet, and
-`docs/raw_format.md` and `docs/chunk_buffers_design.md` do not describe the
-args API.
+Args workload: `bench_side` has an `args` workload, which calls
+`pf_slice_begin_args` with two `PF_KV` arguments per begin and end pair. One
+thread, producer ns/event, gcc 15.3, three runs: simple 16.5 to 17.4, args 26.6
+to 27.0. Clang 21.1.8, one run: simple 17.8, realistic 26.9, args 25.4.
+
+Clang regression check: realistic, one thread, producer ns/event, three runs.
+`146f39c` gives 26.9, 27.2, 27.6, and `69c7460` gives 27.2, 27.0, 27.0. The
+regression above does not show with clang, so it is specific to gcc.
+
+Still open: none for item 10 except the docs, which now describe the args API
+in both design docs.
 
 Depends on item 9: the caller-formatted name path is removed first. Measure
 with `bench_side`'s realistic workload before and after.

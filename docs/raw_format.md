@@ -138,6 +138,8 @@ name. The reader decodes `value` as a raw 64-bit value.
 
 Version 5 has no argument words. Event arguments are formatted by the caller
 before the event is emitted, so the name the reader sees is already final.
+Typed arguments (`pf_slice_begin_args`, `PF_KV`) are not stored in raw. They
+are dropped, and the record is written as if it had none.
 
 #### Copied names
 

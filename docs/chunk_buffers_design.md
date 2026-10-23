@@ -80,6 +80,11 @@ Each chunk is therefore self-contained.
 A record that does not fit the rest of its chunk moves to the next chunk; it is
 never split. A record larger than a whole chunk is dropped and counted.
 
+Typed arguments are protobuf debug annotations, written in the same packet as
+the event, after its name. Their bytes count toward the record size, so an event
+with arguments fills its chunk faster and moves to the next chunk sooner. The
+rule above applies unchanged.
+
 The track descriptors and the clock snapshot go on sequence 1 and are written by
 the drain, not by producers.
 

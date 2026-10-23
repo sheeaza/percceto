@@ -78,10 +78,11 @@ enum workload {
     SIMPLE,
     REALISTIC,
     FORMATTED,
-    MANUAL
+    MANUAL,
+    ARGS
 };
 
-static const char *const kLabels[] = { "simple", "realistic", "formatted", "manual" };
+static const char *const kLabels[] = { "simple", "realistic", "formatted", "manual", "args" };
 
 struct worker {
     struct pf_trace *t;
@@ -116,6 +117,12 @@ static void *emit_loop(void *arg)
             char buf[32];
             snprintf(buf, sizeof buf, "req-%u", (unsigned)(i & 255u));
             pf_slice_begin_dyn_impl(w->t, w->trk, buf);
+            pf_slice_end(w->t, w->trk);
+            w->events += 2;
+            continue;
+        }
+        if (w->load == ARGS) {
+            pf_slice_begin_args(w->t, w->trk, "compute", PF_KV("i", i), PF_KV("ratio", 0.5));
             pf_slice_end(w->t, w->trk);
             w->events += 2;
             continue;
@@ -209,7 +216,7 @@ int main(void)
     printf("\nContinuous mode, %u iterations per thread:\n", EVENTS_PER_THREAD);
     static const unsigned threads[] = { 1, 4, 8 };
     static const size_t slots[] = { 4096 };
-    static const enum workload loads[] = { SIMPLE, REALISTIC, FORMATTED, MANUAL };
+    static const enum workload loads[] = { SIMPLE, REALISTIC, FORMATTED, MANUAL, ARGS };
     for (unsigned s = 0; s < sizeof(slots) / sizeof(slots[0]); s++)
         for (unsigned l = 0; l < sizeof(loads) / sizeof(loads[0]); l++)
             for (unsigned i = 0; i < sizeof(threads) / sizeof(threads[0]); i++)
