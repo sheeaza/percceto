@@ -10,7 +10,8 @@ reader (the offline Python parser).
 ## Design goals
 
 - The drain thread does no protobuf work and no per-event string handling.
-  It copies fixed-size records and appends small sidecar entries.
+  It copies records as they are and appends small sidecar entries. A record is
+  fixed size unless its name is copied into it; see "Variable-size records".
 - The file is append-only. Nothing already written is ever rewritten, so
   continuous mode and snapshot mode use the same format.
 - A crash or truncation loses at most the last chunk.
@@ -41,8 +42,8 @@ the start.
 | Offset | Size | Field        | Value                                   |
 |--------|------|--------------|-----------------------------------------|
 | 0      | 8    | magic        | ASCII `PFRAWv1\0`                       |
-| 8      | 4    | version      | `4`                                     |
-| 12     | 4    | record_size  | `48` (bytes per event record)           |
+| 8      | 4    | version      | `5`                                     |
+| 12     | 4    | record_size  | `32` (bytes in the fixed head of an event record; see EVENTS payload) |
 | 16     | 4    | clock_id     | The trace clock as defined by the writer's `<time.h>`: `CLOCK_REALTIME`, `CLOCK_MONOTONIC` or `CLOCK_BOOTTIME` (`7` on Linux for boot time) |
 | 20     | 4    | flags        | `0` in version 4, reserved              |
 | 24     | 8    | clock_offset | `CLOCK_REALTIME` minus the trace clock, in ns, as a signed 64-bit value. Sampled back to back when the header is written, so `wall = ts + clock_offset` gives Unix time in ns. `0` when the trace clock is `CLOCK_REALTIME`. |
@@ -51,7 +52,8 @@ the start.
 Total: 40 bytes. The header never changes after it is written.
 
 The reader rejects the file if `magic` does not match, `version` is not
-recognized, or `record_size` is not `48`.
+recognized, or `record_size` is not `32`. Version 4 files, with 48-byte records
+and argument words, are not read by version 5 readers.
 
 ## Chunks
 
@@ -71,7 +73,7 @@ Chunks are written with one `write()` each, on an fd opened with `O_APPEND`.
 |-------|--------|--------------------------------------------------|
 | 1     | NAMES  | sequence of name entries                         |
 | 2     | TRACKS | sequence of track entries                        |
-| 3     | EVENTS | `len / 48` event records, back to back           |
+| 3     | EVENTS | event records, back to back; each is 32 bytes plus its copied name, if any |
 
 Any other `kind` value is an error in version 4.
 
@@ -113,37 +115,62 @@ The `name` field is capped at `PF_TRACK_NAME_MAX` (64) bytes.
 
 #### EVENTS payload
 
-Each record is the 48-byte `struct pf_rec` from `src/pftrace_internal.h`,
-copied as is:
+Each record starts with the 32-byte head of `struct pf_rec` from
+`src/pftrace_internal.h`, copied as is:
 
 | Offset | Size | Field        | Meaning                                       |
 |--------|------|--------------|-----------------------------------------------|
 | 0      | 8    | ts           | timestamp, ns, on `clock_id` from the header  |
 | 8      | 8    | track        | track_uuid                                    |
-| 16     | 8    | u            | `name` pointer, or `value` if `RF_HAS_VALUE`  |
+| 16     | 8    | u            | `name` pointer; `value` if `RF_HAS_VALUE`; name length in bytes if `RF_NAME_COPIED` |
 | 24     | 4    | type         | `TYPE_*`                                      |
 | 28     | 4    | flags        | `RF_*` bits                                   |
-| 32     | 8    | arg0         | event argument 0: int64 bits or double bits    |
-| 40     | 8    | arg1         | event argument 1: int64 bits or double bits    |
 
 `type` is one of `1` slice begin, `2` slice end, `3` instant, `4` counter.
 
 `RF_HAS_VALUE` (`0x1`) selects `value` in `u`. `RF_VALUE_IS_DOUBLE` (`0x2`)
-means `value` holds an IEEE-754 double.
-
-`RF_NARGS_MASK` (`0xC`, bits 2-3) is the number of arguments, `0` to `2`.
-`RF_ARG0_IS_DOUBLE` (`0x10`) and `RF_ARG1_IS_DOUBLE` (`0x20`) say whether the
-matching argument is a double. Only the first `nargs` of `arg0`, `arg1` are
-used. Events without args have `nargs` `0` and zero in `arg0` and `arg1`.
-
-When `nargs` is nonzero, `u` is a format string, and the arguments fill its
-placeholders in order. The conversions are `%d %i` (signed int), `%u %x %X`
-(unsigned int), `%f %g %e` (double) and `%%`. Anything else, or a placeholder
-count that does not match `nargs`, is an error.
+means `value` holds an IEEE-754 double. `RF_NAME_COPIED` (`0x4`) is described
+below. Other bits are reserved and zero.
 
 The reader decodes `name` as a pointer key into the NAMES definitions seen
-so far. A value of `0` means the event has no name. The reader decodes
-`value` as a raw 64-bit value.
+so far, unless `RF_NAME_COPIED` is set. A value of `0` means the event has no
+name. The reader decodes `value` as a raw 64-bit value.
+
+Version 5 has no argument words. Event arguments are formatted by the caller
+before the event is emitted, so the name the reader sees is already final.
+
+#### Copied names
+
+When `RF_NAME_COPIED` is set, `u` holds the length `L` of the name, and the
+name's bytes follow the head. They are not NUL-terminated. Zero bytes pad the
+record to the next 8-byte boundary. The record is then `32 + pad8(L)` bytes
+long, and the next record starts after the padding. `RF_HAS_VALUE` and
+`RF_NAME_COPIED` are never both set.
+
+A name is copied only when it is passed in as a dynamic string, not a static
+literal. Static names keep the pointer form, so the NAMES sidecar still holds
+them and their records stay 32 bytes.
+
+## Variable-size records
+
+Version 5 records are no longer a fixed size, which version 4 readers and the
+header's `record_size` assumed. The trade-offs:
+
+- Reading. A record's offset is known only after the records before it are
+  walked. The reader cannot seek to record `n`. The drain and the snapshot walk
+  already walk from the start of a chunk, so only the size arithmetic changes.
+- Chunk fill. A record that does not fit the rest of its chunk moves to the
+  next chunk, as protobuf entries already do. The unused tail of a chunk grows
+  with the length of the names in it.
+- Hot path. A copied name costs a `memcpy` of its bytes into the chunk on the
+  producer. Static-name records cost the same as before.
+- Size limit. A copied name is capped at `PF_DYN_NAME_MAX` bytes. A longer name
+  is truncated to the cap, and the truncation is counted. The cap is set when
+  this is implemented.
+- Chunk capacity. `chunk_slots`, a record count, no longer bounds a chunk. The
+  chunk is bounded by its payload size in bytes.
+- Format version. The change bumps `version` to 5 and `record_size` to 32. A
+  version 4 reader rejects a version 5 file, so the change is not silent.
 
 ## Ordering rules
 
@@ -178,7 +205,7 @@ The reader stops at the first chunk that is incomplete:
 
 - fewer than 8 bytes remain for a chunk header, or
 - `len` bytes are not all present, or
-- for EVENTS, `len` is not a multiple of 48, or
+- for EVENTS, a record's head or its copied name runs past the end of `len`, or
 - for TRACKS, `len` is not a multiple of 104.
 
 Everything before that point is valid. The reader reports the number of

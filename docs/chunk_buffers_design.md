@@ -14,13 +14,14 @@ sorts by timestamp on import.
      ├─ writers[]    max_threads slots, bound on a thread's first emit
      └─ refs         owner's reference, plus one per bound thread
 
-    chunk: { next, used (bytes, atomic), writer, seq, bytes[chunk_slots * PF_PAYLOAD_BYTES] }
+    chunk: { next, used (bytes, atomic), writer, seq, bytes[chunk payload] }
 
-    chunk_bytes = header + chunk_slots * PF_PAYLOAD_BYTES
+    chunk payload = chunk_bytes - header
 
-Each chunk's bytes hold whole entries: raw records, which are fixed size, or
-protobuf Trace.packet entries, which are variable length. A chunk never holds
-part of an entry. See "Protobuf" below.
+Each chunk's bytes hold whole entries: raw records, which are a 32-byte head
+plus any copied name, or protobuf Trace.packet entries, which are variable
+length. A chunk never holds part of an entry. See "Protobuf" and "Variable-size
+raw records" below.
 
 ## Config
 
@@ -33,10 +34,12 @@ part of an entry. See "Protobuf" below.
     emit (raw):
       ts = now()
       w = this thread's writer for this trace (pf_tls slot by trace index; bound on first use)
-      if w->used + PF_PAYLOAD_BYTES > chunk_payload: rotate (slow path, once per chunk)
-      r = &w->cur->bytes[w->used]; fill the record; w->used += PF_PAYLOAD_BYTES
+      if w->used + rec_size > chunk_payload: rotate (slow path, once per chunk)
+      r = &w->cur->bytes[w->used]; fill the record; w->used += rec_size
       w->cur->used = w->used   (release; publishes the record to a snapshot)
       w->events += 1   (relaxed; written only by this thread)
+
+    rec_size = 32, or 32 + pad8(len) when the name is copied into the record
 
     emit (protobuf): the same, with the event encoded into the chunk, and the
       name's definition placed in the same chunk when the writer's cache needs it.
@@ -44,6 +47,22 @@ part of an entry. See "Protobuf" below.
 The common path takes no lock and reads no shared state. The two stores go to
 lines only the owner writes: the chunk's `used`, which a snapshot dump reads,
 and the writer counter, which stats sums.
+
+## Variable-size raw records
+
+A raw record is 32 bytes, plus its copied name when the name is dynamic. The
+trade-offs are the same as for protobuf entries, and are set out in
+`docs/raw_format.md` under "Variable-size records":
+
+- A record that does not fit the rest of its chunk moves to the next chunk.
+  The unused tail of a chunk therefore grows with the names it holds.
+- A copied name costs a `memcpy` on the producer's hot path. Static names do
+  not.
+- A name longer than `PF_DYN_NAME_MAX` is truncated, and the truncation is
+  counted. A record larger than a whole chunk payload is dropped and counted,
+  as protobuf entries are.
+- `chunk_slots`, a record count, no longer bounds a chunk for raw. The chunk is
+  bounded by its payload in bytes.
 
 ## Protobuf
 
