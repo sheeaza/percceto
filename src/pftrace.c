@@ -4,6 +4,7 @@
 #include <fcntl.h>
 #include <limits.h>
 #include <pthread.h>
+#include <stdarg.h>
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <stddef.h>
@@ -472,6 +473,54 @@ void pf_slice_begin_impl(struct pf_trace *t, uint64_t track_uuid, const char *na
 void pf_slice_begin_dyn_impl(struct pf_trace *t, uint64_t track_uuid, const char *name)
 {
     emit_event(t, TYPE_SLICE_BEGIN, track_uuid, name, true, false, 0, false);
+}
+
+/* Longest name the formatter writes. A result longer than this is cut by the
+ * dynamic path, which ends it in "..." like any long name. */
+#define FMT_NAME_BYTES 256
+
+/* Formats @fmt into @buf and returns @buf. A failed format leaves an empty name. */
+static const char *format_name(char *buf, size_t size, const char *fmt, va_list ap)
+{
+    if (vsnprintf(buf, size, fmt, ap) < 0)
+        buf[0] = '\0';
+    return buf;
+}
+
+void pf_slice_begin_fmt_impl(struct pf_trace *t, uint64_t track_uuid, const char *fmt, ...)
+{
+    char name[FMT_NAME_BYTES];
+    va_list ap;
+    va_start(ap, fmt);
+    pf_slice_begin_dyn_impl(t, track_uuid, format_name(name, sizeof name, fmt, ap));
+    va_end(ap);
+}
+
+void pf_instant_event_fmt_impl(struct pf_trace *t, uint64_t track_uuid, const char *fmt, ...)
+{
+    char name[FMT_NAME_BYTES];
+    va_list ap;
+    va_start(ap, fmt);
+    pf_instant_event_dyn_impl(t, track_uuid, format_name(name, sizeof name, fmt, ap));
+    va_end(ap);
+}
+
+void pf_slice_begin_g_fmt_impl(const char *fmt, ...)
+{
+    char name[FMT_NAME_BYTES];
+    va_list ap;
+    va_start(ap, fmt);
+    pf_slice_begin_g_dyn_impl(format_name(name, sizeof name, fmt, ap));
+    va_end(ap);
+}
+
+void pf_instant_event_g_fmt_impl(const char *fmt, ...)
+{
+    char name[FMT_NAME_BYTES];
+    va_list ap;
+    va_start(ap, fmt);
+    pf_instant_event_g_dyn_impl(format_name(name, sizeof name, fmt, ap));
+    va_end(ap);
 }
 
 void pf_instant_event_impl(struct pf_trace *t, uint64_t track_uuid, const char *name)

@@ -20,7 +20,12 @@ void probe_built(struct pf_trace *t, uint64_t trk, const char *dynamic)
     char buf[32];
     snprintf(buf, sizeof buf, "req-%s", dynamic);
     pf_slice_begin(t, trk, buf);
+    pf_slice_begin(t, trk, "req-%d", 7);
+    pf_slice_begin(t, trk, "req-%s", dynamic);
     pf_instant_event(t, trk, dynamic);
     pf_slice_begin_g(buf);
     pf_instant_event_g(dynamic);
+    pf_instant_event(t, trk, "req-%d", 3);
+    pf_slice_begin_g("req-%s", dynamic);
+    pf_instant_event_g("req-%d", 4);
 }

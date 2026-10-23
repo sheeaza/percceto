@@ -8,8 +8,10 @@
 
 #if defined(__GNUC__) || defined(__clang__)
 #define PF_API __attribute__((visibility("default")))
+#define PF_PRINTF_FMT(fmt_idx, args_idx) __attribute__((format(printf, fmt_idx, args_idx)))
 #else
 #define PF_API
+#define PF_PRINTF_FMT(fmt_idx, args_idx)
 #endif
 
 #ifdef __cplusplus
@@ -327,9 +329,12 @@ PF_API uint64_t pf_track_counter(struct pf_trace *t, uint64_t parent_uuid, const
  * pf_slice_begin() - Begin a slice on a track.
  * @t: Trace context.
  * @track_uuid: Track to begin the slice on.
- * @name: Slice name. A string literal, or a name the caller built.
+ * @name: Slice name: a string literal, a name the caller built, or a printf
+ *      format when @... is given.
+ * @...: Arguments for @name as a printf format. Leave out for a name used as is.
  *
- * The macro picks the path from the name at compile time. A string literal
+ * With no arguments the macro picks the path from the name at compile time. A
+ * string literal
  * takes the static path: its address is kept, not copied, so it is free. Any
  * other name takes the dynamic path, pf_slice_begin_dyn_impl(). The choice uses
  * __builtin_constant_p (GCC and Clang).
@@ -352,9 +357,20 @@ PF_API uint64_t pf_track_counter(struct pf_trace *t, uint64_t parent_uuid, const
  * Slices on a given track must be ended in stack (LIFO) order via
  * pf_slice_end().
  */
-#define pf_slice_begin(t, track_uuid, name)                                        \
+/* The tag pastes a helper macro name: no arguments selects PF_SLICE_BEGIN_, and
+ * a format with arguments selects PF_SLICE_BEGIN_PF_FMT_TAG. */
+#define PF_PASTE_(a, b) a##b
+#define PF_PASTE(a, b) PF_PASTE_(a, b)
+#define PF_SLICE_BEGIN_(t, track_uuid, name)                                       \
     (__builtin_constant_p(name) ? pf_slice_begin_impl((t), (track_uuid), (name)) : \
                                   pf_slice_begin_dyn_impl((t), (track_uuid), (name)))
+
+#define PF_SLICE_BEGIN_PF_FMT_TAG(t, track_uuid, fmt, ...) \
+    pf_slice_begin_fmt_impl((t), (track_uuid), (fmt), __VA_ARGS__)
+
+#define pf_slice_begin(t, track_uuid, name, ...)                         \
+    PF_PASTE(PF_SLICE_BEGIN_, __VA_OPT__(PF_FMT_TAG))((t), (track_uuid), \
+                                                      name __VA_OPT__(, ) __VA_ARGS__)
 
 /**
  * pf_slice_begin_impl() - pf_slice_begin() for a static name, without the dispatch.
@@ -383,15 +399,24 @@ PF_API void pf_slice_end(struct pf_trace *t, uint64_t track_uuid);
  * pf_instant_event() - Record a single-point-in-time marker.
  * @t: Trace context.
  * @track_uuid: Track to record the marker on.
- * @name: Marker name. A string literal, or a name the caller built.
+ * @name: Marker name: a string literal, a name the caller built, or a printf
+ *      format when @... is given.
+ * @...: Arguments for @name as a printf format.
  *
  * Emits Perfetto's TYPE_INSTANT event -- there is no matching _end call. The
  * name takes the same dispatch as pf_slice_begin(), including the constraint
  * on static buffers.
  */
-#define pf_instant_event(t, track_uuid, name)                                        \
+#define PF_INSTANT_EVENT_(t, track_uuid, name)                                       \
     (__builtin_constant_p(name) ? pf_instant_event_impl((t), (track_uuid), (name)) : \
                                   pf_instant_event_dyn_impl((t), (track_uuid), (name)))
+
+#define PF_INSTANT_EVENT_PF_FMT_TAG(t, track_uuid, fmt, ...) \
+    pf_instant_event_fmt_impl((t), (track_uuid), (fmt), __VA_ARGS__)
+
+#define pf_instant_event(t, track_uuid, name, ...)                         \
+    PF_PASTE(PF_INSTANT_EVENT_, __VA_OPT__(PF_FMT_TAG))((t), (track_uuid), \
+                                                        name __VA_OPT__(, ) __VA_ARGS__)
 
 /**
  * pf_instant_event_impl() - pf_instant_event() for a static name, without the dispatch.
@@ -423,6 +448,21 @@ PF_API void pf_instant_event_impl(struct pf_trace *t, uint64_t track_uuid, const
 PF_API void pf_slice_begin_dyn_impl(struct pf_trace *t, uint64_t track_uuid, const char *name);
 
 /**
+ * pf_slice_begin_fmt_impl() - Real function behind pf_slice_begin() with arguments.
+ * @t: Trace context.
+ * @track_uuid: Track to begin the slice on.
+ * @fmt: printf format for the slice name.
+ * @...: Arguments for @fmt.
+ *
+ * The name is formatted into a buffer that lives only for the call, then sent
+ * on the dynamic path, so it is copied or sent before the call returns. A
+ * result longer than the dynamic name cap is cut as any long name is, ending
+ * in "...". Call pf_slice_begin() instead.
+ */
+PF_API void pf_slice_begin_fmt_impl(struct pf_trace *t, uint64_t track_uuid, const char *fmt, ...)
+    PF_PRINTF_FMT(3, 4);
+
+/**
  * pf_instant_event_dyn_impl() - Dynamic path of pf_instant_event().
  * @t: Trace context.
  * @track_uuid: Track to record the marker on.
@@ -432,6 +472,10 @@ PF_API void pf_slice_begin_dyn_impl(struct pf_trace *t, uint64_t track_uuid, con
  * pf_instant_event() instead.
  */
 PF_API void pf_instant_event_dyn_impl(struct pf_trace *t, uint64_t track_uuid, const char *name);
+
+/** pf_instant_event_fmt_impl() - Real function behind pf_instant_event() with arguments. */
+PF_API void pf_instant_event_fmt_impl(struct pf_trace *t, uint64_t track_uuid, const char *fmt, ...)
+    PF_PRINTF_FMT(3, 4);
 
 /**
  * pf_counter_set_int() - Sample a counter track with an integer value.
@@ -477,11 +521,18 @@ PF_API void pf_counter_set_double(struct pf_trace *t, uint64_t counter_track_uui
 
 /**
  * pf_slice_begin_g() - Begin a slice on the calling thread's track.
- * @name: Slice name. A string literal, or a name the caller built. Dispatched
- *      as pf_slice_begin() is, including the constraint on static buffers.
+ * @name: Slice name: a string literal, a name the caller built, or a printf
+ *      format when @... is given. Dispatched as pf_slice_begin() is, including
+ *      the constraint on static buffers.
+ * @...: Arguments for @name as a printf format.
  */
-#define pf_slice_begin_g(name) \
+#define PF_SLICE_BEGIN_G_(name) \
     (__builtin_constant_p(name) ? pf_slice_begin_g_impl(name) : pf_slice_begin_g_dyn_impl(name))
+
+#define PF_SLICE_BEGIN_G_PF_FMT_TAG(fmt, ...) pf_slice_begin_g_fmt_impl((fmt), __VA_ARGS__)
+
+#define pf_slice_begin_g(name, ...) \
+    PF_PASTE(PF_SLICE_BEGIN_G_, __VA_OPT__(PF_FMT_TAG))(name __VA_OPT__(, ) __VA_ARGS__)
 
 /**
  * pf_slice_begin_g_impl() - Static path of pf_slice_begin_g().
@@ -496,6 +547,9 @@ PF_API void pf_slice_begin_g_impl(const char *name);
  */
 PF_API void pf_slice_begin_g_dyn_impl(const char *name);
 
+/** pf_slice_begin_g_fmt_impl() - Real function behind pf_slice_begin_g() with arguments. */
+PF_API void pf_slice_begin_g_fmt_impl(const char *fmt, ...) PF_PRINTF_FMT(1, 2);
+
 /**
  * pf_slice_end_g() - End the calling thread's most recently begun slice.
  */
@@ -503,11 +557,18 @@ PF_API void pf_slice_end_g(void);
 
 /**
  * pf_instant_event_g() - Record a marker on the calling thread's track.
- * @name: Marker name. A string literal, or a name the caller built. Dispatched
- *      as pf_instant_event() is, including the constraint on static buffers.
+ * @name: Marker name: a string literal, a name the caller built, or a printf
+ *      format when @... is given. Dispatched as pf_instant_event() is, including
+ *      the constraint on static buffers.
+ * @...: Arguments for @name as a printf format.
  */
-#define pf_instant_event_g(name) \
+#define PF_INSTANT_EVENT_G_(name) \
     (__builtin_constant_p(name) ? pf_instant_event_g_impl(name) : pf_instant_event_g_dyn_impl(name))
+
+#define PF_INSTANT_EVENT_G_PF_FMT_TAG(fmt, ...) pf_instant_event_g_fmt_impl((fmt), __VA_ARGS__)
+
+#define pf_instant_event_g(name, ...) \
+    PF_PASTE(PF_INSTANT_EVENT_G_, __VA_OPT__(PF_FMT_TAG))(name __VA_OPT__(, ) __VA_ARGS__)
 
 /**
  * pf_instant_event_g_impl() - Static path of pf_instant_event_g().
@@ -520,6 +581,9 @@ PF_API void pf_instant_event_g_impl(const char *name);
  * @name: Marker name. Copied before the call returns.
  */
 PF_API void pf_instant_event_g_dyn_impl(const char *name);
+
+/** pf_instant_event_g_fmt_impl() - Real function behind pf_instant_event_g() with arguments. */
+PF_API void pf_instant_event_g_fmt_impl(const char *fmt, ...) PF_PRINTF_FMT(1, 2);
 
 /**
  * pf_thread_name() - Name the calling thread's track.
