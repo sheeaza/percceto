@@ -413,6 +413,17 @@ struct is not zeroed as a whole.
 
 Before the fix, the simple workload ran at about 24 ns/event.
 
+Regression check on the current machine (i5-12500H, gcc 15.3, `bench_side`
+Release, 1 thread, three interleaved runs each, producer ns/event): `146f39c`
+realistic 28.5, `69c7460` realistic 30.5, simple 17.7 and 17.8. Instruction
+counts from callgrind (100k events per workload) are within 0.5 percent of each
+other: 424.9M for `146f39c`, 423.4M for `69c7460`, so the extra time is not
+extra work. Passing the address of the local `pb_args` into the size and encode
+helpers on the no-argument path cost about 2 ns on realistic. Passing a static
+empty `pb_args` on that path recovered it, at 28.5 ns. The mechanism is not
+confirmed; padding the stack frame alone did not recover it. `src/pf_encode.c`
+is back at `146f39c` for readability.
+
 Still open: no `bench_side` workload measures args events yet, and
 `docs/raw_format.md` and `docs/chunk_buffers_design.md` do not describe the
 args API.
