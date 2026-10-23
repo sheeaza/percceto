@@ -212,9 +212,9 @@ static int read_lines(const uint8_t *data, size_t len, char out[][LINE_BYTES], i
                     size_t nl = 0;
                     for (;;) {
                         uint32_t ef;
-                        uint64_t ev;
-                        const uint8_t *eb;
-                        size_t en;
+                        uint64_t ev = 0;
+                        const uint8_t *eb = NULL;
+                        size_t en = 0;
                         r = next_field(&e, eend, &ef, &ev, &eb, &en);
                         if (r < 0)
                             return -1;
