@@ -361,7 +361,7 @@ static void check_protobuf(void)
     for (int i = 0; i < nwant && i < n; i++) {
         char what[LINE_BYTES + 32];
         int ok = strcmp(got[i], want[i]) == 0;
-        snprintf(what, sizeof what, "event %d: %s", i, ok ? got[i] : want[i]);
+        snprintf(what, sizeof what, "event %d: %.*s", i, LINE_BYTES, ok ? got[i] : want[i]);
         check(ok, what);
         if (!ok)
             printf("       got: %s\n", got[i]);
