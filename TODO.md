@@ -374,6 +374,25 @@ dynamic name is built by the caller and set with `set_name`
 Open: check whether any reader in this repo depends on the expanded name, and
 check how the realistic mix's args values repeat, before choosing 1 or 2.
 
+## 10. Typed args on the protobuf path
+
+Send event arguments as typed debug annotations instead of expanded text, as
+Perfetto's SDK does. The name is the static string, interned like any other
+literal, and each argument is a `DebugAnnotation` (`debug_annotation.proto`,
+v58.3) with its own type: int, uint, double, or string.
+
+Trade-off: the slice bar shows the static name only. Values appear in the
+slice's arguments section in the details panel, not on the bar, so debug text
+is no longer visible at a glance. The proto header says debug annotations are
+not a stable API, so readers must not depend on their field layout. The event
+size now varies with the argument values, since each annotation is a
+length-prefixed field. The producer does not format text, so the cost is the
+annotation encoding, not `snprintf`. The `PF_MAX_ARGS` limit of 2 matches the
+`TRACE_EVENT` limit in the v58.3 docs, so the API keeps its current size.
+
+Depends on item 9: the caller-formatted name path is removed first. Measure
+with `bench_side`'s realistic workload before and after.
+
 ## Notes
 
 - Continuous mode has no timer flush. A thread's partial chunk is written when
