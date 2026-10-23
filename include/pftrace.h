@@ -585,6 +585,155 @@ PF_API void pf_instant_event_g_dyn_impl(const char *name);
 /** pf_instant_event_g_fmt_impl() - Real function behind pf_instant_event_g() with arguments. */
 PF_API void pf_instant_event_g_fmt_impl(const char *fmt, ...) PF_PRINTF_FMT(1, 2);
 
+/* --- Typed arguments ------------------------------------------------------
+ * A slice or instant may carry up to PF_MAX_ARGS typed arguments, sent as
+ * debug annotations on the protobuf path. The name must be a string literal,
+ * as pf_slice_begin_impl() requires, since it is interned by address. Keys are
+ * string literals, sent inline with each argument. A string value is copied
+ * during the call, and cut to PF_DYN_NAME_MAX bytes as dynamic names are.
+ *
+ * Raw format v5 does not store arguments. They are dropped, and the record is
+ * written as if it had none. */
+
+/* Most arguments one call takes. Arguments cost nothing in events that do not
+ * use them; an event that does pays for each one's bytes and encode time, and
+ * the call pays for a stack array of this many. Override at build time with
+ * -DPF_MAX_ARGS=n. The library and its callers must be built with the same
+ * value. */
+#ifndef PF_MAX_ARGS
+#define PF_MAX_ARGS 4
+#endif
+
+enum pf_arg_kind {
+    PF_ARG_INT,
+    PF_ARG_UINT,
+    PF_ARG_DOUBLE,
+};
+
+/** struct pf_arg - One typed argument. Built by PF_KV(), not by hand. */
+struct pf_arg {
+    const char *key; /* annotation name, a string literal */
+    enum pf_arg_kind kind;
+    union {
+        int64_t i;
+        uint64_t u;
+        double d;
+    } v;
+};
+
+static inline struct pf_arg pf_arg_int(const char *key, int64_t v)
+{
+    struct pf_arg a = { key, PF_ARG_INT, { .i = v } };
+    return a;
+}
+
+static inline struct pf_arg pf_arg_uint(const char *key, uint64_t v)
+{
+    struct pf_arg a = { key, PF_ARG_UINT, { .u = v } };
+    return a;
+}
+
+static inline struct pf_arg pf_arg_double(const char *key, double v)
+{
+    struct pf_arg a = { key, PF_ARG_DOUBLE, { .d = v } };
+    return a;
+}
+
+/**
+ * PF_KV() - Build one typed argument from a key and a value.
+ * @key: Annotation name, a string literal.
+ * @value: An integer or a floating-point number. The kind follows the value's
+ *      type. Pointers, including strings, do not compile: a string value is
+ *      a format string's job, and the caller builds the name itself.
+ *
+ * Each branch names a function rather than calling it, so the branches that
+ * do not match @value are never checked against it.
+ */
+#define PF_KV(key, value)                \
+    _Generic((value),                    \
+        float: pf_arg_double,            \
+        double: pf_arg_double,           \
+        unsigned char: pf_arg_uint,      \
+        unsigned short: pf_arg_uint,     \
+        unsigned int: pf_arg_uint,       \
+        unsigned long: pf_arg_uint,      \
+        unsigned long long: pf_arg_uint, \
+        default: pf_arg_int)((key), (value))
+
+/* Counts its arguments, up to 8. More than that yields a wrong count, which
+ * PF_ARGS_ then rejects. */
+#define PF_ARGS_COUNT_(_1, _2, _3, _4, _5, _6, _7, _8, N, ...) N
+#define PF_ARGS_COUNT(...) PF_ARGS_COUNT_(__VA_ARGS__, 8, 7, 6, 5, 4, 3, 2, 1, 0)
+
+/* The argument array. More than PF_MAX_ARGS arguments makes the zero-length
+ * array size below a negative one, so the call does not compile. */
+#define PF_ARGS_(...)                                                        \
+    ((void)sizeof(char[PF_ARGS_COUNT(__VA_ARGS__) <= PF_MAX_ARGS ? 1 : -1]), \
+     (struct pf_arg[]){ __VA_ARGS__ })
+
+/**
+ * pf_slice_begin_args() - pf_slice_begin() with typed arguments.
+ * @t: Trace context.
+ * @track_uuid: Track to begin the slice on.
+ * @name: Slice name: a string literal.
+ * @...: One to PF_MAX_ARGS PF_KV() arguments.
+ *
+ * The name is interned, and the values appear in the slice's arguments in the
+ * trace viewer, not on the bar. Slices must be ended with pf_slice_end().
+ */
+#define pf_slice_begin_args(t, track_uuid, name, ...)                                              \
+    pf_slice_begin_args_impl((t), (track_uuid), PF_NAME_LITERAL(name), PF_ARGS_COUNT(__VA_ARGS__), \
+                             PF_ARGS_(__VA_ARGS__))
+
+/**
+ * pf_instant_event_args() - pf_instant_event() with typed arguments.
+ * @t: Trace context.
+ * @track_uuid: Track to record the marker on.
+ * @name: Marker name: a string literal.
+ * @...: One to PF_MAX_ARGS PF_KV() arguments.
+ */
+#define pf_instant_event_args(t, track_uuid, name, ...)                  \
+    pf_instant_event_args_impl((t), (track_uuid), PF_NAME_LITERAL(name), \
+                               PF_ARGS_COUNT(__VA_ARGS__), PF_ARGS_(__VA_ARGS__))
+
+/**
+ * pf_slice_begin_args_impl() - Real function behind pf_slice_begin_args().
+ * @nargs: Number of arguments in @args, 1 to PF_MAX_ARGS.
+ * @args: The arguments. Read during the call; the array need not outlive it.
+ *      Keys must be string literals, as the name is.
+ */
+PF_API void pf_slice_begin_args_impl(struct pf_trace *t, uint64_t track_uuid, const char *name,
+                                     unsigned nargs, const struct pf_arg *args);
+
+/** pf_instant_event_args_impl() - Real function behind pf_instant_event_args(). */
+PF_API void pf_instant_event_args_impl(struct pf_trace *t, uint64_t track_uuid, const char *name,
+                                       unsigned nargs, const struct pf_arg *args);
+
+/**
+ * pf_slice_begin_args_g() - pf_slice_begin_args() on the calling thread's track.
+ * @name: Slice name: a string literal.
+ * @...: One to PF_MAX_ARGS PF_KV() arguments.
+ */
+#define pf_slice_begin_args_g(name, ...)                                          \
+    pf_slice_begin_args_g_impl(PF_NAME_LITERAL(name), PF_ARGS_COUNT(__VA_ARGS__), \
+                               PF_ARGS_(__VA_ARGS__))
+
+/**
+ * pf_instant_event_args_g() - pf_instant_event_args() on the calling thread's track.
+ * @name: Marker name: a string literal.
+ * @...: One to PF_MAX_ARGS PF_KV() arguments.
+ */
+#define pf_instant_event_args_g(name, ...)                                          \
+    pf_instant_event_args_g_impl(PF_NAME_LITERAL(name), PF_ARGS_COUNT(__VA_ARGS__), \
+                                 PF_ARGS_(__VA_ARGS__))
+
+/** pf_slice_begin_args_g_impl() - Real function behind pf_slice_begin_args_g(). */
+PF_API void pf_slice_begin_args_g_impl(const char *name, unsigned nargs, const struct pf_arg *args);
+
+/** pf_instant_event_args_g_impl() - Real function behind pf_instant_event_args_g(). */
+PF_API void pf_instant_event_args_g_impl(const char *name, unsigned nargs,
+                                         const struct pf_arg *args);
+
 /**
  * pf_thread_name() - Name the calling thread's track.
  * @name: Thread name. Copied, so it may be a computed string.

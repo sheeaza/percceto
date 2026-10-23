@@ -395,8 +395,9 @@ void pf_drain_wake(struct pf_trace *t)
  * later. A dynamic name is copied into the record now, since the caller's
  * buffer may be reused before the drain runs. */
 
-static void emit_event(struct pf_trace *t, uint32_t type, uint64_t track_uuid, const char *name,
-                       bool dynamic, bool has_value, uint64_t raw_value, bool value_is_double)
+static void emit_event_args(struct pf_trace *t, uint32_t type, uint64_t track_uuid,
+                            const char *name, bool dynamic, bool has_value, uint64_t raw_value,
+                            bool value_is_double, unsigned nargs, const struct pf_arg *args)
 {
     /* Timestamp before anything else, so the cost of finding a chunk lands
      * between this event and the next rather than inside this one. Chunks
@@ -409,10 +410,11 @@ static void emit_event(struct pf_trace *t, uint32_t type, uint64_t track_uuid, c
         atomic_fetch_add_explicit(&t->dropped, 1, memory_order_relaxed);
         return;
     }
-    /* Protobuf records are encoded here, on the producer. */
+    /* Protobuf records are encoded here, on the producer. Raw records have
+     * no room for arguments, so nargs is not passed on: they are dropped. */
     if (t->cfg.format == PF_FORMAT_PROTOBUF) {
-        pf_pb_emit(t, w, ts, type, track_uuid, name, dynamic, has_value, raw_value,
-                   value_is_double);
+        pf_pb_emit(t, w, ts, type, track_uuid, name, dynamic, has_value, raw_value, value_is_double,
+                   nargs, args);
         return;
     }
 
@@ -463,6 +465,25 @@ static void emit_event(struct pf_trace *t, uint32_t type, uint64_t track_uuid, c
     atomic_store_explicit(&w->cur->used, w->used, memory_order_release);
     atomic_store_explicit(&w->events, atomic_load_explicit(&w->events, memory_order_relaxed) + 1,
                           memory_order_relaxed);
+}
+
+static void emit_event(struct pf_trace *t, uint32_t type, uint64_t track_uuid, const char *name,
+                       bool dynamic, bool has_value, uint64_t raw_value, bool value_is_double)
+{
+    emit_event_args(t, type, track_uuid, name, dynamic, has_value, raw_value, value_is_double, 0,
+                    NULL);
+}
+
+void pf_slice_begin_args_impl(struct pf_trace *t, uint64_t track_uuid, const char *name,
+                              unsigned nargs, const struct pf_arg *args)
+{
+    emit_event_args(t, TYPE_SLICE_BEGIN, track_uuid, name, false, false, 0, false, nargs, args);
+}
+
+void pf_instant_event_args_impl(struct pf_trace *t, uint64_t track_uuid, const char *name,
+                                unsigned nargs, const struct pf_arg *args)
+{
+    emit_event_args(t, TYPE_INSTANT, track_uuid, name, false, false, 0, false, nargs, args);
 }
 
 void pf_slice_begin_impl(struct pf_trace *t, uint64_t track_uuid, const char *name)
@@ -756,6 +777,20 @@ void pf_instant_event_g_impl(const char *name)
     struct pf_trace *t = default_trace();
     if (t)
         pf_instant_event_impl(t, thread_track(t), name);
+}
+
+void pf_slice_begin_args_g_impl(const char *name, unsigned nargs, const struct pf_arg *args)
+{
+    struct pf_trace *t = default_trace();
+    if (t)
+        pf_slice_begin_args_impl(t, thread_track(t), name, nargs, args);
+}
+
+void pf_instant_event_args_g_impl(const char *name, unsigned nargs, const struct pf_arg *args)
+{
+    struct pf_trace *t = default_trace();
+    if (t)
+        pf_instant_event_args_impl(t, thread_track(t), name, nargs, args);
 }
 
 void pf_slice_begin_g_dyn_impl(const char *name)

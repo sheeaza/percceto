@@ -385,7 +385,9 @@ not the i5-12500H in the table above, so compare within a table only.
 Send event arguments as typed debug annotations instead of expanded text, as
 Perfetto's SDK does. The name is the static string, interned like any other
 literal, and each argument is a `DebugAnnotation` (`debug_annotation.proto`,
-v58.3) with its own type: int, uint, double, or string.
+v58.3) with its own type: int, uint, or double. There is no string kind. A
+string value is a format string's job, and the caller builds the name instead,
+so `PF_KV` rejects pointers at compile time.
 
 Trade-off: the slice bar shows the static name only. Values appear in the
 slice's arguments section in the details panel, not on the bar, so debug text
@@ -393,8 +395,27 @@ is no longer visible at a glance. The proto header says debug annotations are
 not a stable API, so readers must not depend on their field layout. The event
 size now varies with the argument values, since each annotation is a
 length-prefixed field. The producer does not format text, so the cost is the
-annotation encoding, not `snprintf`. The `PF_MAX_ARGS` limit of 2 matches the
-`TRACE_EVENT` limit in the v58.3 docs, so the API keeps its current size.
+annotation encoding, not `snprintf`. `PF_MAX_ARGS` is 4, overridable with
+`-DPF_MAX_ARGS=n`; each call reserves a stack array of that many. Raw does not
+carry args yet; see item 12.
+
+Producer cost on events with no args is back to HEAD's: the regression
+was a `memset` of `struct pb_event`, which grew with the argument fields and
+was no longer cleared inline. The encoder now sets each field it reads, so the
+struct is not zeroed as a whole.
+
+`bench_side`, 1 thread, three runs each (ns/event):
+
+| workload  | HEAD            | this change     |
+|-----------|-----------------|-----------------|
+| simple    | 20.1, 19.3, 19.4 | 17.6, 18.0, 17.9 |
+| realistic | 32.1, 32.4, 32.2 | 32.2, 32.1, 32.3 |
+
+Before the fix, the simple workload ran at about 24 ns/event.
+
+Still open: no `bench_side` workload measures args events yet, and
+`docs/raw_format.md` and `docs/chunk_buffers_design.md` do not describe the
+args API.
 
 Depends on item 9: the caller-formatted name path is removed first. Measure
 with `bench_side`'s realistic workload before and after.
@@ -408,6 +429,50 @@ now, and the C++ ones should follow. Once they do, `PF_NAME_LITERAL` has no
 callers and can go. Check the C++ wrapper's `pf::Slice` and `pf::ThreadSlice`
 constructors against the dispatching macros, since they take `const char *`
 and are the other place a static-buffer pointer can be kept.
+
+## 12. Raw format accepts args
+
+The typed args of item 10 are dropped on the raw path: raw v5 records have a
+fixed 32-byte head and no field for them. Adding them means a v6 record with a
+typed argument section. The changes that come with it:
+
+- The record layout and its length rules, in `docs/raw_format.md`.
+- The raw writer's args path in `src/pftrace.c`, which now ignores them.
+- `tools/pfraw2pb.py`, which reads v5 and needs to emit the args as
+  DebugAnnotations.
+- The reader in `tests/test_raw_roundtrip.c`, written from the spec.
+
+Decide first whether raw needs args at all. Protobuf is the format that
+carries them today, so this is worth doing only if raw traces need the same
+values.
+
+
+- Continuous mode has no timer flush. A thread's partial chunk is written when
+  it unbinds (the thread exits, or closes the trace), or when it fills. Events
+  still in a live thread's partial chunk are lost only if the process dies first.
+- Encoding stays on the drain thread.
+
+## 13. Intern debug annotation names
+
+`enc_annotation` in `src/pf_encode.c` writes each argument's key inline, on
+every event. Keys are string literals, so they can be interned like event
+names, and that would cut the bytes and encode work on the args path.
+
+- Define each key once in the packet that first uses it, as an
+  `InternedData.debug_annotation_names` entry (field 3, the same iid and name
+  shape as `event_names`).
+- Send `DebugAnnotation.name_iid` (field 1) in place of the inline name
+  (field 10).
+- Keep a per-writer key cache with the same epoch logic as the event-name
+  cache, so a rotated chunk redefines its keys.
+
+Also enforce that a key is a literal. `PF_KV` takes its key as a plain
+argument today, so a caller could pass a buffer that is reused, and a cache
+keyed on its pointer would then name the wrong key. Check the key the way
+`PF_NAME_LITERAL` checks names.
+
+This does not help the no-args regression in item 10; it only changes the
+args path.
 
 ## Notes
 

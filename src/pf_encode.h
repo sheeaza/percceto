@@ -27,6 +27,14 @@
 #define FN_EVENT_NAME_STR 23
 #define FN_EVENT_COUNTER_VALUE 30
 #define FN_EVENT_DOUBLE_COUNTER_VALUE 44
+#define FN_EVENT_DEBUG_ANNOTATIONS 4
+
+/* DebugAnnotation, from debug_annotation.proto (v58.3). Its layout is not a
+ * stable Perfetto API, so readers must not depend on it. */
+#define FN_ANN_UINT 3
+#define FN_ANN_INT 4
+#define FN_ANN_DOUBLE 5
+#define FN_ANN_NAME 10
 
 /* InternedData / EventName */
 #define FN_INTERNED_EVENT_NAMES 2
@@ -55,9 +63,11 @@ static inline uint32_t builtin_clock(clockid_t clk)
  * not fit. A record bigger than a whole chunk, or one with no free chunk to
  * go to, is dropped and counted. The caller holds nothing; the timestamp is
  * taken by the caller, before any of this. A @dynamic name is sent inline and
- * not interned; a static one is interned by its pointer. */
+ * not interned; a static one is interned by its pointer. @nargs typed
+ * arguments, from @args, are sent as debug annotations; they are read during
+ * the call. */
 void pf_pb_emit(struct pf_trace *t, struct pf_writer *w, uint64_t ts, uint32_t type, uint64_t track,
                 const char *name, bool dynamic, bool has_value, uint64_t raw_value,
-                bool value_is_double);
+                bool value_is_double, unsigned nargs, const struct pf_arg *args);
 
 #endif /* PF_ENCODE_H */

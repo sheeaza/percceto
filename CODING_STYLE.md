@@ -97,6 +97,22 @@ Declare a function or type in a header only when a file other than its own
 - Rebuild and run the tests after moving a symbol. A removed prototype that
   another file still needs fails at compile or link time.
 
+## Hot-path structs and memset
+
+A struct on a hot path is not cleared with `memset` as a whole when it can
+grow. A fixed-size clear of a struct that later gains optional fields turns
+into a real libc call once it is large enough, and that call can cost more
+than the work it guards.
+
+- Set each field the code reads, in the order the code needs them. Leave out
+  fields a path never reads when it does not take them.
+- Keep optional state in its own struct, and point at it only when it is
+  present. A path with no optional state then clears none of it.
+- After a change to a hot struct, check the compiled code for a `memset` call
+  on the path, for example in the disassembly or with `callgrind`. A call that
+  was inline before is a sign the clear grew.
+- Measure the path before and after. Record the numbers in the change notes.
+
 ## Self-contained headers
 
 Every header must compile on its own. A `.c` file that contains only

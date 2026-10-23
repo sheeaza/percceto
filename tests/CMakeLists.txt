@@ -60,6 +60,13 @@ target_compile_definitions(test_raw_roundtrip PRIVATE _GNU_SOURCE)
 add_test(NAME raw_roundtrip COMMAND test_raw_roundtrip WORKING_DIRECTORY ${PFTRACE_RUN_DIR})
 set_tests_properties(raw_roundtrip PROPERTIES FIXTURES_SETUP raw_traces)
 
+# Typed arguments: each PF_KV() kind reaches the protobuf file as a
+# DebugAnnotation, read back from the wire format. Raw drops the arguments.
+add_executable(test_args test_args.c)
+target_link_libraries(test_args PRIVATE pftrace Threads::Threads)
+target_compile_definitions(test_args PRIVATE _GNU_SOURCE)
+add_test(NAME args COMMAND test_args WORKING_DIRECTORY ${PFTRACE_RUN_DIR})
+
 # Not a test: reports producer vs drain cost per event, to show where the
 # hot path actually stands and at what rate continuous mode starts dropping.
 add_executable(bench bench.c)

@@ -14,6 +14,13 @@ struct enc {
     size_t pos;
 };
 
+/* Per-argument lengths, set by pf_pb_args_prep. Kept out of pb_event: an event
+ * with no arguments then zeroes no argument state, and points at none. */
+struct pb_args {
+    size_t key_len[PF_MAX_ARGS];
+    size_t ann_len[PF_MAX_ARGS];
+};
+
 /* One event, as the encoder takes it. */
 struct pb_event {
     clockid_t clk; /* trace clock, named on the packet's timestamp */
@@ -35,6 +42,12 @@ struct pb_event {
     bool has_value; /* counters: the value replaces the name */
     bool value_is_double;
     uint64_t value;
+
+    /* Typed arguments, from the caller. ax holds their lengths, set by
+     * pf_pb_args_prep, and is NULL when there are none. */
+    unsigned nargs;
+    const struct pf_arg *args;
+    const struct pb_args *ax;
 
     /* Body lengths, set by pf_pb_size: the TrackEvent and the Trace.packet. */
     size_t event_len;
@@ -120,6 +133,23 @@ static size_t name_entry_len(const struct pb_event *v)
     return vfield_len(FN_IID, v->iid) + sfield_len(FN_NAME_STR, v->nlen);
 }
 
+/* The body of argument @i's DebugAnnotation: its name, then its value. Needs
+ * the lengths pf_pb_args_prep set. */
+static size_t ann_body_len(const struct pb_event *v, unsigned i)
+{
+    const struct pf_arg *a = &v->args[i];
+    size_t n = sfield_len(FN_ANN_NAME, v->ax->key_len[i]);
+    switch (a->kind) {
+    case PF_ARG_INT:
+        return n + vfield_len(FN_ANN_INT, (uint64_t)a->v.i);
+    case PF_ARG_UINT:
+        return n + vfield_len(FN_ANN_UINT, a->v.u);
+    case PF_ARG_DOUBLE:
+        return n + fixed64_len(FN_ANN_DOUBLE);
+    }
+    return n;
+}
+
 static size_t event_body_len(const struct pb_event *v)
 {
     size_t n = vfield_len(FN_EVENT_TYPE, v->type) + vfield_len(FN_EVENT_TRACK_UUID, v->track);
@@ -130,6 +160,8 @@ static size_t event_body_len(const struct pb_event *v)
     if (v->has_value)
         n += v->value_is_double ? fixed64_len(FN_EVENT_DOUBLE_COUNTER_VALUE) :
                                   vfield_len(FN_EVENT_COUNTER_VALUE, v->value);
+    for (unsigned i = 0; i < v->nargs; i++)
+        n += msg_len(FN_EVENT_DEBUG_ANNOTATIONS, v->ax->ann_len[i]);
     return n;
 }
 
@@ -139,6 +171,28 @@ static void enc_name_entry(struct enc *e, const struct pb_event *v)
 {
     e_vfield(e, FN_IID, v->iid);
     e_sfield(e, FN_NAME_STR, v->name, v->nlen);
+}
+
+/* Writes argument @i's DebugAnnotation. The string value is copied from the
+ * caller's buffer here, during the call, so it need not outlive the call. */
+static void enc_annotation(struct enc *e, const struct pb_event *v, unsigned i)
+{
+    const struct pf_arg *a = &v->args[i];
+    e_sfield(e, FN_ANN_NAME, a->key, v->ax->key_len[i]);
+    switch (a->kind) {
+    case PF_ARG_INT:
+        e_vfield(e, FN_ANN_INT, (uint64_t)a->v.i);
+        break;
+    case PF_ARG_UINT:
+        e_vfield(e, FN_ANN_UINT, a->v.u);
+        break;
+    case PF_ARG_DOUBLE: {
+        uint64_t bits;
+        memcpy(&bits, &a->v.d, sizeof bits);
+        e_fixed64(e, FN_ANN_DOUBLE, bits);
+        break;
+    }
+    }
 }
 
 static void enc_event_body(struct enc *e, const struct pb_event *v)
@@ -154,6 +208,11 @@ static void enc_event_body(struct enc *e, const struct pb_event *v)
             e_fixed64(e, FN_EVENT_DOUBLE_COUNTER_VALUE, v->value);
         else
             e_vfield(e, FN_EVENT_COUNTER_VALUE, v->value);
+    }
+    for (unsigned i = 0; i < v->nargs; i++) {
+        e_tag(e, FN_EVENT_DEBUG_ANNOTATIONS, 2);
+        e_varint(e, v->ax->ann_len[i]);
+        enc_annotation(e, v, i);
     }
 }
 
@@ -235,9 +294,23 @@ static void pf_pb_commit_name(struct pf_writer *w, int slot, const char *name, s
     w->intern[slot].epoch = w->epoch;
 }
 
+/* Works out what each argument's encoding needs, once per event: the key
+ * length, and each DebugAnnotation's body length. */
+static void pf_pb_args_prep(struct pb_event *v, struct pb_args *ax, unsigned nargs,
+                            const struct pf_arg *args)
+{
+    v->nargs = nargs;
+    v->args = args;
+    v->ax = ax;
+    for (unsigned i = 0; i < nargs; i++) {
+        ax->key_len[i] = strlen(args[i].key);
+        ax->ann_len[i] = ann_body_len(v, i);
+    }
+}
+
 void pf_pb_emit(struct pf_trace *t, struct pf_writer *w, uint64_t ts, uint32_t type, uint64_t track,
                 const char *name, bool dynamic, bool has_value, uint64_t raw_value,
-                bool value_is_double)
+                bool value_is_double, unsigned nargs, const struct pf_arg *args)
 {
     /* A dynamic name is built by the caller, so it differs per event. It is
      * sent inline and never interned: a pointer key would name the wrong
@@ -256,11 +329,25 @@ void pf_pb_emit(struct pf_trace *t, struct pf_writer *w, uint64_t ts, uint32_t t
     }
 
     struct pb_event v;
+    /* Not zeroed as a whole: a memset of the struct, now that it carries the
+     * argument fields, cost more than the rest of the event. The loop below
+     * sets every field the encoder reads; the argument fields need only
+     * these initial values. */
+    v.nargs = 0;
+    v.args = NULL;
+    v.ax = NULL;
+    /* The macros reject more than PF_MAX_ARGS arguments; a direct caller that
+     * passes more gets the first PF_MAX_ARGS. */
+    if (nargs > PF_MAX_ARGS)
+        nargs = PF_MAX_ARGS;
+    struct pb_args ax; /* read only when there are arguments */
+    if (nargs)
+        pf_pb_args_prep(&v, &ax, nargs, args);
+
     size_t size;
     int slot;
     bool define;
     for (;;) {
-        memset(&v, 0, sizeof v);
         v.clk = t->cfg.clock_id;
         v.ts = ts;
         v.seq_id = w->id + 1;
