@@ -380,7 +380,7 @@ The formatted macro costs the same as formatting by hand, and about 30 ns per
 event more than a literal at one thread. These rows come from a 20-core machine,
 not the i5-12500H in the table above, so compare within a table only.
 
-## 10. Typed args on the protobuf path
+## ~~10. Typed args on the protobuf path~~ (done)
 
 Send event arguments as typed debug annotations instead of expanded text, as
 Perfetto's SDK does. The name is the static string, interned like any other
@@ -435,9 +435,6 @@ regression above does not show with clang, so it is specific to gcc.
 
 Still open: none for item 10 except the docs, which now describe the args API
 in both design docs.
-
-Depends on item 9: the caller-formatted name path is removed first. Measure
-with `bench_side`'s realistic workload before and after.
 
 ## 11. C++ scoped-slice macros take caller-built names
 
