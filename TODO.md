@@ -446,21 +446,57 @@ callers and can go. Check the C++ wrapper's `pf::Slice` and `pf::ThreadSlice`
 constructors against the dispatching macros, since they take `const char *`
 and are the other place a static-buffer pointer can be kept.
 
-## 12. Raw format accepts args
+## ~~12. Raw format accepts args~~ (done)
 
-The typed args of item 10 are dropped on the raw path: raw v5 records have a
-fixed 32-byte head and no field for them. Adding them means a v6 record with a
-typed argument section. The changes that come with it:
+Raw carries the typed args of item 10, so a raw trace converts to the same
+arguments as the protobuf path. The raw format is version 6:
 
-- The record layout and its length rules, in `docs/raw_format.md`.
-- The raw writer's args path in `src/pftrace.c`, which now ignores them.
-- `tools/pfraw2pb.py`, which reads v5 and needs to emit the args as
-  DebugAnnotations.
-- The reader in `tests/test_raw_roundtrip.c`, written from the spec.
+- An event record with `RF_HAS_ARGS` carries an argument section after its
+  head: a count, then one 24-byte entry per argument (key pointer, kind, value).
+  The layout is in `docs/raw_format.md`.
+- Argument keys are sent in a KEYS chunk (kind 4), defined once per file, the
+  same way event names are in the NAMES chunk.
+- The raw writer in `src/pftrace.c` writes the section; the drain in
+  `src/pftrace_raw.c` defines the keys.
+- `tools/pfraw2pb.py` reads version 6 and emits each argument as a
+  DebugAnnotation with `name_iid`.
+- `tests/test_raw_roundtrip.c` has its own reader for the section and checks an
+  args trace from the real writer: each key's string, kind and value.
 
-Decide first whether raw needs args at all. Protobuf is the format that
-carries them today, so this is worth doing only if raw traces need the same
-values.
+A raw trace converted with `tools/pfraw2pb.py` decodes to the same arguments
+as the protobuf dump. The converter's unit test covers the record bytes, and
+`raw_roundtrip_args.pb` in the test run directory is a typical result to open
+in Perfetto UI: a slice `load` with `size=4096` and `ratio=0.5`, and an instant
+`tick` with `n=-7`.
+
+Benchmark: `bench_side`, Release build, gcc, 8 cores, continuous mode, producer
+ns/event, three interleaved runs per format (`bench_side` for protobuf,
+`bench_side raw` for raw). The consumer tail is not in the table; it varies too
+much between runs to compare.
+
+| workload  | threads | protobuf mean [min-max] | raw mean [min-max] |
+|-----------|---------|-------------------------|--------------------|
+| simple    | 1       | 21.1 [21.0-21.3]        | 8.3 [7.9-8.8]      |
+| simple    | 4       | 37.2 [32.2-41.0]        | 21.3 [18.4-26.2]   |
+| simple    | 8       | 50.5 [45.9-53.2]        | 22.1 [18.3-24.9]   |
+| realistic | 1       | 29.2 [28.7-29.8]        | 15.9 [13.8-19.3]   |
+| realistic | 4       | 52.9 [45.3-59.2]        | 26.5 [23.1-32.4]   |
+| realistic | 8       | 71.1 [65.8-77.6]        | 36.6 [34.9-39.2]   |
+| formatted | 1       | 36.3 [35.6-37.1]        | 24.1 [24.0-24.2]   |
+| formatted | 4       | 52.1 [48.8-57.4]        | 42.3 [35.2-52.2]   |
+| formatted | 8       | 76.6 [74.1-78.1]        | 54.9 [51.2-56.8]   |
+| manual    | 1       | 35.8 [35.1-36.7]        | 24.2 [23.9-24.4]   |
+| manual    | 4       | 60.1 [57.7-63.0]        | 47.3 [42.0-52.9]   |
+| manual    | 8       | 79.0 [74.1-88.3]        | 58.0 [54.3-60.1]   |
+| args      | 1       | 32.5 [32.2-32.7]        | 11.4 [10.9-11.8]   |
+| args      | 4       | 44.7 [40.6-49.3]        | 24.4 [20.6-30.5]   |
+| args      | 8       | 68.2 [62.6-71.5]        | 32.0 [30.8-33.2]   |
+
+The raw producer copies records and does not encode them, so it is cheaper on
+every workload. The args rows include the argument section, so raw is not
+paying nothing for arguments. Raw and protobuf are both measured on this
+machine, but these numbers are not compared with the item 10 or 13 runs, which
+were taken with different settings.
 
 
 - Continuous mode has no timer flush. A thread's partial chunk is written when

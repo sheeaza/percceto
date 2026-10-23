@@ -42,7 +42,7 @@ the start.
 | Offset | Size | Field        | Value                                   |
 |--------|------|--------------|-----------------------------------------|
 | 0      | 8    | magic        | ASCII `PFRAWv1\0`                       |
-| 8      | 4    | version      | `5`                                     |
+| 8      | 4    | version      | `6`                                     |
 | 12     | 4    | record_size  | `32` (bytes in the fixed head of an event record; see EVENTS payload) |
 | 16     | 4    | clock_id     | The trace clock as defined by the writer's `<time.h>`: `CLOCK_REALTIME`, `CLOCK_MONOTONIC` or `CLOCK_BOOTTIME` (`7` on Linux for boot time) |
 | 20     | 4    | flags        | `0` in version 4, reserved              |
@@ -52,8 +52,8 @@ the start.
 Total: 40 bytes. The header never changes after it is written.
 
 The reader rejects the file if `magic` does not match, `version` is not
-recognized, or `record_size` is not `32`. Version 4 files, with 48-byte records
-and argument words, are not read by version 5 readers.
+recognized, or `record_size` is not `32`. Version 4 and version 5 files are not
+read by version 6 readers.
 
 ## Chunks
 
@@ -73,9 +73,10 @@ Chunks are written with one `write()` each, on an fd opened with `O_APPEND`.
 |-------|--------|--------------------------------------------------|
 | 1     | NAMES  | sequence of name entries                         |
 | 2     | TRACKS | sequence of track entries                        |
-| 3     | EVENTS | event records, back to back; each is 32 bytes plus its copied name, if any |
+| 3     | EVENTS | event records, back to back; each is 32 bytes, plus its argument section if `RF_HAS_ARGS`, plus its copied name if any |
+| 4     | KEYS   | sequence of key entries, same layout as NAMES    |
 
-Any other `kind` value is an error in version 4.
+Any other `kind` value is an error in version 6.
 
 #### NAMES payload
 
@@ -92,6 +93,13 @@ Each entry is followed by no padding. The next entry starts immediately.
 The key is the pointer value as it appeared in the traced process. Pointers
 are only meaningful within one run, which is fine because the sidecar is
 written in the same run as the events that reference it.
+
+#### KEYS payload
+
+The same layout as NAMES: a sequence of entries, each a pointer key, a length,
+and the key's bytes. The key is an argument key's pointer, the value an argument
+section's `key` field holds. A key is a string literal, so its text is fixed
+for the life of the process.
 
 #### TRACKS payload
 
@@ -130,24 +138,53 @@ Each record starts with the 32-byte head of `struct pf_rec` from
 
 `RF_HAS_VALUE` (`0x1`) selects `value` in `u`. `RF_VALUE_IS_DOUBLE` (`0x2`)
 means `value` holds an IEEE-754 double. `RF_NAME_COPIED` (`0x4`) is described
-below. Other bits are reserved and zero.
+below. `RF_HAS_ARGS` (`0x8`) means an argument section follows the head, see
+"Argument section". Other bits are reserved and zero.
 
 The reader decodes `name` as a pointer key into the NAMES definitions seen
 so far, unless `RF_NAME_COPIED` is set. A value of `0` means the event has no
 name. The reader decodes `value` as a raw 64-bit value.
 
-Version 5 has no argument words. Event arguments are formatted by the caller
-before the event is emitted, so the name the reader sees is already final.
-Typed arguments (`pf_slice_begin_args`, `PF_KV`) are not stored in raw. They
-are dropped, and the record is written as if it had none.
+Arguments are typed values from `PF_KV`. They are stored as given, in an
+argument section, and the reader turns them into annotations. A string is not
+an argument; a caller builds its own name instead.
+
+#### Argument section
+
+When `RF_HAS_ARGS` is set, an argument section follows the head. It comes
+before any copied name. It is 8 bytes of head, then 24 bytes per argument:
+
+| Offset | Size | Field    | Meaning                                       |
+|--------|------|----------|-----------------------------------------------|
+| 0      | 4    | count    | number of arguments, 1 to `PF_MAX_ARGS`       |
+| 4      | 4    | reserved | `0`                                           |
+
+Each argument, at `8 + 24 * i` from the start of the section:
+
+| Offset | Size | Field    | Meaning                                       |
+|--------|------|----------|-----------------------------------------------|
+| 0      | 8    | key      | pointer to the key string, a literal; a KEYS entry defines it |
+| 8      | 4    | kind     | `0` signed 64-bit integer, `1` unsigned 64-bit integer, `2` IEEE-754 double |
+| 12     | 4    | reserved | `0`                                           |
+| 16     | 8    | value    | the value's 64 bits, as `kind` says          |
+
+The section is `8 + 24 * count` bytes, a multiple of 8, so a copied name after
+it stays aligned. A record with arguments is therefore `32 + section + pad8(L)`
+bytes long, where `L` is the copied name's length, or `32 + section` with no
+copied name.
+
+Arguments are typed values from `PF_KV`. They are stored as given, and the
+reader turns them into annotations; no text is formatted by the producer.
 
 #### Copied names
 
 When `RF_NAME_COPIED` is set, `u` holds the length `L` of the name, and the
-name's bytes follow the head. They are not NUL-terminated. Zero bytes pad the
-record to the next 8-byte boundary. The record is then `32 + pad8(L)` bytes
-long, and the next record starts after the padding. `RF_HAS_VALUE` and
-`RF_NAME_COPIED` are never both set.
+name's bytes follow the head and any argument section. They are not
+NUL-terminated. Zero bytes pad the name to the next 8-byte boundary. The record
+is then `32 + section + pad8(L)` bytes long, where `section` is `0` without
+arguments, and the next record starts after the padding. `RF_HAS_VALUE` and
+`RF_NAME_COPIED` are never both set. `RF_HAS_ARGS` and `RF_NAME_COPIED` are
+never both set either: a reader rejects a record that has both.
 
 A name is copied only when it is passed in as a dynamic string, not a static
 literal. Static names keep the pointer form, so the NAMES sidecar still holds
@@ -171,8 +208,8 @@ header's `record_size` assumed. The trade-offs:
   see the cut. The truncation is counted in the stats.
 - Chunk capacity. `chunk_slots`, a record count, no longer bounds a chunk. The
   chunk is bounded by its payload size in bytes.
-- Format version. The change bumps `version` to 5 and `record_size` to 32. A
-  version 4 reader rejects a version 5 file, so the change is not silent.
+- Format version. The change bumps `version` to 6 and keeps `record_size` at 32.
+  A version 5 reader rejects a version 6 file, so the change is not silent.
 
 ## Ordering rules
 
@@ -180,8 +217,10 @@ header's `record_size` assumed. The trade-offs:
    that references that pointer.
 2. A TRACKS entry for a track is written before the first EVENTS chunk that
    references that track.
-3. Both are satisfied by the drain thread writing any pending NAMES and
-   TRACKS chunks before it writes the EVENTS chunk, under `out_lock`.
+3. All three are satisfied by the drain thread writing any pending NAMES,
+   KEYS and TRACKS chunks before it writes the EVENTS chunk, under `out_lock`.
+4. A KEYS entry for an argument key is written before the first EVENTS chunk
+   that references that key.
 
 The reader may assume these rules hold. If an event references an unknown
 name pointer or track uuid, the reader reports an error.

@@ -31,6 +31,12 @@
 #define DYN_NAME_MAX 128u
 #define RF_HAS_VALUE 0x1u
 #define RF_NAME_COPIED 0x4u
+#define RF_HAS_ARGS 0x8u
+/* The argument section: a count and 4 reserved bytes, then 24 bytes per
+ * argument. */
+#define ARGS_HEAD_BYTES 8u
+#define ARG_BYTES 24u
+#define MAX_ARGS 8u
 enum {
     TYPE_SLICE_BEGIN = 1,
     TYPE_SLICE_END = 2,
@@ -40,10 +46,12 @@ enum {
 enum {
     CHUNK_NAMES = 1,
     CHUNK_TRACKS = 2,
-    CHUNK_EVENTS = 3
+    CHUNK_EVENTS = 3,
+    CHUNK_KEYS = 4
 };
 
 #define MAX_NAMES 16
+#define MAX_KEYS 16
 #define MAX_TRACKS 8
 #define NAME_MAX_LEN 64
 
@@ -61,9 +69,17 @@ static int failures;
 
 /* --- Reader ------------------------------------------------------------ */
 
+struct rarg {
+    uint64_t key; /* pointer into the KEYS definitions */
+    uint32_t kind; /* 0 int64, 1 uint64, 2 double */
+    uint64_t value; /* the value's 64 bits */
+};
+
 struct rev {
     uint64_t ts, track, u; /* name pointer, value, or copied name length */
     uint32_t type, flags;
+    uint32_t nargs;
+    struct rarg args[MAX_ARGS]; /* when RF_HAS_ARGS */
     char dyn[DYN_NAME_MAX + 1]; /* copied name, when RF_NAME_COPIED */
 };
 
@@ -85,6 +101,8 @@ struct parsed {
     size_t ntrk;
     struct rname nm[MAX_NAMES];
     size_t nnm;
+    struct rname kn[MAX_KEYS];
+    size_t nkn;
     struct rev *ev;
     size_t nev;
     size_t torn_bytes;
@@ -100,12 +118,22 @@ static uint64_t rd64(const uint8_t *p)
     return rd32(p) | (uint64_t)rd32(p + 4) << 32;
 }
 
+static const struct rname *find_in(const struct rname *tab, size_t n, uint64_t ptr)
+{
+    for (size_t i = 0; i < n; i++)
+        if (tab[i].ptr == ptr)
+            return &tab[i];
+    return NULL;
+}
+
 static const struct rname *find_name(const struct parsed *p, uint64_t ptr)
 {
-    for (size_t i = 0; i < p->nnm; i++)
-        if (p->nm[i].ptr == ptr)
-            return &p->nm[i];
-    return NULL;
+    return find_in(p->nm, p->nnm, ptr);
+}
+
+static const struct rname *find_key(const struct parsed *p, uint64_t ptr)
+{
+    return find_in(p->kn, p->nkn, ptr);
 }
 
 static size_t find_track_index(const struct parsed *p, uint64_t uuid)
@@ -120,6 +148,36 @@ static const struct rtrack *find_track(const struct parsed *p, uint64_t uuid)
 {
     size_t i = find_track_index(p, uuid);
     return i < p->ntrk ? &p->trk[i] : NULL;
+}
+
+/* Parses a NAMES or KEYS payload into @tab. A repeat of a pointer must match
+ * the first definition. Returns 0, or -1 on a malformed payload or a full
+ * table. */
+static int parse_defs(const uint8_t *body, size_t len, struct rname *tab, size_t *n, size_t cap)
+{
+    for (size_t q = 0; q < len;) {
+        if (len - q < 12)
+            return -1;
+        uint64_t ptr = rd64(body + q);
+        uint32_t nl = rd32(body + q + 8);
+        q += 12;
+        if (nl > NAME_MAX_LEN || len - q < nl)
+            return -1;
+        const struct rname *have = find_in(tab, *n, ptr);
+        if (have) {
+            if (strncmp(have->s, (const char *)body + q, nl) != 0 || have->s[nl] != '\0')
+                return -1;
+        } else {
+            if (*n == cap)
+                return -1;
+            struct rname *nn = &tab[(*n)++];
+            nn->ptr = ptr;
+            memcpy(nn->s, body + q, nl);
+            nn->s[nl] = '\0';
+        }
+        q += nl;
+    }
+    return 0;
 }
 
 /* Returns 0 on a well-formed file, possibly with a torn tail, -1 on a
@@ -173,27 +231,11 @@ static int parse_raw(const char *path, struct parsed *p)
         off += 8 + len;
 
         if (kind == CHUNK_NAMES) {
-            for (size_t q = 0; q < len;) {
-                if (len - q < 12)
-                    goto out;
-                uint64_t ptr = rd64(body + q);
-                uint32_t nl = rd32(body + q + 8);
-                q += 12;
-                if (nl > NAME_MAX_LEN || len - q < nl || p->nnm == MAX_NAMES)
-                    goto out;
-                const struct rname *have = find_name(p, ptr);
-                if (have) {
-                    /* A repeat must be identical; first definition wins. */
-                    if (strncmp(have->s, (const char *)body + q, nl) != 0 || have->s[nl] != '\0')
-                        goto out;
-                } else {
-                    struct rname *n = &p->nm[p->nnm++];
-                    n->ptr = ptr;
-                    memcpy(n->s, body + q, nl);
-                    n->s[nl] = '\0';
-                }
-                q += nl;
-            }
+            if (parse_defs(body, len, p->nm, &p->nnm, MAX_NAMES) != 0)
+                goto out;
+        } else if (kind == CHUNK_KEYS) {
+            if (parse_defs(body, len, p->kn, &p->nkn, MAX_KEYS) != 0)
+                goto out;
         } else if (kind == CHUNK_TRACKS) {
             if (len % 104 != 0)
                 goto out;
@@ -238,7 +280,30 @@ static int parse_raw(const char *path, struct parsed *p)
                 ev->u = rd64(e + 16);
                 ev->type = rd32(e + 24);
                 ev->flags = rd32(e + 28);
+                ev->nargs = 0;
                 q += REC_HEAD_BYTES;
+
+                /* The argument section follows the head: a count, then one
+                 * entry per argument. Each key must be defined already. */
+                if (ev->flags & RF_HAS_ARGS) {
+                    if (ev->flags & RF_NAME_COPIED)
+                        goto out;
+                    if (len - q < ARGS_HEAD_BYTES)
+                        goto out;
+                    uint32_t n = rd32(body + q);
+                    q += ARGS_HEAD_BYTES;
+                    if (n == 0 || n > MAX_ARGS || len - q < (size_t)n * ARG_BYTES)
+                        goto out;
+                    ev->nargs = n;
+                    for (uint32_t i = 0; i < n; i++, q += ARG_BYTES) {
+                        const uint8_t *a = body + q;
+                        ev->args[i].key = rd64(a);
+                        ev->args[i].kind = rd32(a + 8);
+                        ev->args[i].value = rd64(a + 16);
+                        if (!find_key(p, ev->args[i].key))
+                            goto out;
+                    }
+                }
 
                 if (ev->flags & RF_NAME_COPIED) {
                     if (ev->u > DYN_NAME_MAX)
@@ -370,7 +435,7 @@ static bool event_matches(const struct parsed *p, size_t k, const struct ids *id
 
 static void check_contents(const struct parsed *p, const struct ids *ids, size_t want_events)
 {
-    CHECK(p->version == 5, "version %u", p->version);
+    CHECK(p->version == 6, "version %u", p->version);
     CHECK(p->record_size == REC_HEAD_BYTES, "record_size %u", p->record_size);
     CHECK(p->clock_id == (uint32_t)CLOCK_BOOTTIME, "clock_id %u", p->clock_id);
     CHECK(p->flags == 0, "flags %u", p->flags);
@@ -661,7 +726,7 @@ static void header_bytes(const char *path)
 
     uint8_t want[24] = { 0 };
     memcpy(want, "PFRAWv1", 8);
-    le_bytes(want + 8, 5, 4);
+    le_bytes(want + 8, 6, 4);
     le_bytes(want + 12, 32, 4);
     le_bytes(want + 16, (uint32_t)CLOCK_BOOTTIME, 4);
     CHECK(memcmp(buf, want, 24) == 0, "header bytes differ from the spec");
@@ -769,6 +834,103 @@ static void dyn_roundtrip(const char *path)
     CHECK(e->type == TYPE_SLICE_END && e->flags == 0, "dyn: event 4 type %u", e->type);
 }
 
+/* Typed arguments reach the file as an argument section, and their keys as
+ * KEYS definitions. The reader checks each key's string, kind and value. */
+static void args_roundtrip(const char *path)
+{
+    unlink(path);
+    struct pf_config cfg;
+    pf_config_init(&cfg);
+    cfg.format = PF_FORMAT_RAW;
+    cfg.mode = PF_MODE_CONTINUOUS;
+    cfg.process_name = "rawargs";
+    cfg.path = ".";
+    cfg.name = path;
+
+    struct pf_trace *t = pf_trace_open(&cfg);
+    if (!t) {
+        CHECK(false, "args: open failed: %s", strerror(errno));
+        return;
+    }
+    uint64_t trk = pf_track_thread(t, getpid(), 1, "args");
+    pf_slice_begin_args(t, trk, "load", PF_KV("size", (size_t)4096), PF_KV("ratio", 0.5));
+    pf_slice_end(t, trk);
+    pf_instant_event_args(t, trk, "tick", PF_KV("n", -7));
+    pf_trace_close(t);
+
+    struct parsed p;
+    if (parse_raw(path, &p) != 0) {
+        CHECK(false, "args: reader rejected the file");
+        return;
+    }
+    CHECK(p.torn_bytes == 0, "args: %zu torn bytes in a closed file", p.torn_bytes);
+    CHECK(p.nev == 3, "args: %zu events, want 3", p.nev);
+    if (p.nev == 3) {
+        const struct rev *s = &p.ev[0];
+        CHECK(s->type == TYPE_SLICE_BEGIN && (s->flags & RF_HAS_ARGS), "args: begin flags %#x",
+              s->flags);
+        CHECK(s->nargs == 2, "args: begin has %u arguments, want 2", s->nargs);
+        if (s->nargs == 2) {
+            const struct rname *k0 = find_key(&p, s->args[0].key);
+            const struct rname *k1 = find_key(&p, s->args[1].key);
+            CHECK(k0 && strcmp(k0->s, "size") == 0 && s->args[0].kind == 1 &&
+                      s->args[0].value == 4096,
+                  "args: first argument is not size=4096 as uint");
+            double ratio;
+            memcpy(&ratio, &s->args[1].value, sizeof ratio);
+            CHECK(k1 && strcmp(k1->s, "ratio") == 0 && s->args[1].kind == 2 && ratio == 0.5,
+                  "args: second argument is not ratio=0.5 as double");
+        }
+        CHECK(p.ev[1].type == TYPE_SLICE_END && p.ev[1].nargs == 0, "args: end has arguments");
+
+        const struct rev *i = &p.ev[2];
+        CHECK(i->type == TYPE_INSTANT && (i->flags & RF_HAS_ARGS) && i->nargs == 1,
+              "args: instant has %u arguments, want 1", i->nargs);
+        if (i->nargs == 1) {
+            const struct rname *k = find_key(&p, i->args[0].key);
+            int64_t n;
+            memcpy(&n, &i->args[0].value, sizeof n);
+            CHECK(k && strcmp(k->s, "n") == 0 && i->args[0].kind == 0 && n == -7,
+                  "args: instant argument is not n=-7 as int");
+        }
+    }
+    free(p.ev);
+}
+
+/* A record may carry arguments or a copied name, never both. The writer never
+ * makes one, so this hand-built file checks that the reader refuses it. */
+static void args_with_copied_name(const char *path)
+{
+    uint8_t buf[120];
+    memset(buf, 0, sizeof buf);
+    memcpy(buf, "PFRAWv1", 8);
+    le_bytes(buf + 8, 6, 4);
+    le_bytes(buf + 12, 32, 4);
+    le_bytes(buf + 16, (uint32_t)CLOCK_BOOTTIME, 4);
+    le_bytes(buf + 40, CHUNK_EVENTS, 4);
+    le_bytes(buf + 44, 72, 4);
+    uint8_t *r = buf + 48;
+    le_bytes(r + 8, 1, 8);
+    le_bytes(r + 16, 8, 8);
+    le_bytes(r + 24, TYPE_INSTANT, 4);
+    le_bytes(r + 28, RF_HAS_ARGS | RF_NAME_COPIED, 4);
+    le_bytes(r + 32, 1, 4);
+    le_bytes(r + 40, 0x1000, 8);
+    memcpy(r + 64, "abcdefgh", 8);
+
+    FILE *f = fopen(path, "wb");
+    if (!f) {
+        CHECK(false, "bad args: cannot write %s", path);
+        return;
+    }
+    fwrite(buf, 1, sizeof buf, f);
+    fclose(f);
+
+    struct parsed p;
+    CHECK(parse_raw(path, &p) != 0, "bad args: reader accepted a record with both flags");
+    free(p.ev);
+}
+
 int main(void)
 {
     /* Continuous: the drain writes several event chunks, since 5000
@@ -784,6 +946,8 @@ int main(void)
     refuses_existing("raw_roundtrip_continuous.pfraw");
 
     dyn_roundtrip("raw_roundtrip_dyn.pfraw");
+    args_roundtrip("raw_roundtrip_args.pfraw");
+    args_with_copied_name("raw_roundtrip_bad_args.pfraw");
 
     simple_threads("raw_roundtrip_simple_threads.pfraw");
     simple_rename("raw_roundtrip_simple_rename.pfraw");

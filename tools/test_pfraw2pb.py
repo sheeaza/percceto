@@ -22,7 +22,7 @@ RAW_SLICE_BEGIN, RAW_SLICE_END, RAW_INSTANT, RAW_COUNTER = 1, 2, 3, 4
 
 
 def raw_file(*chunks, clock=7, offset=0, boottime=0):
-    header = struct.pack("<8sIIIIqq", b"PFRAWv1\0", 5, 32, clock, 0, offset,
+    header = struct.pack("<8sIIIIqq", b"PFRAWv1\0", 6, 32, clock, 0, offset,
                          boottime)
     body = b"".join(struct.pack("<II", kind, len(payload)) + payload
                     for kind, payload in chunks)
@@ -50,6 +50,20 @@ def event_copied(ts, track, name, etype):
     return head + name + b"\0" * (-len(name) % 8)
 
 
+def arg_entry(key_ptr, kind, value):
+    """One argument of an argument section: key pointer, kind, 4 reserved
+    bytes, then the value's 8 bytes. The value is already its bit pattern."""
+    return struct.pack("<QIIQ", key_ptr, kind, 0, value & ((1 << 64) - 1))
+
+
+def event_args(ts, track, u, etype, args, flags=0):
+    """A record with an argument section after the head, as docs/raw_format.md
+    lays it out: a count, 4 reserved bytes, then one entry per argument."""
+    head = struct.pack("<QQQII", ts, track, u, etype, flags | pb.RF_HAS_ARGS)
+    section = struct.pack("<II", len(args), 0)
+    return head + section + b"".join(arg_entry(*a) for a in args)
+
+
 def convert_bytes(data, keep_clock=False):
     """Runs the converter over an in-memory raw file. Returns (packets,
     stats, torn), where packets are generated TracePacket messages. The
@@ -62,6 +76,8 @@ def convert_bytes(data, keep_clock=False):
     for kind, payload, offset in reader.chunks():
         if kind == pb.CHUNK_NAMES:
             conv.names_chunk(payload)
+        elif kind == pb.CHUNK_KEYS:
+            conv.keys_chunk(payload)
         elif kind == pb.CHUNK_TRACKS:
             conv.tracks_chunk(payload)
         elif kind == pb.CHUNK_EVENTS:
@@ -76,6 +92,51 @@ class ConvertTest(unittest.TestCase):
     def thread_tracks(self):
         return pb.CHUNK_TRACKS, track_entry(1, 0, pb.TRACK_THREAD, 42, 7, 0,
                                             "main")
+
+    def test_args_become_debug_annotations(self):
+        # Two keys, the first used twice: the packet that first uses a key
+        # defines it, and later packets name it by iid alone.
+        keys = (pb.CHUNK_KEYS, name_entry(0x3000, "i") + name_entry(0x3008, "ratio"))
+        int_bits = -2
+        double_bits = struct.unpack("<Q", struct.pack("<d", 0.5))[0]
+        events = (event_args(5, 1, NAME_PTR, RAW_SLICE_BEGIN,
+                             [(0x3000, pb.ARG_INT, int_bits),
+                              (0x3008, pb.ARG_DOUBLE, double_bits)])
+                  + event_args(6, 1, NAME_PTR, RAW_INSTANT,
+                               [(0x3000, pb.ARG_UINT, 9)]))
+        data = raw_file(self.thread_tracks(),
+                        (pb.CHUNK_NAMES, name_entry(NAME_PTR, "compute")),
+                        keys, (pb.CHUNK_EVENTS, events))
+        packets, stats, torn = convert_bytes(data)
+        evs = [p for p in packets if p.HasField("track_event")]
+        self.assertEqual(len(evs), 2)
+        self.assertEqual(stats["keys"], 2)
+
+        first = evs[0]
+        self.assertEqual(len(first.track_event.debug_annotations), 2)
+        ann_i, ann_ratio = first.track_event.debug_annotations
+        self.assertEqual(ann_i.name_iid, 1)
+        self.assertEqual(ann_i.int_value, -2)
+        self.assertEqual(ann_ratio.name_iid, 2)
+        self.assertEqual(ann_ratio.double_value, 0.5)
+        defined = {d.iid: d.name for d in first.interned_data.debug_annotation_names}
+        self.assertEqual(defined, {1: "i", 2: "ratio"})
+
+        second = evs[1]
+        ann, = second.track_event.debug_annotations
+        self.assertEqual(ann.name_iid, 1)
+        self.assertEqual(ann.uint_value, 9)
+        self.assertEqual(len(second.interned_data.debug_annotation_names), 0)
+
+    def test_args_with_copied_name_is_rejected(self):
+        # The writer never sets both flags; the reader refuses the record.
+        events = event_args(5, 1, NAME_PTR, RAW_SLICE_BEGIN,
+                            [(0x3000, pb.ARG_UINT, 1)], flags=pb.RF_NAME_COPIED)
+        data = raw_file(self.thread_tracks(),
+                        (pb.CHUNK_KEYS, name_entry(0x3000, "i")),
+                        (pb.CHUNK_EVENTS, events))
+        with self.assertRaisesRegex(pb.RawFormatError, "both arguments and a copied name"):
+            convert_bytes(data)
 
     def test_clock_snapshot_boottime_with_realtime_offset(self):
         offset = 1_700_000_000_000_000_000

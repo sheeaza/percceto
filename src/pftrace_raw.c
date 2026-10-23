@@ -16,10 +16,11 @@
  * the events that reference them. */
 
 #define RAW_MAGIC "PFRAWv1"
-#define RAW_VERSION 5u
+#define RAW_VERSION 6u
 #define RAW_CHUNK_NAMES 1u
 #define RAW_CHUNK_TRACKS 2u
 #define RAW_CHUNK_EVENTS 3u
+#define RAW_CHUNK_KEYS 4u
 
 /* Field writers. The width comes from the parameter type, so each call site
  * casts to the width the spec gives. Host byte order is the file's byte order
@@ -129,7 +130,7 @@ static void raw_queue_tracks(struct pf_trace *t)
     t->tracks_emitted = count;
 }
 
-/* Writes the pending TRACKS, NAMES and EVENTS chunks, in that order, so
+/* Writes the pending TRACKS, NAMES, KEYS and EVENTS chunks, in that order, so
  * every definition precedes the events that use it. Caller holds out_lock. */
 static int raw_flush(struct pf_trace *t)
 {
@@ -138,29 +139,49 @@ static int raw_flush(struct pf_trace *t)
         return -1;
     if (raw_write_chunk(t, RAW_CHUNK_NAMES, &t->raw.names) != 0)
         return -1;
+    if (raw_write_chunk(t, RAW_CHUNK_KEYS, &t->raw.keys) != 0)
+        return -1;
     return raw_write_chunk(t, RAW_CHUNK_EVENTS, &t->raw.events);
+}
+
+/* Queues a definition for the string @s the first time the drain sees its
+ * pointer in @tab. A full table cannot dedupe, so the definition is queued
+ * again. Harmless: the reader keeps the first, and the copies are identical. */
+static void raw_define_once(struct intern_table *tab, struct pb_buf *b, const char *s)
+{
+    uint64_t iid;
+    bool is_new = false;
+    bool found = intern_lookup_or_insert(tab, s, &iid, &is_new);
+    if (!found || is_new)
+        raw_put_name(b, s, strlen(s));
 }
 
 /* Queues one record for the raw file. A static name is queued as a definition
  * the first time the drain sees its pointer. A copied name travels inside the
- * record, so it needs no definition. Caller holds out_lock. */
+ * record, so it needs no definition. Each argument key is a static literal, so
+ * it is defined the same way, in the KEYS chunk. Caller holds out_lock. */
 static int raw_emit_record(struct pf_trace *t, const struct pf_rec *r)
 {
     bool has_value = (r->flags & RF_HAS_VALUE) != 0;
     bool copied = (r->flags & RF_NAME_COPIED) != 0;
     const char *name = has_value || copied ? NULL : r->u.name;
 
-    if (name) {
-        uint64_t iid;
-        bool is_new = false;
-        bool found = intern_lookup_or_insert(&t->name_table, name, &iid, &is_new);
-        /* A full table cannot dedupe, so the definition is queued again.
-         * Harmless: the reader keeps the first, and the copies are identical. */
-        if (!found || is_new)
-            raw_put_name(&t->raw.names, name, strlen(name));
+    if (name)
+        raw_define_once(&t->name_table, &t->raw.names, name);
+
+    if (r->flags & RF_HAS_ARGS) {
+        uint32_t n = *(const uint32_t *)((const char *)r + PF_REC_HEAD_BYTES);
+        for (uint32_t i = 0; i < n; i++) {
+            uint64_t ptr;
+            const char *entry =
+                (const char *)r + PF_REC_HEAD_BYTES + PF_REC_ARGS_HEAD + i * PF_REC_ARG_BYTES;
+            memcpy(&ptr, entry, sizeof ptr);
+            raw_define_once(&t->key_table, &t->raw.keys, (const char *)(uintptr_t)ptr);
+        }
     }
 
-    /* The record is copied as is, with its copied name; see struct pf_rec. */
+    /* The record is copied as is, with its arguments and copied name; see
+     * struct pf_rec. */
     pb_put_bytes(&t->raw.events, r, pf_rec_size(r));
     if (t->raw.events.len >= PF_OUT_FLUSH_THRESHOLD)
         return raw_flush(t);

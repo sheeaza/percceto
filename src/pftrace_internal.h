@@ -49,6 +49,10 @@
  * Counters never carry a name, copied or not. */
 #define PF_REC_HEAD_BYTES 32u
 #define PF_REC_ALIGN 8u
+/* The argument section: a u32 count and 4 reserved bytes, then one entry of
+ * PF_REC_ARG_BYTES per argument. See docs/raw_format.md. */
+#define PF_REC_ARGS_HEAD 8u
+#define PF_REC_ARG_BYTES 24u
 
 /* Longest dynamic name stored, in bytes, not counting the NUL. A longer name
  * is cut to this length, the last three bytes become "...", and the cut is
@@ -96,7 +100,10 @@ enum pf_rec_flag {
     RF_HAS_VALUE = 0x1u,
     RF_VALUE_IS_DOUBLE = 0x2u,
     /* The name's bytes follow the head, padded to PF_REC_ALIGN. */
-    RF_NAME_COPIED = 0x4u
+    RF_NAME_COPIED = 0x4u,
+    /* An argument section follows the head, before any copied name. See
+     * pf_rec_args_bytes(). */
+    RF_HAS_ARGS = 0x8u
 };
 
 /* The layout is the on-chunk wire format, so pin it. */
@@ -299,6 +306,9 @@ struct pf_trace {
      * output buffer is shared by both formats. */
     struct pb_buf out;
     struct intern_table name_table;
+    /* Argument keys, for raw. Kept apart from names: a key is sent in its own
+     * KEYS chunk, and its pointer is only ever a key. */
+    struct intern_table key_table;
     bool header_written;
 
     /* Staging for the protobuf path. Only allocated when the trace's format
@@ -313,10 +323,12 @@ struct pf_trace {
     } pb;
 
     /* Staging for the raw path, one buffer per chunk kind. Each is emitted
-     * as a chunk, in the order tracks, names, then events, before the events
-     * that reference them. Only allocated when the trace's format is raw. */
+     * as a chunk, in the order tracks, names, keys, then events, before the
+     * events that reference them. Only allocated when the trace's format is
+     * raw. */
     struct {
         struct pb_buf names;
+        struct pb_buf keys;
         struct pb_buf tracks;
         struct pb_buf events;
     } raw;
@@ -441,14 +453,24 @@ static inline void pf_walk_begin(struct pf_walk *w, const struct pf_chunk *head)
     pf_walk_enter(w, head);
 }
 
-/* A record's size in its chunk: the head, plus any copied name padded to
- * PF_REC_ALIGN. Read from the head, so the walk needs no index. */
+/* A record's size in its chunk: the head, the argument section if any, and any
+ * copied name padded to PF_REC_ALIGN. Read from the head, so the walk needs no
+ * index. */
+static inline uint32_t pf_rec_args_bytes(const struct pf_rec *r)
+{
+    if (!(r->flags & RF_HAS_ARGS))
+        return 0;
+    uint32_t n = *(const uint32_t *)((const char *)r + PF_REC_HEAD_BYTES);
+    return PF_REC_ARGS_HEAD + n * PF_REC_ARG_BYTES;
+}
+
 static inline uint32_t pf_rec_size(const struct pf_rec *r)
 {
+    uint32_t size = PF_REC_HEAD_BYTES + pf_rec_args_bytes(r);
     if (!(r->flags & RF_NAME_COPIED))
-        return PF_REC_HEAD_BYTES;
+        return size;
     uint32_t len = (uint32_t)r->u.name_len;
-    return PF_REC_HEAD_BYTES + ((len + PF_REC_ALIGN - 1) & ~(PF_REC_ALIGN - 1));
+    return size + ((len + PF_REC_ALIGN - 1) & ~(PF_REC_ALIGN - 1));
 }
 
 static inline const struct pf_rec *pf_walk_next(struct pf_walk *w)

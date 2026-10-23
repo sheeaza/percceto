@@ -94,6 +94,7 @@ static void staging_init(struct pf_trace *t)
 
     if (t->cfg.format == PF_FORMAT_RAW) {
         pb_buf_init(&t->raw.names);
+        pb_buf_init(&t->raw.keys);
         pb_buf_init(&t->raw.tracks);
         pb_buf_init(&t->raw.events);
         pb_buf_warm(&t->raw.names, PF_NAME_WARM + 64);
@@ -118,6 +119,7 @@ static void staging_free(struct pf_trace *t)
     pb_buf_free(&t->out);
     if (t->cfg.format == PF_FORMAT_RAW) {
         pb_buf_free(&t->raw.names);
+        pb_buf_free(&t->raw.keys);
         pb_buf_free(&t->raw.tracks);
         pb_buf_free(&t->raw.events);
     } else {
@@ -280,6 +282,7 @@ static int snapshot_write_locked(struct pf_trace *t, const char *name, char *fil
     t->fd = fd;
     t->tracks_emitted = 0;
     intern_table_reset(&t->name_table);
+    intern_table_reset(&t->key_table);
 
     int rc = 0;
     if (t->cfg.format == PF_FORMAT_RAW)
@@ -410,15 +413,20 @@ static void emit_event_args(struct pf_trace *t, uint32_t type, uint64_t track_uu
         atomic_fetch_add_explicit(&t->dropped, 1, memory_order_relaxed);
         return;
     }
-    /* Protobuf records are encoded here, on the producer. Raw records have
-     * no room for arguments, so nargs is not passed on: they are dropped. */
+    /* Protobuf records are encoded here, on the producer. */
     if (t->cfg.format == PF_FORMAT_PROTOBUF) {
         pf_pb_emit(t, w, ts, type, track_uuid, name, dynamic, has_value, raw_value, value_is_double,
                    nargs, args);
         return;
     }
 
-    /* A dynamic name is copied after the head, capped at PF_DYN_NAME_MAX. */
+    /* Raw records carry their arguments in a section after the head. */
+    if (nargs > PF_MAX_ARGS)
+        nargs = PF_MAX_ARGS;
+    uint32_t args_bytes = nargs ? PF_REC_ARGS_HEAD + nargs * PF_REC_ARG_BYTES : 0;
+
+    /* A dynamic name is copied after the head and any arguments, capped at
+     * PF_DYN_NAME_MAX. */
     uint32_t len = 0;
     bool copy = dynamic && name && !has_value;
     bool cut = false;
@@ -428,7 +436,7 @@ static void emit_event_args(struct pf_trace *t, uint32_t type, uint64_t track_uu
             atomic_fetch_add_explicit(&t->truncated, 1, memory_order_relaxed);
     }
     uint32_t padded = (len + PF_REC_ALIGN - 1) & ~(PF_REC_ALIGN - 1);
-    uint32_t rec_size = copy ? PF_REC_HEAD_BYTES + padded : PF_REC_HEAD_BYTES;
+    uint32_t rec_size = PF_REC_HEAD_BYTES + args_bytes + (copy ? padded : 0);
 
     /* A record that does not fit the rest of the chunk goes to the next one.
      * Records are never split; see TODO item 3. A record larger than a whole
@@ -452,9 +460,27 @@ static void emit_event_args(struct pf_trace *t, uint32_t type, uint64_t track_uu
         r->u.name = name;
     r->type = type;
     r->flags = (has_value ? RF_HAS_VALUE : 0u) | (value_is_double ? RF_VALUE_IS_DOUBLE : 0u) |
-               (copy ? RF_NAME_COPIED : 0u);
+               (copy ? RF_NAME_COPIED : 0u) | (nargs ? RF_HAS_ARGS : 0u);
+    if (nargs) {
+        /* The count, 4 reserved bytes, then one entry per argument: the key's
+         * pointer, its kind, 4 reserved bytes, and the value's 8 bytes. Keys are
+         * literals, so the pointer is what the drain interns. */
+        uint32_t *hdr = (uint32_t *)((char *)r + PF_REC_HEAD_BYTES);
+        hdr[0] = nargs;
+        hdr[1] = 0;
+        for (unsigned i = 0; i < nargs; i++) {
+            char *e = (char *)hdr + PF_REC_ARGS_HEAD + i * PF_REC_ARG_BYTES;
+            uint64_t key = (uint64_t)(uintptr_t)args[i].key;
+            uint32_t kind = (uint32_t)args[i].kind;
+            uint32_t zero = 0;
+            memcpy(e, &key, sizeof key);
+            memcpy(e + 8, &kind, sizeof kind);
+            memcpy(e + 12, &zero, sizeof zero);
+            memcpy(e + 16, &args[i].v, sizeof args[i].v);
+        }
+    }
     if (copy) {
-        char *body = (char *)r + PF_REC_HEAD_BYTES;
+        char *body = (char *)r + PF_REC_HEAD_BYTES + args_bytes;
         pf_dyn_name_copy(body, name, len, cut);
         memset(body + len, 0, padded - len);
     }
@@ -970,6 +996,7 @@ struct pf_trace *pf_trace_open(const struct pf_config *cfg)
     staging_init(t);
 
     intern_table_reset(&t->name_table);
+    intern_table_reset(&t->key_table);
 
     pthread_mutex_init(&t->out_lock, NULL);
     pthread_mutex_init(&t->track_lock, NULL);

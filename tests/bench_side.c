@@ -83,6 +83,7 @@ enum workload {
 };
 
 static const char *const kLabels[] = { "simple", "realistic", "formatted", "manual", "args" };
+static int want_raw; /* set by "raw" on the command line */
 
 struct worker {
     struct pf_trace *t;
@@ -159,7 +160,8 @@ static void run(unsigned threads, size_t slots, uint64_t pairs, enum workload lo
     struct pf_config cfg;
     pf_config_init(&cfg);
     cfg.path = DIR;
-    cfg.name = "bench_side.pftrace";
+    cfg.name = want_raw ? "bench_side.pfraw" : "bench_side.pftrace";
+    cfg.format = want_raw ? PF_FORMAT_RAW : PF_FORMAT_PROTOBUF;
     cfg.mode = PF_MODE_CONTINUOUS;
     cfg.buffer_bytes = 2048u << 20;
     cfg.chunk_slots = slots;
@@ -209,9 +211,11 @@ static void run(unsigned threads, size_t slots, uint64_t pairs, enum workload lo
     dir_reset(DIR);
 }
 
-int main(void)
+int main(int argc, char **argv)
 {
-    printf("cores online: %ld\n", sysconf(_SC_NPROCESSORS_ONLN));
+    want_raw = argc > 1 && strcmp(argv[1], "raw") == 0;
+    printf("cores online: %ld, format: %s\n", sysconf(_SC_NPROCESSORS_ONLN),
+           want_raw ? "raw" : "protobuf");
 
     printf("\nContinuous mode, %u iterations per thread:\n", EVENTS_PER_THREAD);
     static const unsigned threads[] = { 1, 4, 8 };

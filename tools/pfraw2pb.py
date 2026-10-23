@@ -28,7 +28,7 @@ from perfetto.protos.perfetto.trace.perfetto_trace_pb2 import (
 )
 
 MAGIC = b"PFRAWv1\0"
-VERSION = 5
+VERSION = 6
 
 
 # On-disk layouts, little-endian and unpadded, as in docs/raw_format.md.
@@ -77,7 +77,8 @@ class TrackEntry(ctypes.LittleEndianStructure):
 
 
 class Event(ctypes.LittleEndianStructure):
-    # The fixed head of a record. A copied name follows it when RF_NAME_COPIED.
+    # The fixed head of a record. An argument section follows it when
+    # RF_HAS_ARGS, then a copied name when RF_NAME_COPIED.
     _pack_ = 1
     _fields_ = [
         ("ts", ctypes.c_uint64),
@@ -88,12 +89,38 @@ class Event(ctypes.LittleEndianStructure):
     ]
 
 
+class ArgsHead(ctypes.LittleEndianStructure):
+    # The argument section's head: the count, then 4 reserved bytes.
+    _pack_ = 1
+    _fields_ = [
+        ("count", ctypes.c_uint32),
+        ("reserved", ctypes.c_uint32),
+    ]
+
+
+class ArgEntry(ctypes.LittleEndianStructure):
+    # One argument: its key's pointer, its kind, 4 reserved bytes, and the
+    # value's 8 bytes.
+    _pack_ = 1
+    _fields_ = [
+        ("key", ctypes.c_uint64),
+        ("kind", ctypes.c_uint32),
+        ("reserved", ctypes.c_uint32),
+        ("value", ctypes.c_uint64),
+    ]
+
+
 RECORD_HEAD_BYTES = ctypes.sizeof(Event)
+ARGS_HEAD_BYTES = ctypes.sizeof(ArgsHead)
+ARG_BYTES = ctypes.sizeof(ArgEntry)
 TRACK_SIZE = ctypes.sizeof(TrackEntry)
 assert RECORD_HEAD_BYTES == 32 and TRACK_SIZE == 104
+assert ARGS_HEAD_BYTES == 8 and ARG_BYTES == 24
 # A copied name is padded to 8 bytes and capped, as in the C library.
 REC_ALIGN = 8
 DYN_NAME_MAX = 128
+# The argument kinds, from PF_ARG_* in include/pftrace.h.
+ARG_INT, ARG_UINT, ARG_DOUBLE = 0, 1, 2
 
 
 class _Bits(ctypes.Union):
@@ -107,6 +134,7 @@ def bits_to_double(bits):
 CHUNK_NAMES = 1
 CHUNK_TRACKS = 2
 CHUNK_EVENTS = 3
+CHUNK_KEYS = 4
 
 RF_HAS_VALUE = 0x1
 # raw format's own values, so they map to Perfetto's enum explicitly.
@@ -129,6 +157,7 @@ RAW_CLOCK_TO_PERFETTO = {
 RF_HAS_VALUE = 0x1
 RF_VALUE_IS_DOUBLE = 0x2
 RF_NAME_COPIED = 0x4
+RF_HAS_ARGS = 0x8
 
 TRACK_PROCESS = 0
 TRACK_THREAD = 1
@@ -215,6 +244,8 @@ class Converter:
         self._out = out
         self._names = {}  # ptr -> str
         self._iids = {}  # ptr -> iid, for names already written
+        self._keys = {}  # ptr -> str, for argument keys
+        self._key_iids = {}  # ptr -> iid, for keys already written
         self._tracks = {}  # uuid -> parsed track entry
         self._first = True
         # Until clock_snapshot() names the trace clock, packets use BOOTTIME,
@@ -275,24 +306,30 @@ class Converter:
 
 
     def names_chunk(self, payload):
+        self._define(payload, self._names, "name")
+
+    def keys_chunk(self, payload):
+        self._define(payload, self._keys, "key")
+
+    def _define(self, payload, table, what):
         p = 0
         head_size = ctypes.sizeof(NameHeader)
         while p < len(payload):
             if len(payload) - p < head_size:
-                raise RawFormatError("truncated name entry")
+                raise RawFormatError(f"truncated {what} entry")
             hdr = NameHeader.from_buffer_copy(payload, p)
             ptr, nlen = hdr.ptr, hdr.length
             p += head_size
             if len(payload) - p < nlen:
-                raise RawFormatError("name runs past its chunk")
-            name = payload[p:p + nlen].decode("utf-8", errors="replace")
+                raise RawFormatError(f"{what} runs past its chunk")
+            text = payload[p:p + nlen].decode("utf-8", errors="replace")
             p += nlen
-            known = self._names.get(ptr)
+            known = table.get(ptr)
             if known is None:
-                self._names[ptr] = name
-                self.stats["names"] += 1
-            elif known != name:
-                raise RawFormatError(f"conflicting definition for name {ptr:#x}")
+                table[ptr] = text
+                self.stats[what + "s"] += 1
+            elif known != text:
+                raise RawFormatError(f"conflicting definition for {what} {ptr:#x}")
 
     def tracks_chunk(self, payload):
         if len(payload) % TRACK_SIZE:
@@ -349,6 +386,22 @@ class Converter:
             rec = Event.from_buffer_copy(payload, off)
             off += RECORD_HEAD_BYTES
             ts, track, u, etype, flags = rec.ts, rec.track, rec.u, rec.type, rec.flags
+            if flags & RF_HAS_ARGS and flags & RF_NAME_COPIED:
+                raise RawFormatError("record has both arguments and a copied name")
+
+            # The argument section follows the head when RF_HAS_ARGS: a count,
+            # then one entry per argument. A copied name comes after it.
+            args = []
+            if flags & RF_HAS_ARGS:
+                if len(payload) - off < ARGS_HEAD_BYTES:
+                    raise RawFormatError("argument section runs past the events chunk")
+                count = ArgsHead.from_buffer_copy(payload, off).count
+                off += ARGS_HEAD_BYTES
+                if len(payload) - off < count * ARG_BYTES:
+                    raise RawFormatError("argument entries run past the events chunk")
+                for _ in range(count):
+                    args.append(ArgEntry.from_buffer_copy(payload, off))
+                    off += ARG_BYTES
 
             # A copied name follows the head: @u is its length, and the bytes
             # are padded to REC_ALIGN.
@@ -373,6 +426,29 @@ class Converter:
             ev = packet.track_event
             ev.type = RAW_TYPE_TO_PERFETTO[etype]
             ev.track_uuid = track
+
+            # Each argument is a debug annotation. Its key is interned on first
+            # use, as the name is, so the packet carrying it defines the key.
+            for arg in args:
+                if arg.key not in self._keys:
+                    raise RawFormatError(f"argument refers to undefined key {arg.key:#x}")
+                key_iid = self._key_iids.get(arg.key)
+                if key_iid is None:
+                    key_iid = len(self._key_iids) + 1
+                    self._key_iids[arg.key] = key_iid
+                    packet.interned_data.debug_annotation_names.add(
+                        iid=key_iid, name=self._keys[arg.key])
+                ann = ev.debug_annotations.add()
+                ann.name_iid = key_iid
+                if arg.kind == ARG_INT:
+                    # The buffer stores the two's-complement bits of an int64.
+                    ann.int_value = arg.value - (1 << 64) if arg.value & INT64_SIGN else arg.value
+                elif arg.kind == ARG_UINT:
+                    ann.uint_value = arg.value
+                elif arg.kind == ARG_DOUBLE:
+                    ann.double_value = bits_to_double(arg.value)
+                else:
+                    raise RawFormatError(f"unknown argument kind {arg.kind}")
 
             if flags & RF_HAS_VALUE:
                 if flags & RF_VALUE_IS_DOUBLE:
@@ -412,6 +488,8 @@ def convert(src, dst):
             try:
                 if kind == CHUNK_NAMES:
                     conv.names_chunk(payload)
+                elif kind == CHUNK_KEYS:
+                    conv.keys_chunk(payload)
                 elif kind == CHUNK_TRACKS:
                     conv.tracks_chunk(payload)
                 elif kind == CHUNK_EVENTS:
