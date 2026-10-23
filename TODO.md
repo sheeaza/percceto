@@ -28,7 +28,12 @@ it unbinds, so it reaches the file at its exit. The file is complete at close if
 no thread is bound, and otherwise at the last bound thread's exit. Close does
 not commit another thread's chunk, so the race with a producer is gone.~~
 
-## 3. Encode on the producer
+## ~~3. Encode on the producer~~ (done)
+
+~~Done for protobuf. Steps 1 to 5 are complete, and the drain's per-event cost
+fell from about 70 ns to 1 to 3 ns. The producer cost rose, which is the open
+trade-off recorded below. The remaining question, how format strings are
+handled for args events, is item 9.~~
 
 Move protobuf encoding onto the producer, as Perfetto's SDK does: each record is
 encoded into its chunk on the emitting thread, and the drain only copies chunk
