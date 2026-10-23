@@ -468,7 +468,7 @@ values.
   still in a live thread's partial chunk are lost only if the process dies first.
 - Encoding stays on the drain thread.
 
-## 13. Intern debug annotation names
+## ~~13. Intern debug annotation names~~ (done)
 
 `enc_annotation` in `src/pf_encode.c` writes each argument's key inline, on
 every event. Keys are string literals, so they can be interned like event
@@ -489,6 +489,21 @@ keyed on its pointer would then name the wrong key. Check the key the way
 
 This does not help the no-args regression in item 10; it only changes the
 args path.
+
+Benchmark: `bench_side`, Release build, gcc, one thread, producer ns/event,
+three interleaved runs each, HEAD against this change:
+
+| workload | HEAD            | this change     |
+|----------|-----------------|-----------------|
+| args     | 27.6, 26.1, 26.3 | 27.7, 28.3, 26.7 |
+| simple   | 17.9, 16.5, 16.5 | 15.4, 16.0, 14.8 |
+
+The args path is unchanged within noise: means 26.7 against 27.6. The simple
+workload has no arguments and does not reach the changed code, yet its numbers
+moved by as much, so the run-to-run spread is about the size of the args
+difference. The 4- and 8-thread runs vary too much to compare. The args keys
+here are short (`i`, `ratio`), so interning saves few bytes per event; the
+byte saving is not measured here.
 
 ## Notes
 

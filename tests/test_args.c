@@ -105,7 +105,7 @@ static int next_field(const uint8_t **p, const uint8_t *end, uint32_t *field, ui
 }
 
 #define MAX_NAMES 64
-#define MAX_LINES 16
+#define MAX_LINES 64
 #define LINE_BYTES 512
 
 struct names {
@@ -113,8 +113,10 @@ struct names {
     size_t len[MAX_NAMES];
 };
 
-/* Appends " key=kind:value" for one DebugAnnotation to @line. */
-static int append_annotation(const uint8_t *body, size_t blen, char *line, size_t cap)
+/* Appends " key=kind:value" for one DebugAnnotation to @line. A key is either
+ * interned, as name_iid into @keys, or inline as name. */
+static int append_annotation(const uint8_t *body, size_t blen, const struct names *keys, char *line,
+                             size_t cap)
 {
     const uint8_t *p = body, *end = body + blen;
     const char *key = "";
@@ -131,9 +133,13 @@ static int append_annotation(const uint8_t *body, size_t blen, char *line, size_
             return -1;
         if (r == 0)
             break;
-        if (field == 10) {
-            key = (const char *)b;
-            klen = n;
+        if (field == 1 && v > 0 && v < MAX_NAMES && keys->str[v]) {
+            key = keys->str[v];
+            klen = keys->len[v];
+        } else if (field == 10) {
+            /* Every key in this test is a literal the cache holds, so none
+             * should go inline. */
+            return -1;
         } else if (field == 4) {
             snprintf(val, sizeof val, "i:%" PRId64, (int64_t)v);
         } else if (field == 3) {
@@ -152,10 +158,13 @@ static int append_annotation(const uint8_t *body, size_t blen, char *line, size_
 /* Reads every packet of @data. For each TrackEvent that carries annotations,
  * writes one line to @out: the event type, its name, then the annotations.
  * Returns the number of lines, or -1 if the file does not parse. */
-static int read_lines(const uint8_t *data, size_t len, char out[][LINE_BYTES], int max)
+static int read_lines(const uint8_t *data, size_t len, char out[][LINE_BYTES], int max,
+                      int *inline_names)
 {
-    struct names names;
+    struct names names; /* event names, interned_data field 2 */
+    struct names keys; /* debug annotation names, field 3 */
     memset(&names, 0, sizeof names);
+    memset(&keys, 0, sizeof keys);
     int count = 0;
     const uint8_t *p = data, *end = data + len;
     for (;;) {
@@ -204,8 +213,9 @@ static int read_lines(const uint8_t *data, size_t len, char out[][LINE_BYTES], i
                         return -1;
                     if (r == 0)
                         break;
-                    if (df != 2) /* event_names */
+                    if (df != 2 && df != 3) /* event_names, debug_annotation_names */
                         continue;
+                    struct names *tab = df == 2 ? &names : &keys;
                     const uint8_t *e = db, *eend = db + dn;
                     uint64_t iid = 0;
                     const char *nm = NULL;
@@ -228,8 +238,8 @@ static int read_lines(const uint8_t *data, size_t len, char out[][LINE_BYTES], i
                         }
                     }
                     if (iid > 0 && iid < MAX_NAMES) {
-                        names.str[iid] = nm;
-                        names.len[iid] = nl;
+                        tab->str[iid] = nm;
+                        tab->len[iid] = nl;
                     }
                 }
             } else if (f == 11) { /* track_event */
@@ -261,7 +271,7 @@ static int read_lines(const uint8_t *data, size_t len, char out[][LINE_BYTES], i
                                                  "?");
                             has_ann = 1;
                         }
-                        if (append_annotation(tb, tn, line, sizeof line) < 0)
+                        if (append_annotation(tb, tn, &keys, line, sizeof line) < 0)
                             return -1;
                     }
                 }
@@ -277,6 +287,8 @@ static int read_lines(const uint8_t *data, size_t len, char out[][LINE_BYTES], i
         } else if (name) {
             shown = name;
             shown_len = (int)name_len;
+            if (inline_names)
+                (*inline_names)++;
         }
         char full[LINE_BYTES];
         /* The event type, then the name, then the annotations. line holds the
@@ -345,7 +357,7 @@ static void check_protobuf(void)
     }
 
     char got[MAX_LINES][LINE_BYTES];
-    int n = read_lines(data, len, got, MAX_LINES);
+    int n = read_lines(data, len, got, MAX_LINES, NULL);
     check(n >= 0, "protobuf trace parses on the wire");
     free(data);
     if (n < 0)
@@ -365,6 +377,113 @@ static void check_protobuf(void)
         check(ok, what);
         if (!ok)
             printf("       got: %s\n", got[i]);
+    }
+}
+
+/* Forty distinct names in one thread's burst. Past 32 of them, the writer's
+ * cache has no slot left for a name in the chunk, so those go inline; the
+ * decoder must still resolve every event to its own name. */
+#define OVF_EV(n) pf_instant_event_args_g("n" #n, PF_KV("i", (int)(n)));
+#define OVF_COUNT 40
+
+static void *overflow_thread(void *arg)
+{
+    (void)arg;
+    OVF_EV(1)
+    OVF_EV(2)
+    OVF_EV(3)
+    OVF_EV(4)
+    OVF_EV(5)
+    OVF_EV(6)
+    OVF_EV(7)
+    OVF_EV(8)
+    OVF_EV(9)
+    OVF_EV(10)
+    OVF_EV(11)
+    OVF_EV(12)
+    OVF_EV(13)
+    OVF_EV(14)
+    OVF_EV(15)
+    OVF_EV(16)
+    OVF_EV(17)
+    OVF_EV(18)
+    OVF_EV(19)
+    OVF_EV(20)
+    OVF_EV(21)
+    OVF_EV(22)
+    OVF_EV(23)
+    OVF_EV(24)
+    OVF_EV(25)
+    OVF_EV(26)
+    OVF_EV(27)
+    OVF_EV(28)
+    OVF_EV(29)
+    OVF_EV(30)
+    OVF_EV(31)
+    OVF_EV(32)
+    OVF_EV(33)
+    OVF_EV(34)
+    OVF_EV(35)
+    OVF_EV(36)
+    OVF_EV(37)
+    OVF_EV(38)
+    OVF_EV(39)
+    OVF_EV(40)
+    return NULL;
+}
+
+static void check_intern_overflow(void)
+{
+    struct pf_config cfg;
+    pf_config_init(&cfg);
+    cfg.path = ".";
+    cfg.name = "args_overflow.pftrace";
+    unlink(cfg.name);
+    cfg.mode = PF_MODE_CONTINUOUS;
+    cfg.format = PF_FORMAT_PROTOBUF;
+    if (pf_trace_open_g(&cfg) != 0) {
+        check(0, "open overflow trace");
+        return;
+    }
+
+    pthread_t th;
+    if (pthread_create(&th, NULL, overflow_thread, NULL) != 0) {
+        check(0, "start overflow thread");
+        pf_trace_close_g();
+        return;
+    }
+    pthread_join(th, NULL);
+
+    struct pf_stats st;
+    pf_trace_stats(pf_trace_default_g(), &st);
+    check(st.dropped == 0, "overflow: no events dropped");
+    pf_trace_close_g();
+
+    uint8_t *data;
+    size_t len;
+    if (read_file("args_overflow.pftrace", &data, &len) < 0) {
+        check(0, "read overflow trace back");
+        return;
+    }
+    static char got[OVF_COUNT][LINE_BYTES];
+    int inline_names = 0;
+    int n = read_lines(data, len, got, OVF_COUNT, &inline_names);
+    check(n >= 0, "overflow: trace parses on the wire");
+    free(data);
+    if (n < 0)
+        return;
+
+    check(n == OVF_COUNT, "overflow: every event decodes");
+    check(inline_names > 0, "overflow: some names went past the cache and arrived inline");
+    for (int i = 0; i < OVF_COUNT && i < n; i++) {
+        char want[LINE_BYTES];
+        snprintf(want, sizeof want, "I n%d i=i:%d", i + 1, i + 1);
+        int ok = strcmp(got[i], want) == 0;
+        if (!ok)
+            printf("       got: %s, want: %s\n", got[i], want);
+        check(ok, ok ? "overflow: event named by its own name" : "overflow: wrong name");
+        if (!ok)
+            break;
     }
 }
 
@@ -394,6 +513,7 @@ int main(void)
 {
     printf("test_args\n");
     check_protobuf();
+    check_intern_overflow();
     check_raw();
     if (failures)
         printf("%d failure(s)\n", failures);

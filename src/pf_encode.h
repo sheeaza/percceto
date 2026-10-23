@@ -34,10 +34,12 @@
 #define FN_ANN_UINT 3
 #define FN_ANN_INT 4
 #define FN_ANN_DOUBLE 5
+#define FN_ANN_NAME_IID 1
 #define FN_ANN_NAME 10
 
-/* InternedData / EventName */
+/* InternedData / EventName, and the same shape for DebugAnnotationName */
 #define FN_INTERNED_EVENT_NAMES 2
+#define FN_INTERNED_DEBUG_ANNOTATION_NAMES 3
 #define FN_IID 1
 #define FN_NAME_STR 2
 

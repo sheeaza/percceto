@@ -149,6 +149,9 @@ struct pf_writer {
     /* Protobuf: this writer's interned names. Slot i is iid i + 1 in the
      * writer's own sequence, so iids never collide across writers. */
     struct pb_intern_slot intern[PF_PB_INTERN_SLOTS];
+    /* Protobuf: this writer's argument keys, kept apart from event names: they
+     * are sent as debug_annotation_names, a separate iid space. */
+    struct pb_intern_slot keys[PF_PB_INTERN_SLOTS];
     /* Records this writer has emitted into its chunks, including any that a
      * snapshot later overwrites. Written only by the owner, read by stats. */
     _Atomic uint64_t events;

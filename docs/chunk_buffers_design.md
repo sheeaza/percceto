@@ -81,7 +81,11 @@ A record that does not fit the rest of its chunk moves to the next chunk; it is
 never split. A record larger than a whole chunk is dropped and counted.
 
 Typed arguments are protobuf debug annotations, written in the same packet as
-the event, after its name. Their bytes count toward the record size, so an event
+the event, after its name. Argument keys are interned the same way, in their own
+per-writer cache of 32 slots, as `debug_annotation_names` entries (iid and name,
+in `InternedData` field 3). A `DebugAnnotation` refers to its key by `name_iid`.
+A key the cache cannot hold, or one already claimed by another argument of the
+same event, is sent inline. Their bytes count toward the record size, so an event
 with arguments fills its chunk faster and moves to the next chunk sooner. The
 rule above applies unchanged.
 

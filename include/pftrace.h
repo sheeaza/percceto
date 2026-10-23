@@ -658,7 +658,7 @@ static inline struct pf_arg pf_arg_double(const char *key, double v)
         unsigned int: pf_arg_uint,       \
         unsigned long: pf_arg_uint,      \
         unsigned long long: pf_arg_uint, \
-        default: pf_arg_int)((key), (value))
+        default: pf_arg_int)(PF_NAME_LITERAL(key), (value))
 
 /* Counts its arguments, up to 8. More than that yields a wrong count, which
  * PF_ARGS_ then rejects. */
