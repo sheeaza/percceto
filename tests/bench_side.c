@@ -76,8 +76,12 @@ static const char *const kNames[16] = {
 
 enum workload {
     SIMPLE,
-    REALISTIC
+    REALISTIC,
+    FORMATTED,
+    MANUAL
 };
+
+static const char *const kLabels[] = { "simple", "realistic", "formatted", "manual" };
 
 struct worker {
     struct pf_trace *t;
@@ -98,6 +102,20 @@ static void *emit_loop(void *arg)
     for (uint64_t i = 0; i < w->pairs; i++) {
         if (w->load == SIMPLE) {
             pf_slice_begin(w->t, w->trk, "compute");
+            pf_slice_end(w->t, w->trk);
+            w->events += 2;
+            continue;
+        }
+        if (w->load == FORMATTED) {
+            pf_slice_begin(w->t, w->trk, "req-%u", (unsigned)(i & 255u));
+            pf_slice_end(w->t, w->trk);
+            w->events += 2;
+            continue;
+        }
+        if (w->load == MANUAL) {
+            char buf[32];
+            snprintf(buf, sizeof buf, "req-%u", (unsigned)(i & 255u));
+            pf_slice_begin_dyn_impl(w->t, w->trk, buf);
             pf_slice_end(w->t, w->trk);
             w->events += 2;
             continue;
@@ -180,8 +198,7 @@ static void run(unsigned threads, size_t slots, uint64_t pairs, enum workload lo
 
     printf("%-9s threads %2u, chunk_slots %5zu: producer %6.1f ns/event, "
            "consumer tail %6.1f ns/event, %" PRIu64 " events, %" PRIu64 " dropped\n",
-           load == SIMPLE ? "simple" : "realistic", threads, slots, producer_ns, consumer_ns,
-           emitted, s.dropped);
+           kLabels[load], threads, slots, producer_ns, consumer_ns, emitted, s.dropped);
     dir_reset(DIR);
 }
 
@@ -192,7 +209,7 @@ int main(void)
     printf("\nContinuous mode, %u iterations per thread:\n", EVENTS_PER_THREAD);
     static const unsigned threads[] = { 1, 4, 8 };
     static const size_t slots[] = { 4096 };
-    static const enum workload loads[] = { SIMPLE, REALISTIC };
+    static const enum workload loads[] = { SIMPLE, REALISTIC, FORMATTED, MANUAL };
     for (unsigned s = 0; s < sizeof(slots) / sizeof(slots[0]); s++)
         for (unsigned l = 0; l < sizeof(loads) / sizeof(loads[0]); l++)
             for (unsigned i = 0; i < sizeof(threads) / sizeof(threads[0]); i++)
