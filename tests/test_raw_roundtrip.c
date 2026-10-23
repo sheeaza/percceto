@@ -781,15 +781,15 @@ static void dyn_roundtrip(const char *path)
     }
     uint64_t trk = pf_track_thread(t, getpid(), 1, "dyn");
     char name[64];
-    snprintf(name, sizeof name, "job %d took %f", 7, 2.5);
+    snprintf(name, sizeof(name), "job %d took %f", 7, 2.5);
     pf_slice_begin(t, trk, name);
     /* The record holds its own copy, so the buffer can change at once. */
-    memset(name, 'x', sizeof name - 1);
-    name[sizeof name - 1] = '\0';
+    memset(name, 'x', sizeof(name) - 1);
+    name[sizeof(name) - 1] = '\0';
     pf_slice_end(t, trk);
     char big[DYN_NAME_MAX + 72];
-    memset(big, 'y', sizeof big - 1);
-    big[sizeof big - 1] = '\0';
+    memset(big, 'y', sizeof(big) - 1);
+    big[sizeof(big) - 1] = '\0';
     pf_instant_event(t, trk, big);
     pf_slice_begin(t, trk, "plain");
     pf_slice_end(t, trk);
@@ -800,7 +800,7 @@ static void dyn_roundtrip(const char *path)
     pf_trace_close(t);
 
     static struct parsed p;
-    memset(&p, 0, sizeof p);
+    memset(&p, 0, sizeof(p));
     if (parse_raw(path, &p) != 0) {
         CHECK(false, "dyn: reader rejected %s", path);
         return;
@@ -877,7 +877,7 @@ static void args_roundtrip(const char *path)
                       s->args[0].value == 4096,
                   "args: first argument is not size=4096 as uint");
             double ratio;
-            memcpy(&ratio, &s->args[1].value, sizeof ratio);
+            memcpy(&ratio, &s->args[1].value, sizeof(ratio));
             CHECK(k1 && strcmp(k1->s, "ratio") == 0 && s->args[1].kind == 2 && ratio == 0.5,
                   "args: second argument is not ratio=0.5 as double");
         }
@@ -889,7 +889,7 @@ static void args_roundtrip(const char *path)
         if (i->nargs == 1) {
             const struct rname *k = find_key(&p, i->args[0].key);
             int64_t n;
-            memcpy(&n, &i->args[0].value, sizeof n);
+            memcpy(&n, &i->args[0].value, sizeof(n));
             CHECK(k && strcmp(k->s, "n") == 0 && i->args[0].kind == 0 && n == -7,
                   "args: instant argument is not n=-7 as int");
         }
@@ -902,7 +902,7 @@ static void args_roundtrip(const char *path)
 static void args_with_copied_name(const char *path)
 {
     uint8_t buf[120];
-    memset(buf, 0, sizeof buf);
+    memset(buf, 0, sizeof(buf));
     memcpy(buf, "PFRAWv1", 8);
     le_bytes(buf + 8, 6, 4);
     le_bytes(buf + 12, 32, 4);
@@ -923,7 +923,7 @@ static void args_with_copied_name(const char *path)
         CHECK(false, "bad args: cannot write %s", path);
         return;
     }
-    fwrite(buf, 1, sizeof buf, f);
+    fwrite(buf, 1, sizeof(buf), f);
     fclose(f);
 
     struct parsed p;

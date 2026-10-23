@@ -473,10 +473,10 @@ static void emit_event_args(struct pf_trace *t, uint32_t type, uint64_t track_uu
             uint64_t key = (uint64_t)(uintptr_t)args[i].key;
             uint32_t kind = (uint32_t)args[i].kind;
             uint32_t zero = 0;
-            memcpy(e, &key, sizeof key);
-            memcpy(e + 8, &kind, sizeof kind);
-            memcpy(e + 12, &zero, sizeof zero);
-            memcpy(e + 16, &args[i].v, sizeof args[i].v);
+            memcpy(e, &key, sizeof(key));
+            memcpy(e + 8, &kind, sizeof(kind));
+            memcpy(e + 12, &zero, sizeof(zero));
+            memcpy(e + 16, &args[i].v, sizeof(args[i].v));
         }
     }
     if (copy) {
@@ -539,7 +539,7 @@ void pf_slice_begin_fmt_impl(struct pf_trace *t, uint64_t track_uuid, const char
     char name[FMT_NAME_BYTES];
     va_list ap;
     va_start(ap, fmt);
-    pf_slice_begin_dyn_impl(t, track_uuid, format_name(name, sizeof name, fmt, ap));
+    pf_slice_begin_dyn_impl(t, track_uuid, format_name(name, sizeof(name), fmt, ap));
     va_end(ap);
 }
 
@@ -548,7 +548,7 @@ void pf_instant_event_fmt_impl(struct pf_trace *t, uint64_t track_uuid, const ch
     char name[FMT_NAME_BYTES];
     va_list ap;
     va_start(ap, fmt);
-    pf_instant_event_dyn_impl(t, track_uuid, format_name(name, sizeof name, fmt, ap));
+    pf_instant_event_dyn_impl(t, track_uuid, format_name(name, sizeof(name), fmt, ap));
     va_end(ap);
 }
 
@@ -557,7 +557,7 @@ void pf_slice_begin_g_fmt_impl(const char *fmt, ...)
     char name[FMT_NAME_BYTES];
     va_list ap;
     va_start(ap, fmt);
-    pf_slice_begin_g_dyn_impl(format_name(name, sizeof name, fmt, ap));
+    pf_slice_begin_g_dyn_impl(format_name(name, sizeof(name), fmt, ap));
     va_end(ap);
 }
 
@@ -566,7 +566,7 @@ void pf_instant_event_g_fmt_impl(const char *fmt, ...)
     char name[FMT_NAME_BYTES];
     va_list ap;
     va_start(ap, fmt);
-    pf_instant_event_g_dyn_impl(format_name(name, sizeof name, fmt, ap));
+    pf_instant_event_g_dyn_impl(format_name(name, sizeof(name), fmt, ap));
     va_end(ap);
 }
 

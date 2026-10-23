@@ -218,7 +218,7 @@ int main(void)
     double direct_ns = (double)(t1 - t0) / EVENTS;
 
     /* Raw: the producer stores the 48-byte record as it does today. */
-    struct raw_rec *recs = calloc(CHUNK_SLOTS, sizeof *recs);
+    struct raw_rec *recs = calloc(CHUNK_SLOTS, sizeof(*recs));
     if (!recs) {
         perror("calloc");
         return 1;

@@ -18,7 +18,7 @@ void probe_literal(struct pf_trace *t, uint64_t trk)
 void probe_built(struct pf_trace *t, uint64_t trk, const char *dynamic)
 {
     char buf[32];
-    snprintf(buf, sizeof buf, "req-%s", dynamic);
+    snprintf(buf, sizeof(buf), "req-%s", dynamic);
     pf_slice_begin(t, trk, buf);
     pf_slice_begin(t, trk, "req-%d", 7);
     pf_slice_begin(t, trk, "req-%s", dynamic);

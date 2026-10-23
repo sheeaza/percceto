@@ -141,13 +141,13 @@ static int append_annotation(const uint8_t *body, size_t blen, const struct name
              * should go inline. */
             return -1;
         } else if (field == 4) {
-            snprintf(val, sizeof val, "i:%" PRId64, (int64_t)v);
+            snprintf(val, sizeof(val), "i:%" PRId64, (int64_t)v);
         } else if (field == 3) {
-            snprintf(val, sizeof val, "u:%" PRIu64, v);
+            snprintf(val, sizeof(val), "u:%" PRIu64, v);
         } else if (field == 5) {
             double d;
-            memcpy(&d, &v, sizeof d);
-            snprintf(val, sizeof val, "d:%.17g", d);
+            memcpy(&d, &v, sizeof(d));
+            snprintf(val, sizeof(val), "d:%.17g", d);
         }
     }
     size_t used = strlen(line);
@@ -163,8 +163,8 @@ static int read_lines(const uint8_t *data, size_t len, char out[][LINE_BYTES], i
 {
     struct names names; /* event names, interned_data field 2 */
     struct names keys; /* debug annotation names, field 3 */
-    memset(&names, 0, sizeof names);
-    memset(&keys, 0, sizeof keys);
+    memset(&names, 0, sizeof(names));
+    memset(&keys, 0, sizeof(keys));
     int count = 0;
     const uint8_t *p = data, *end = data + len;
     for (;;) {
@@ -264,14 +264,14 @@ static int read_lines(const uint8_t *data, size_t len, char out[][LINE_BYTES], i
                         name_len = tn;
                     } else if (tf == 4) {
                         if (!has_ann) {
-                            snprintf(line, sizeof line, "%s",
+                            snprintf(line, sizeof(line), "%s",
                                      type == 1 ? "B" :
                                      type == 2 ? "E" :
                                      type == 3 ? "I" :
                                                  "?");
                             has_ann = 1;
                         }
-                        if (append_annotation(tb, tn, &keys, line, sizeof line) < 0)
+                        if (append_annotation(tb, tn, &keys, line, sizeof(line)) < 0)
                             return -1;
                     }
                 }
@@ -294,7 +294,7 @@ static int read_lines(const uint8_t *data, size_t len, char out[][LINE_BYTES], i
         /* The event type, then the name, then the annotations. line holds the
          * type letter first, then the annotations, each with a leading space. */
         size_t tl = strcspn(line, " ");
-        snprintf(full, sizeof full, "%.*s %.*s%s", (int)tl, line, shown_len, shown, line + tl);
+        snprintf(full, sizeof(full), "%.*s %.*s%s", (int)tl, line, shown_len, shown, line + tl);
         if (count >= max)
             return -1;
         snprintf(out[count++], LINE_BYTES, "%s", full);
@@ -368,12 +368,12 @@ static void check_protobuf(void)
         "I tick n=i:7",
         "I tick u=u:18446744073709551615 neg=i:-9223372036854775808",
     };
-    const int nwant = (int)(sizeof want / sizeof want[0]);
+    const int nwant = (int)(sizeof(want) / sizeof(want[0]));
     check(n == nwant, "three annotated events in the trace");
     for (int i = 0; i < nwant && i < n; i++) {
         char what[LINE_BYTES + 32];
         int ok = strcmp(got[i], want[i]) == 0;
-        snprintf(what, sizeof what, "event %d: %.*s", i, LINE_BYTES, ok ? got[i] : want[i]);
+        snprintf(what, sizeof(what), "event %d: %.*s", i, LINE_BYTES, ok ? got[i] : want[i]);
         check(ok, what);
         if (!ok)
             printf("       got: %s\n", got[i]);
@@ -477,7 +477,7 @@ static void check_intern_overflow(void)
     check(inline_names > 0, "overflow: some names went past the cache and arrived inline");
     for (int i = 0; i < OVF_COUNT && i < n; i++) {
         char want[LINE_BYTES];
-        snprintf(want, sizeof want, "I n%d i=i:%d", i + 1, i + 1);
+        snprintf(want, sizeof(want), "I n%d i=i:%d", i + 1, i + 1);
         int ok = strcmp(got[i], want) == 0;
         if (!ok)
             printf("       got: %s, want: %s\n", got[i], want);

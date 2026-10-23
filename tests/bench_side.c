@@ -116,7 +116,7 @@ static void *emit_loop(void *arg)
         }
         if (w->load == MANUAL) {
             char buf[32];
-            snprintf(buf, sizeof buf, "req-%u", (unsigned)(i & 255u));
+            snprintf(buf, sizeof(buf), "req-%u", (unsigned)(i & 255u));
             pf_slice_begin_dyn_impl(w->t, w->trk, buf);
             pf_slice_end(w->t, w->trk);
             w->events += 2;
@@ -132,7 +132,7 @@ static void *emit_loop(void *arg)
         w->events += 1;
         if ((i & 7) == 0) {
             char job[32];
-            snprintf(job, sizeof job, "job %d took %f", (int)(i & 255), 2.5);
+            snprintf(job, sizeof(job), "job %d took %f", (int)(i & 255), 2.5);
             pf_instant_event(w->t, w->trk, job);
             w->events += 1;
         }

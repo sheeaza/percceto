@@ -106,7 +106,7 @@ int main(void)
         pf_slice_begin_g("realtime_probe");
         pf_slice_end_g();
         char file[256];
-        int rc = pf_trace_dump_g("clock_realtime", file, sizeof file);
+        int rc = pf_trace_dump_g("clock_realtime", file, sizeof(file));
         printf("REALTIME dump: %s (rc %d)\n", rc == 0 ? file : "none", rc);
         pf_trace_close_g();
     }

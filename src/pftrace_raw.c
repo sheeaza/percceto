@@ -175,7 +175,7 @@ static int raw_emit_record(struct pf_trace *t, const struct pf_rec *r)
             uint64_t ptr;
             const char *entry =
                 (const char *)r + PF_REC_HEAD_BYTES + PF_REC_ARGS_HEAD + i * PF_REC_ARG_BYTES;
-            memcpy(&ptr, entry, sizeof ptr);
+            memcpy(&ptr, entry, sizeof(ptr));
             raw_define_once(&t->key_table, &t->raw.keys, (const char *)(uintptr_t)ptr);
         }
     }

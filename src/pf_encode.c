@@ -212,7 +212,7 @@ static void enc_annotation(struct enc *e, const struct pb_event *v, unsigned i)
         break;
     case PF_ARG_DOUBLE: {
         uint64_t bits;
-        memcpy(&bits, &a->v.d, sizeof bits);
+        memcpy(&bits, &a->v.d, sizeof(bits));
         e_fixed64(e, FN_ANN_DOUBLE, bits);
         break;
     }
