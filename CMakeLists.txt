@@ -32,10 +32,12 @@ add_compile_options(-Wall -Wextra -Werror)
 # de-duplicates the repeated bare "-isystem" token and the second path
 # onward is emitted with no flag at all.
 #
-# C only: for C++ these dirs duplicate the defaults, and GCC's #include_next
-# in libstdc++ then fails to find stdlib.h.
+# C++ gets the libstdc++ dirs too, so clangd can resolve <array> and friends.
 foreach(dir IN LISTS CMAKE_C_IMPLICIT_INCLUDE_DIRECTORIES)
   add_compile_options("$<$<COMPILE_LANGUAGE:C>:SHELL:-isystem ${dir}>")
+endforeach()
+foreach(dir IN LISTS CMAKE_CXX_IMPLICIT_INCLUDE_DIRECTORIES)
+  add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:SHELL:-isystem ${dir}>")
 endforeach()
 
 find_package(Threads REQUIRED)
