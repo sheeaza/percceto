@@ -3,17 +3,14 @@
 Performance and behaviour work on the chunk buffers. See
 `docs/chunk_buffers_design.md` for the design and its known limits.
 
-## 1. Dynamic chunk count per thread
+## ~~1. Dynamic chunk count per thread~~ (not needed)
 
-Give high-rate threads more chunks and low-rate threads fewer, instead of a
-fixed number per thread. A thread's chunk turnover (how often it fills a chunk)
-shows its rate, so the pool can be rebalanced from that, or the user can set a
-share per thread.
-
-Trade-off: the pool needs per-thread accounting and a way to move chunks
-between threads. Rebalancing is only done at chunk rotation, so the hot path
-does not change. A quiet thread that suddenly bursts must wait for chunks to be
-returned. A thread that goes idle holds its chunks until they are reclaimed.
+~~Not needed. The pool is one global free list, and rotation takes the next chunk
+from it with no per-writer cap, so a busy thread already gets as many chunks as
+are free. A quiet thread holds at most one partial chunk. Drops under a burst
+would mean the drain is behind or the pool is too small, and a per-thread share
+would not fix either. Per-thread accounting and chunk transfer would add locking
+for no gain.~~
 
 ## ~~2. Tails of live idle threads in dumps~~ (done)
 
