@@ -67,6 +67,13 @@ target_link_libraries(test_args PRIVATE pftrace Threads::Threads)
 target_compile_definitions(test_args PRIVATE _GNU_SOURCE)
 add_test(NAME args COMMAND test_args WORKING_DIRECTORY ${PFTRACE_RUN_DIR})
 
+# Output rotation in continuous mode: file names, the size limit, name reuse,
+# and each raw file's own header.
+add_executable(test_rotate test_rotate.c)
+target_link_libraries(test_rotate PRIVATE pftrace Threads::Threads)
+target_compile_definitions(test_rotate PRIVATE _GNU_SOURCE)
+add_test(NAME rotate COMMAND test_rotate WORKING_DIRECTORY ${PFTRACE_RUN_DIR})
+
 # Not a test: reports producer vs drain cost per event, to show where the
 # hot path actually stands and at what rate continuous mode starts dropping.
 add_executable(bench bench.c)
@@ -101,6 +108,7 @@ if(PFTRACE_BUILD_SANITIZED)
     test_process_track
     test_counter_g
     test_raw_roundtrip
+    test_rotate
   )
   foreach(sanitizer asan tsan)
     set(run_dir ${PFTRACE_RUN_DIR}/${sanitizer})

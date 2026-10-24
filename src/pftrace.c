@@ -12,6 +12,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/prctl.h>
+#include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -156,7 +157,64 @@ int out_flush(struct pf_trace *t)
     if (write_all(t->fd, t->out.data, t->out.len) != 0)
         return -1;
     atomic_fetch_add_explicit(&t->bytes_written, t->out.len, memory_order_relaxed);
+    t->file_bytes += t->out.len;
     pb_buf_reset(&t->out);
+    return 0;
+}
+
+/* Leaf name of rotation slot @slot. Slot 0 is the configured name, so a trace
+ * with rotation off writes the one file it always did. Open checked that the
+ * suffix fits NAME_MAX. */
+static void slot_leaf(const struct pf_trace *t, uint32_t slot, char *leaf, size_t size)
+{
+    if (slot == 0)
+        snprintf(leaf, size, "%s", t->cfg.name);
+    else
+        snprintf(leaf, size, "%s.%u", t->cfg.name, (unsigned)slot);
+}
+
+/* Continuous mode: whether the open file would pass cfg.max_file_bytes with
+ * @next more bytes. Only a file that already holds data is rotated, so an
+ * oversized item gets a file to itself. Caller holds out_lock. */
+bool rotate_due(const struct pf_trace *t, size_t next)
+{
+    return t->cfg.max_file_bytes && t->file_has_data &&
+           t->file_bytes + next > t->cfg.max_file_bytes;
+}
+
+/* Continuous mode: closes the open file and opens the next, from the slot the
+ * index maps to. The new file is self-contained, as a snapshot file is: its
+ * header is written, its tracks are declared again, and interning restarts. A
+ * reused slot is truncated, which is what loses its older events. Caller holds
+ * out_lock, and has written out anything pending for the old file. */
+int rotate_locked(struct pf_trace *t)
+{
+    uint32_t index = t->file_index + 1;
+    uint32_t slot = t->cfg.max_files ? index % t->cfg.max_files : index;
+    char leaf[NAME_MAX + 1];
+    slot_leaf(t, slot, leaf, sizeof(leaf));
+
+    int fd = openat(t->dirfd, leaf, O_WRONLY | O_CREAT | O_TRUNC | O_APPEND | O_CLOEXEC, 0644);
+    if (fd < 0)
+        return -1;
+
+    close(t->fd);
+    t->fd = fd;
+    t->file_index = index;
+    t->file_bytes = 0;
+    t->file_has_data = false;
+    t->tracks_emitted = 0;
+    t->header_written = false;
+    intern_table_reset(&t->name_table);
+    intern_table_reset(&t->key_table);
+    snprintf(t->file_name, sizeof(t->file_name), "%s", leaf);
+
+    atomic_fetch_add_explicit(&t->files, 1, memory_order_relaxed);
+    if (t->cfg.max_files && index >= t->cfg.max_files)
+        atomic_fetch_add_explicit(&t->files_overwritten, 1, memory_order_relaxed);
+
+    if (t->cfg.format == PF_FORMAT_RAW)
+        return raw_write_header(t);
     return 0;
 }
 
@@ -164,7 +222,8 @@ int out_flush(struct pf_trace *t)
  * holds out_lock.
  *
  * Continuous: the committed FIFO is detached, so producers keep committing
- * while it is written, and its chunks go back to the pool afterwards.
+ * while it is written, and its chunks go back to the pool afterwards. The
+ * writers rotate the file between chunks or records when it is full.
  * Snapshot: the FIFO is walked in place under the pool lock, so producers that
  * need a chunk wait for the dump to finish. Nothing is taken from it. */
 static int drain_locked(struct pf_trace *t)
@@ -205,6 +264,10 @@ static bool leaf_name_ok(const char *name)
 /* The name a caller passes to pf_trace_open or a dump must match the mode:
  * continuous names its one file at open and dumps take none; snapshot names
  * each dump and takes no name at open. */
+/* Room a rotated file name needs after the configured name: a dot and up to
+ * ten digits for a 32-bit slot index. */
+#define ROTATE_SUFFIX_MAX 12
+
 static bool open_name_ok(const struct pf_config *cfg)
 {
     return cfg->mode == PF_MODE_CONTINUOUS ? leaf_name_ok(cfg->name) : cfg->name == NULL;
@@ -297,8 +360,10 @@ static int snapshot_write_locked(struct pf_trace *t, const char *name, char *fil
     close(fd);
     t->fd = -1;
     errno = err;
-    if (rc == 0)
+    if (rc == 0) {
         name_out(file, size, leaf);
+        atomic_fetch_add_explicit(&t->files, 1, memory_order_relaxed);
+    }
     return rc;
 }
 
@@ -948,6 +1013,8 @@ static bool clock_ok(clockid_t clk)
 struct pf_trace *pf_trace_open(const struct pf_config *cfg)
 {
     if (!cfg || !cfg->path || cfg->watermark_pct > 99 || !open_name_ok(cfg) ||
+        (cfg->mode == PF_MODE_CONTINUOUS && cfg->max_file_bytes &&
+         strlen(cfg->name) + ROTATE_SUFFIX_MAX > NAME_MAX) ||
         !clock_ok(cfg->clock_id) || cfg->chunk_slots == 0 || cfg->max_threads == 0) {
         errno = EINVAL;
         return NULL;
@@ -968,6 +1035,11 @@ struct pf_trace *pf_trace_open(const struct pf_config *cfg)
         t->cfg.drain_interval_ms = 100;
     if (t->cfg.max_tracks == 0)
         t->cfg.max_tracks = 256;
+    /* Rotation is continuous only, like the watermark and drain interval. */
+    if (t->cfg.mode != PF_MODE_CONTINUOUS || t->cfg.max_file_bytes == 0) {
+        t->cfg.max_file_bytes = 0;
+        t->cfg.max_files = 0;
+    }
     t->next_uuid = 1;
 
     t->tracks = calloc(t->cfg.max_tracks, sizeof(*t->tracks));
@@ -991,6 +1063,10 @@ struct pf_trace *pf_trace_open(const struct pf_config *cfg)
         t->fd = openat(t->dirfd, t->cfg.name, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0644);
         if (t->fd < 0)
             goto close_dir;
+        /* An existing file keeps its bytes, so the size limit counts them. */
+        struct stat st;
+        if (fstat(t->fd, &st) == 0)
+            t->file_bytes = (uint64_t)st.st_size;
     }
 
     staging_init(t);
@@ -1015,6 +1091,8 @@ struct pf_trace *pf_trace_open(const struct pf_config *cfg)
     pthread_cond_init(&t->drain_cv, NULL);
     atomic_init(&t->wake_pending, 0);
     atomic_init(&t->bytes_written, 0);
+    atomic_init(&t->files, t->cfg.mode == PF_MODE_CONTINUOUS ? 1 : 0);
+    atomic_init(&t->files_overwritten, 0);
     /* The owner's reference. Each bound thread adds one; see pf_trace_unref. */
     atomic_init(&t->refs, 1);
 
@@ -1089,6 +1167,8 @@ void pf_trace_stats(const struct pf_trace *t, struct pf_stats *out)
     out->dropped = atomic_load_explicit(&m->dropped, memory_order_relaxed);
     out->truncated = atomic_load_explicit(&m->truncated, memory_order_relaxed);
     out->bytes_written = atomic_load_explicit(&m->bytes_written, memory_order_relaxed);
+    out->files = atomic_load_explicit(&m->files, memory_order_relaxed);
+    out->files_overwritten = atomic_load_explicit(&m->files_overwritten, memory_order_relaxed);
     /* Fixed at open, so no lock is needed to read them. */
     out->chunk_bytes = m->chunk_bytes;
     out->chunk_slots = m->chunk_slots;

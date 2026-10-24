@@ -194,19 +194,34 @@ static int emit_track_header(struct pf_trace *t, bool restart)
     return 0;
 }
 
-/* Drains the committed chunks. Each chunk holds whole Trace.packet entries that
- * the producers encoded, so the drain copies its published bytes and does not
- * parse them. Caller holds out_lock. */
-int pb_drain_locked(struct pf_trace *t, const struct pf_chunk *head)
+/* Declares the file's tracks and clock. A file that has not had one yet gets a
+ * restart, so it is self-contained. Caller holds out_lock. */
+static int pb_emit_header(struct pf_trace *t)
 {
     bool restart = !t->header_written || t->cfg.mode == PF_MODE_SNAPSHOT;
     if (emit_track_header(t, restart) != 0)
         return -1;
     t->header_written = true;
+    return 0;
+}
+
+/* Drains the committed chunks. Each chunk holds whole Trace.packet entries that
+ * the producers encoded, so the drain copies its published bytes and does not
+ * parse them. Continuous mode rotates the file between chunks when the next
+ * one would take it past the limit. Caller holds out_lock. */
+int pb_drain_locked(struct pf_trace *t, const struct pf_chunk *head)
+{
+    if (pb_emit_header(t) != 0)
+        return -1;
 
     for (const struct pf_chunk *c = head; c; c = c->next) {
         uint32_t n = atomic_load_explicit(&c->used, memory_order_acquire);
+        if (rotate_due(t, t->out.len + n)) {
+            if (out_flush(t) != 0 || rotate_locked(t) != 0 || pb_emit_header(t) != 0)
+                return -1;
+        }
         pb_put_bytes(&t->out, c->bytes, n);
+        t->file_has_data = true;
         if (t->out.len >= PF_OUT_FLUSH_THRESHOLD && out_flush(t) != 0)
             return -1;
     }

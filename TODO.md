@@ -326,25 +326,34 @@ size of the noise, so this is not settled. The simple API's thread track uuid is
 still one TLS slot (`tl_slot` in `pftrace.c`), so the uuid is for one trace
 only; that is left as it is.~~
 
-## 8. Bounded, rotating output in continuous mode
+## ~~8. Bounded, rotating output in continuous mode~~ (done)
 
-Continuous mode writes one file that grows without limit. Make the output
-bounded and rotating, with both limits off by default so the current single-file
-behaviour stays the same:
+~~Done. Continuous mode rotates its output when `pf_config.max_file_bytes` is
+set. Both limits are off by default, so the single-file behaviour is unchanged.
+A file closes when the next chunk (protobuf) or record (raw) would take it past
+the limit, so no file goes over. A chunk or record never straddles two files,
+and a file with no data yet is never rotated, so an oversized item gets a file
+to itself rather than looping.
 
-1. Size limit: a config field sets a maximum file size. When the next write would
-   exceed it, the drain closes the file and opens a new one.
-2. File count limit: a config field sets the maximum number of files. Past that,
-   the new file overwrites the oldest one.
-3. Default off: both fields are 0, which gives today's single unbounded file.
+The first file keeps the configured name. Later files are `name.1`, `name.2`,
+and so on. With `pf_config.max_files` set, the names repeat after that many
+files, and the file that comes back is truncated. `pf_stats.files` counts the
+files written, and `pf_stats.files_overwritten` counts the reused names, whose
+events are lost. `@dropped` does not count them. Each file is self-contained:
+a raw file gets its own header, and a protobuf file re-declares its tracks and
+restarts its interning.
 
-Trade-off: the drain has to check the size before each write and close and open
-files at the boundary, so the size check is on the drain path, not the producer
-path. A record must not straddle two files, so a file can end short of the limit
-and the boundary goes between drain batches. Overwriting the oldest file loses
-events, so the dropped count (or a new counter) must say so, and the stats
-should report the files written. Only `PF_MODE_CONTINUOUS` rotates; snapshot
-dumps keep their own file naming.
+Trade-off: the size check is on the drain path, not the producer path. A
+protobuf chunk is the unit of rotation, and a raw record is the unit for raw,
+so the drain flushes pending raw definitions to the old file before it rotates.
+Only `PF_MODE_CONTINUOUS` rotates, and `max_file_bytes` and `max_files` are
+ignored in snapshot mode, as the watermark is.
+
+`tests/test_rotate.c` (`rotate` in ctest) checks: rotation off writes one file;
+with a size limit and no name limit, the files are `name`, `name.1`, ... and
+none goes over the limit; with a name limit of 2, only two names are on disk
+and `files_overwritten` is `files - 2`; each raw file starts with the raw
+header. The full suite passes, 41 of 41.~~
 
 ## ~~9. Name formatting for args events~~ (done: caller formats)
 

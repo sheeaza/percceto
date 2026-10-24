@@ -162,6 +162,15 @@ static void raw_define_once(struct intern_table *tab, struct pb_buf *b, const ch
  * it is defined the same way, in the KEYS chunk. Caller holds out_lock. */
 static int raw_emit_record(struct pf_trace *t, const struct pf_rec *r)
 {
+    /* Continuous rotation: what is queued goes to the old file first, so the
+     * new file starts with this record's definitions. The queued definitions
+     * refer to the old file's intern tables, which the rotation resets. */
+    size_t pending = t->raw.tracks.len + t->raw.names.len + t->raw.keys.len + t->raw.events.len;
+    if (rotate_due(t, pending + pf_rec_size(r))) {
+        if (raw_flush(t) != 0 || rotate_locked(t) != 0)
+            return -1;
+    }
+
     bool has_value = (r->flags & RF_HAS_VALUE) != 0;
     bool copied = (r->flags & RF_NAME_COPIED) != 0;
     const char *name = has_value || copied ? NULL : r->u.name;
@@ -183,6 +192,7 @@ static int raw_emit_record(struct pf_trace *t, const struct pf_rec *r)
     /* The record is copied as is, with its arguments and copied name; see
      * struct pf_rec. */
     pb_put_bytes(&t->raw.events, r, pf_rec_size(r));
+    t->file_has_data = true;
     if (t->raw.events.len >= PF_OUT_FLUSH_THRESHOLD)
         return raw_flush(t);
     return 0;

@@ -287,6 +287,16 @@ struct pf_trace {
     /* Continuous mode: the name of the open file, copied at open so a dump
      * can report it. */
     char file_name[NAME_MAX + 1];
+    /* Continuous mode with rotation: index of the open file, counted from 0
+     * at open, and bytes written to it. Both under out_lock. */
+    uint32_t file_index;
+    uint64_t file_bytes;
+    /* Whether the open file holds a chunk or record, not just its header.
+     * A file with none is never rotated, so an oversized item cannot loop. */
+    bool file_has_data;
+    /* Files written, and rotations that reused a name. Stats only. */
+    _Atomic uint64_t files;
+    _Atomic uint64_t files_overwritten;
 
     /* Uuid of the process track for getpid(), registered at open. The parent
      * of the thread tracks the simple API creates. 0 if the table had no
@@ -511,5 +521,8 @@ bool track_emit_due(struct pf_trace *t, unsigned i, unsigned first, struct track
 int pb_drain_locked(struct pf_trace *t, const struct pf_chunk *head);
 int raw_drain_locked(struct pf_trace *t, const struct pf_chunk *head);
 int raw_write_header(struct pf_trace *t); /* pftrace_raw.c */
+/* Continuous rotation, pftrace.c. Caller holds out_lock. */
+bool rotate_due(const struct pf_trace *t, size_t next);
+int rotate_locked(struct pf_trace *t);
 
 #endif /* PFTRACE_INTERNAL_H */

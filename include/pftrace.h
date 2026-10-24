@@ -101,6 +101,17 @@ enum pf_format {
  *      %CLOCK_MONOTONIC or %CLOCK_REALTIME. pf_config_init() sets
  *      %CLOCK_BOOTTIME. Note that %CLOCK_REALTIME is 0, so a config that
  *      was never passed to pf_config_init() selects it.
+ * @max_file_bytes: Continuous mode only. When the open file has reached this
+ *      many bytes, the drain closes it and opens the next before writing
+ *      more. The check runs between drain batches, so a file can exceed the
+ *      limit by up to one batch. 0 keeps one file with no size limit. Ignored
+ *      unless @mode is %PF_MODE_CONTINUOUS. Rotated files are named
+ *      @name for the first, then @name.1, @name.2, and so on.
+ * @max_files: Continuous mode with @max_file_bytes set only. The number of
+ *      file names in use. Past it, the names repeat and each reused file is
+ *      truncated, so the oldest file and its events are lost; see
+ *      &pf_stats.files_overwritten. 0 gives every file a new name, with no
+ *      limit on how many are kept. Ignored when @max_file_bytes is 0.
  */
 struct pf_config {
     const char *path;
@@ -115,6 +126,8 @@ struct pf_config {
     unsigned max_tracks;
     const char *process_name;
     clockid_t clock_id;
+    size_t max_file_bytes;
+    unsigned max_files;
 };
 
 /**
@@ -144,6 +157,12 @@ struct pf_config {
  *      record.
  * @truncated: Dynamic names cut to the length cap. The event is kept, with
  *      its name shortened to the cap and ending in "...".
+ * @files: Output files written. In continuous mode this counts the first
+ *      file and each rotation, so it stays 1 with rotation off. In snapshot
+ *      mode it counts the dumps that completed.
+ * @files_overwritten: Continuous rotation with &pf_config.max_files set: how
+ *      many times a file name was reused, which truncated the older file.
+ *      Its events are lost; @dropped does not count them.
  */
 struct pf_stats {
     uint64_t events;
@@ -156,6 +175,8 @@ struct pf_stats {
     uint64_t chunk_slots;
     uint64_t slot_bytes;
     uint64_t truncated;
+    uint64_t files;
+    uint64_t files_overwritten;
 };
 
 /**
