@@ -208,6 +208,17 @@ public:
     ThreadSlice &operator=(ThreadSlice &&) = delete;
 };
 
+/* Instant event with typed arguments, as pf_instant_event_args(). The array
+ * comes in by reference, so the macro below needs no compound literal: GCC 13
+ * rejects one in C++ ("taking address of temporary array"). */
+template <std::size_t N>
+inline void instant_args(pf_trace *t, uint64_t track_uuid, const char *name,
+                         const std::array<pf_arg, N> &args) noexcept
+{
+    static_assert(N >= 1 && N <= PF_MAX_ARGS, "pf_instant_event_args() takes 1 to PF_MAX_ARGS");
+    pf_instant_event_args_impl(t, track_uuid, name, static_cast<unsigned>(N), args.data());
+}
+
 } // namespace pf
 
 #define PF_CAT_IMPL(a, b) a##b
@@ -262,5 +273,13 @@ public:
 #define PF_SCOPED_SLICE_ARGS_G(name, ...)                                               \
     pf::ThreadSlice PF_CAT(pf_scoped_slice_args_g_, __COUNTER__)(PF_NAME_LITERAL(name), \
                                                                  pf::make_args(__VA_ARGS__))
+
+/*
+ * pf_instant_event_args() in C takes its arguments as a compound literal,
+ * which GCC rejects in C++ here. Redefine it on top of pf::instant_args().
+ */
+#undef pf_instant_event_args
+#define pf_instant_event_args(t, track_uuid, name, ...) \
+    pf::instant_args((t), (track_uuid), PF_NAME_LITERAL(name), pf::make_args(__VA_ARGS__))
 
 #endif /* PFTRACE_HPP */
