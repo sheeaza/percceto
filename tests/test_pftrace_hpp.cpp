@@ -33,3 +33,13 @@ void probe_slices_args(pf_trace *t, uint64_t trk)
     PF_SCOPED_SLICE_ARGS(t, trk, "args_mixed", PF_KV("i", -2), PF_KV("u", u), PF_KV("d", 0.5));
     PF_SCOPED_SLICE_ARGS_G("args_g", PF_KV("n", 1), PF_KV("f", 2.0f));
 }
+
+/* Instant events: static and dynamic names, with and without arguments. */
+void probe_instants(pf_trace *t, uint64_t trk, const char *built)
+{
+    pf_instant_event(t, trk, "static_name");
+    pf_instant_event(t, trk, built);
+    pf_instant_event_g("static_g");
+    pf_instant_event_g(built);
+    pf_instant_event_args(t, trk, "args", PF_KV("n", 1));
+}
