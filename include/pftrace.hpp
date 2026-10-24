@@ -1,6 +1,7 @@
 #ifndef PFTRACE_HPP
 #define PFTRACE_HPP
 
+#include <array>
 #include <cerrno>
 #include <cstddef>
 #include <cstdint>
@@ -87,17 +88,71 @@ private:
 };
 
 /**
+ * kv_arg() - Build one typed argument from a key and a numeric value.
+ *
+ * The C PF_KV() selects the helper with _Generic, which C++ does not have, so
+ * the overloads below pick it by type. Pointers do not match any overload,
+ * as they do not compile in PF_KV().
+ */
+template <typename T, typename std::enable_if<std::is_floating_point<T>::value, int>::type = 0>
+inline pf_arg kv_arg(const char *key, T value)
+{
+    return pf_arg_double(key, static_cast<double>(value));
+}
+
+template <typename T, typename std::enable_if<
+                          std::is_integral<T>::value && std::is_unsigned<T>::value, int>::type = 0>
+inline pf_arg kv_arg(const char *key, T value)
+{
+    return pf_arg_uint(key, static_cast<uint64_t>(value));
+}
+
+template <typename T, typename std::enable_if<
+                          std::is_integral<T>::value && std::is_signed<T>::value, int>::type = 0>
+inline pf_arg kv_arg(const char *key, T value)
+{
+    return pf_arg_int(key, static_cast<int64_t>(value));
+}
+
+/**
+ * make_args() - Collect PF_KV() arguments into a fixed-size array.
+ *
+ * The count is the number of arguments, so the size check happens at compile
+ * time in the constructors that take the array.
+ */
+template <typename... Args> inline std::array<pf_arg, sizeof...(Args)> make_args(Args... args)
+{
+    return std::array<pf_arg, sizeof...(Args)>{ { args... } };
+}
+
+/**
  * class Slice - Begins a slice on a track; ends it when the scope exits.
  *
- * Use PF_SCOPED_SLICE() rather than constructing this directly, so the name
- * is checked to be a string literal at compile time.
+ * Use PF_SCOPED_SLICE() rather than constructing this directly: the macro
+ * passes __builtin_constant_p(name) as static_name, which picks the same
+ * static or dynamic path as pf_slice_begin().
  */
 class Slice {
 public:
-    Slice(pf_trace *t, uint64_t track_uuid, const char *name) noexcept : t_(t),
-                                                                         track_uuid_(track_uuid)
+    Slice(pf_trace *t, uint64_t track_uuid, const char *name, bool static_name) noexcept
+        : t_(t),
+          track_uuid_(track_uuid)
     {
-        pf_slice_begin_impl(t_, track_uuid_, name);
+        if (static_name) {
+            pf_slice_begin_impl(t_, track_uuid_, name);
+        } else {
+            pf_slice_begin_dyn_impl(t_, track_uuid_, name);
+        }
+    }
+
+    /* Typed arguments, as pf_slice_begin_args(). The name must be a literal. */
+    template <std::size_t N>
+    Slice(pf_trace *t, uint64_t track_uuid, const char *name,
+          const std::array<pf_arg, N> &args) noexcept : t_(t),
+                                                        track_uuid_(track_uuid)
+    {
+        static_assert(N >= 1 && N <= PF_MAX_ARGS, "PF_SCOPED_SLICE_ARGS() takes 1 to PF_MAX_ARGS");
+        pf_slice_begin_args_impl(t_, track_uuid_, name, static_cast<unsigned>(N), args.data());
     }
 
     ~Slice()
@@ -119,14 +174,27 @@ private:
  * class ThreadSlice - Begins a slice on the calling thread's track of the
  * default trace; ends it when the scope exits.
  *
- * Use PF_SCOPED_SLICE_G() rather than
- * constructing this directly.
+ * Use PF_SCOPED_SLICE_G() rather than constructing this directly. The macro
+ * passes static_name as it does for Slice.
  */
 class ThreadSlice {
 public:
-    explicit ThreadSlice(const char *name) noexcept
+    ThreadSlice(const char *name, bool static_name) noexcept
     {
-        pf_slice_begin_g_impl(name);
+        if (static_name) {
+            pf_slice_begin_g_impl(name);
+        } else {
+            pf_slice_begin_g_dyn_impl(name);
+        }
+    }
+
+    /* Typed arguments, as pf_slice_begin_args_g(). The name must be a literal. */
+    template <std::size_t N>
+    ThreadSlice(const char *name, const std::array<pf_arg, N> &args) noexcept
+    {
+        static_assert(N >= 1 && N <= PF_MAX_ARGS,
+                      "PF_SCOPED_SLICE_ARGS_G() takes 1 to PF_MAX_ARGS");
+        pf_slice_begin_args_g_impl(name, static_cast<unsigned>(N), args.data());
     }
 
     ~ThreadSlice()
@@ -150,17 +218,49 @@ public:
  * scope.
  * @t: Trace context (pf_trace *).
  * @track_uuid: Track to begin the slice on.
- * @name: Slice name. Must be a string literal -- see PF_NAME_LITERAL().
+ * @name: Slice name: a string literal, or a name the caller built. A name
+ *      with a constant address (a literal or a static buffer) is kept by
+ *      address, so its contents must not change; see pf_slice_begin().
  */
-#define PF_SCOPED_SLICE(t, track_uuid, name) \
-    pf::Slice PF_CAT(pf_scoped_slice_, __COUNTER__)((t), (track_uuid), PF_NAME_LITERAL(name))
+#define PF_SCOPED_SLICE(t, track_uuid, name)                                   \
+    pf::Slice PF_CAT(pf_scoped_slice_, __COUNTER__)((t), (track_uuid), (name), \
+                                                    __builtin_constant_p(name))
 
 /**
  * PF_SCOPED_SLICE_G() - PF_SCOPED_SLICE() on the calling thread's track of
  * the default trace.
- * @name: Slice name. Must be a string literal -- see PF_NAME_LITERAL().
+ * @name: Slice name, dispatched as PF_SCOPED_SLICE() dispatches it.
  */
 #define PF_SCOPED_SLICE_G(name) \
-    pf::ThreadSlice PF_CAT(pf_scoped_slice_g_, __COUNTER__)(PF_NAME_LITERAL(name))
+    pf::ThreadSlice PF_CAT(pf_scoped_slice_g_, __COUNTER__)((name), __builtin_constant_p(name))
+
+/*
+ * PF_KV() in C selects its helper with _Generic, which C++ lacks. Redefine it
+ * for C++ on top of kv_arg(), with the same key rule: a string literal.
+ */
+#undef PF_KV
+#define PF_KV(key, value) pf::kv_arg(PF_NAME_LITERAL(key), (value))
+
+/**
+ * PF_SCOPED_SLICE_ARGS() - PF_SCOPED_SLICE() with typed arguments, as
+ * pf_slice_begin_args().
+ * @t: Trace context (pf_trace *).
+ * @track_uuid: Track to begin the slice on.
+ * @name: Slice name: a string literal.
+ * @...: One to PF_MAX_ARGS PF_KV() arguments.
+ */
+#define PF_SCOPED_SLICE_ARGS(t, track_uuid, name, ...)                                             \
+    pf::Slice PF_CAT(pf_scoped_slice_args_, __COUNTER__)((t), (track_uuid), PF_NAME_LITERAL(name), \
+                                                         pf::make_args(__VA_ARGS__))
+
+/**
+ * PF_SCOPED_SLICE_ARGS_G() - PF_SCOPED_SLICE_ARGS() on the calling thread's
+ * track of the default trace.
+ * @name: Slice name: a string literal.
+ * @...: One to PF_MAX_ARGS PF_KV() arguments.
+ */
+#define PF_SCOPED_SLICE_ARGS_G(name, ...)                                               \
+    pf::ThreadSlice PF_CAT(pf_scoped_slice_args_g_, __COUNTER__)(PF_NAME_LITERAL(name), \
+                                                                 pf::make_args(__VA_ARGS__))
 
 #endif /* PFTRACE_HPP */
