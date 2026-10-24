@@ -445,15 +445,15 @@ regression above does not show with clang, so it is specific to gcc.
 Still open: none for item 10 except the docs, which now describe the args API
 in both design docs.
 
-## 11. C++ scoped-slice macros take caller-built names
+## ~~11. C++ scoped-slice macros take caller-built names~~ (done)
 
-`PF_SCOPED_SLICE` and `PF_SCOPED_SLICE_G` in `include/pftrace.hpp` still use
-`PF_NAME_LITERAL`, so they reject a name the caller built. The C macros
-`pf_slice_begin`, `pf_instant_event` and their `_g` forms dispatch on constness
-now, and the C++ ones should follow. Once they do, `PF_NAME_LITERAL` has no
-callers and can go. Check the C++ wrapper's `pf::Slice` and `pf::ThreadSlice`
-constructors against the dispatching macros, since they take `const char *`
-and are the other place a static-buffer pointer can be kept.
+~~Done. `PF_SCOPED_SLICE` and `PF_SCOPED_SLICE_G` pass `__builtin_constant_p(name)`
+to `pf::Slice` and `pf::ThreadSlice`, which pick the static or dynamic begin path
+as `pf_slice_begin()` does, so a name the caller built is accepted. Both
+constructors used to take the pointer as-is. `PF_SCOPED_SLICE_ARGS` and
+`PF_SCOPED_SLICE_ARGS_G` are the RAII forms of `pf_slice_begin_args` and
+`pf_slice_begin_args_g`, with literal names. `PF_NAME_LITERAL` is not removed
+yet: `PF_KV` and the `*_args` macros still use it.~~
 
 ## ~~12. Raw format accepts args~~ (done)
 
