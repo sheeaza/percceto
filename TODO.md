@@ -541,6 +541,50 @@ difference. The 4- and 8-thread runs vary too much to compare. The args keys
 here are short (`i`, `ratio`), so interning saves few bytes per event; the
 byte saving is not measured here.
 
+## Emit path: argument count (measured, not changed)
+
+Question: does the 10-parameter `emit_event_args` (and the 8-parameter
+`emit_event` wrapper) cost producer time, and would fewer parameters help?
+
+The first attempt, `clock_gettime` unstubbed, measured about 4.4 us per event
+on this VM. A profile put 93% of that in `__vdso_clock_gettime`, and a bare
+`clock_gettime` call took the same 4.4 us, so the timer dominates and the
+emit code cannot be seen. The numbers below use `bench_side`, which stubs the
+library clock with a counter, in a Release build (`-O2`) in `/tmp`.
+
+`emit_event` is already inlined into its callers. The only out-of-line call on
+the hot path is `emit_event_args`, which is why it is the only candidate.
+
+Producer ns/event, median of three runs, base vs `emit_event_args` forced
+inline (`static inline __attribute__((always_inline))`), in a scratch copy:
+
+| workload | threads | base | inline |
+|---|---:|---:|---:|
+| simple | 1 | 20.3 | 18.8 |
+| args | 1 | 31.3 | 27.8 |
+| simple | 4 | 39.7 | 27.0 |
+| args | 4 | 49.9 | 43.2 |
+
+The single-thread rows are consistent: every inline run is below every base run.
+The 4-thread rows swing between about 25 and 40 ns from run to run, in both
+builds, so only the single-thread gain (about 7 to 11%) is trusted.
+
+Packing `dynamic`, `has_value` and `value_is_double` into one flags word, on top
+of the inline build (3 runs):
+
+| workload | threads | inline | inline + flags |
+|---|---:|---:|---:|
+| simple | 1 | 18.8 | 18.1 |
+| args | 1 | 27.8 | 28.2 |
+| simple | 4 | 27.0 | 37.4 |
+| args | 4 | 43.2 | 48.5 |
+
+Within the spread of the inline build in every row. Not adopted: the call sites
+get harder to read and the measured gain is not there.
+
+Decision: the change to make is `always_inline` on `emit_event_args`. Keep the
+three bools. Not yet applied to `src/pftrace.c`.
+
 ## Notes
 
 - Continuous mode has no timer flush. A thread's partial chunk is written when
