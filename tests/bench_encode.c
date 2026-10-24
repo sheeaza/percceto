@@ -61,6 +61,52 @@ static const char *const kNames[NAMES] = {
     "hash",  "copy",   "filter", "reduce", "index",    "flush", "wait",  "notify",
 };
 
+/* Name lookup, as in bench_intern.c: a scan of a writer's 32 slots, or one
+ * frozen global hash table. Each returns the name index, which feeds the
+ * encode so the lookup is not dropped. */
+#define WRITER_SLOTS 32u
+#define GLOBAL_CAP 64u /* power of two, well above NAMES */
+
+static const char *writer_key[WRITER_SLOTS];
+static struct {
+    const char *key;
+    uint32_t iid;
+} global_tab[GLOBAL_CAP];
+
+static size_t global_hash(const char *p)
+{
+    return (size_t)(((uintptr_t)p * 0x9E3779B97F4A7C15ull) >> 58) & (GLOBAL_CAP - 1);
+}
+
+static void lookup_init(void)
+{
+    for (unsigned i = 0; i < NAMES; i++) {
+        writer_key[i] = kNames[i];
+        size_t idx = global_hash(kNames[i]);
+        while (global_tab[idx].key)
+            idx = (idx + 1) & (GLOBAL_CAP - 1);
+        global_tab[idx].key = kNames[i];
+        global_tab[idx].iid = i + 1;
+    }
+}
+
+static unsigned writer_lookup(const char *name)
+{
+    for (unsigned i = 0; i < WRITER_SLOTS; i++) {
+        if (writer_key[i] == name)
+            return i;
+    }
+    return 0;
+}
+
+static unsigned global_lookup(const char *name)
+{
+    size_t idx = global_hash(name);
+    while (global_tab[idx].key != name)
+        idx = (idx + 1) & (GLOBAL_CAP - 1);
+    return global_tab[idx].iid - 1;
+}
+
 /* Encodes one event into @ev, as a packet appended to @chunk. The interned
  * name is sent only on first use, which is how the cache is modelled here: a
  * per-writer table of NAMES entries. */
@@ -217,6 +263,43 @@ int main(void)
     t1 = now_ns();
     double direct_ns = (double)(t1 - t0) / EVENTS;
 
+    /* Direct with a per-writer scan: the name is found in the writer's cache
+     * on every event, as pf_pb_emit does. */
+    lookup_init();
+    dp = direct_chunk;
+    direct_bytes = 0;
+    t0 = now_ns();
+    in_chunk = 0;
+    for (uint32_t i = 0; i < EVENTS; i++) {
+        bool first = i < NAMES;
+        unsigned idx = writer_lookup(kNames[i % NAMES]);
+        dp = encode_direct(dp, i * 16u, 1, idx, first);
+        if (++in_chunk == CHUNK_SLOTS) {
+            direct_bytes += (uint64_t)(dp - direct_chunk);
+            dp = direct_chunk;
+            in_chunk = 0;
+        }
+    }
+    direct_bytes += (uint64_t)(dp - direct_chunk);
+    t1 = now_ns();
+    double scan_ns = (double)(t1 - t0) / EVENTS;
+
+    /* Direct with the global hash table. */
+    dp = direct_chunk;
+    t0 = now_ns();
+    in_chunk = 0;
+    for (uint32_t i = 0; i < EVENTS; i++) {
+        bool first = i < NAMES;
+        unsigned idx = global_lookup(kNames[i % NAMES]);
+        dp = encode_direct(dp, i * 16u, 1, idx, first);
+        if (++in_chunk == CHUNK_SLOTS) {
+            dp = direct_chunk;
+            in_chunk = 0;
+        }
+    }
+    t1 = now_ns();
+    double hash_ns = (double)(t1 - t0) / EVENTS;
+
     /* Raw: the producer stores the 48-byte record as it does today. */
     struct raw_rec *recs = calloc(CHUNK_SLOTS, sizeof(*recs));
     if (!recs) {
@@ -248,6 +331,8 @@ int main(void)
     printf("direct into chunk:          %6.2f ns/event, %.1f bytes/event\n", direct_ns,
            (double)direct_bytes / EVENTS);
     printf("encoding adds (direct):     %6.2f ns/event\n", direct_ns - raw_ns);
+    printf("direct + writer scan:       %6.2f ns/event\n", scan_ns);
+    printf("direct + global hash:       %6.2f ns/event\n", hash_ns);
 
     free(recs);
     pb_buf_free(&chunk);

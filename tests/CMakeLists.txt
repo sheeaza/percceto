@@ -85,6 +85,10 @@ add_executable(bench_encode bench_encode.c)
 target_link_libraries(bench_encode PRIVATE pftrace)
 target_include_directories(bench_encode PRIVATE ${PROJECT_SOURCE_DIR}/src)
 
+# Prototype for a shared intern table: per-writer scan against one frozen
+# global hash table, lookup cost only. Standalone; links nothing.
+add_executable(bench_intern bench_intern.c)
+
 # The stress test and the selected tests again, against the sanitized
 # libraries, so ASan and TSan see their accesses. Each sanitized build runs in
 # its own directory under PFTRACE_RUN_DIR, so its trace files do not collide
