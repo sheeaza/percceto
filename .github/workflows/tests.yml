@@ -1,11 +1,8 @@
 name: tests
 
-# Runs the full CTest suite on every push and PR. The sanitizer build is
-# on by default locally (-DRINGBUF_BUILD_TSAN=OFF to skip it) and CI passes
-# -DRINGBUF_BUILD_TSAN=ON explicitly: tsan is the
-# gate on the lock-free ordering in ringbuf.c, on the mutex variant's
-# unlocked push path, and on the MPSC variant's multi-writer write_idx and
-# per-slot stamps, so CI is exactly where it should not be skippable.
+# Runs the full CTest suite on every push and PR. The sanitized ASan and TSan
+# builds are on by default (PFTRACE_BUILD_SANITIZED), so CI gets them without
+# any extra flag.
 on:
   push:
     branches: [main]
@@ -96,7 +93,6 @@ jobs:
         run: >
           cmake -B build
           -DCMAKE_BUILD_TYPE=RelWithDebInfo
-          -DRINGBUF_BUILD_TSAN=ON
 
       - name: Build
         run: cmake --build build -j

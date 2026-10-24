@@ -56,8 +56,8 @@ set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 enable_testing()
 
 # Sanitized builds of the library and its stress tests, ASan/UBSan and TSan
-# each, named with an _asan or _tsan suffix. On by default, like
-# RINGBUF_BUILD_TSAN; off makes configure and build faster.
+# each, named with an _asan or _tsan suffix. On by default; off makes
+# configure and build faster.
 option(PFTRACE_BUILD_SANITIZED "Build ASan/UBSan and TSan variants" ON)
 
 # Benchmarks. Off by default: CI and ordinary builds skip them.
