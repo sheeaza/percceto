@@ -264,7 +264,7 @@ int main(void)
     double direct_ns = (double)(t1 - t0) / EVENTS;
 
     /* Direct with a per-writer scan: the name is found in the writer's cache
-     * on every event, as pf_pb_emit does. */
+     * on every event, as pf_pb_place does. */
     lookup_init();
     dp = direct_chunk;
     direct_bytes = 0;

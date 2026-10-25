@@ -14,9 +14,8 @@ struct enc {
     size_t pos;
 };
 
-/* Per-argument state, set by pf_pb_args_prep and pf_pb_resolve_keys. Kept out
- * of pb_event: an event with no arguments then zeroes no argument state, and
- * points at none. */
+/* Per-argument state, set by pf_pb_resolve_keys. Kept out of pb_event: an
+ * event with no arguments then zeroes no argument state. */
 struct pb_args {
     size_t key_len[PF_MAX_ARGS];
     size_t ann_len[PF_MAX_ARGS];
@@ -61,6 +60,9 @@ struct pb_event {
     bool use_iid;
     bool define;
     uint64_t iid;
+    /* A literal the writer's cache looks up, on each try at placing the
+     * event, since a rotation changes the epoch. */
+    bool interned;
     const char *name;
     size_t nlen;
     /* A dynamic name longer than PF_DYN_NAME_MAX: @nlen is the cap, and the
@@ -72,7 +74,7 @@ struct pb_event {
     uint64_t value;
 
     /* Typed arguments, from the caller. ax holds their state, set by
-     * pf_pb_args_prep and pf_pb_resolve_keys, and is NULL when there are none. */
+     * pf_pb_resolve_keys, and is read only when there are any. */
     unsigned nargs;
     const struct pf_arg *args;
     struct pb_args *ax;
@@ -181,7 +183,7 @@ static size_t name_entry_len(const struct pb_event *v)
 }
 
 /* The body of argument @i's DebugAnnotation: its name, then its value. Needs
- * the lengths and keys pf_pb_args_prep and pf_pb_resolve_keys set. */
+ * the lengths and keys pf_pb_resolve_keys sets. */
 static size_t ann_body_len(const struct pb_event *v, unsigned i)
 {
     const struct pf_arg *a = &v->args[i];
@@ -489,23 +491,12 @@ static void pf_pb_commit_name(struct pb_intern_slot *tab, uint32_t epoch, int sl
     tab[slot].epoch = epoch;
 }
 
-/* Works out what each argument's encoding needs, once per event: the key
- * length. */
-static void pf_pb_args_prep(struct pb_event *v, struct pb_args *ax, unsigned nargs,
-                            const struct pf_arg *args)
-{
-    v->nargs = nargs;
-    v->args = args;
-    v->ax = ax;
-    for (unsigned i = 0; i < nargs; i++)
-        ax->key_len[i] = strlen(args[i].key);
-}
-
 /* Chooses each argument's key for the current chunk. A key already defined in
  * the chunk is sent as its iid. A key not yet defined gets a free slot and is
  * defined in this packet. A key the cache cannot hold is sent inline. A key
- * repeated in this event shares its first argument's entry. Read-only on the
- * writer, like pf_pb_lookup. */
+ * repeated in this event shares its first argument's entry. A key found in
+ * the cache carries its length from when it was defined; any other is
+ * measured. Read-only on the writer, like pf_pb_lookup. */
 static void pf_pb_resolve_keys(const struct pf_writer *w, const struct pb_event *v,
                                struct pb_args *ax)
 {
@@ -521,11 +512,13 @@ static void pf_pb_resolve_keys(const struct pf_writer *w, const struct pb_event 
             j++;
         if (j < i) {
             ax->key_iid[i] = ax->key_iid[j];
+            ax->key_len[i] = ax->key_len[j];
             continue;
         }
 
         bool define = false;
         int slot = pf_pb_lookup(w->keys, w->epoch, taken, key, &define);
+        ax->key_len[i] = (slot >= 0 && w->keys[slot].key == key) ? w->keys[slot].len : strlen(key);
         if (slot < 0)
             continue;
         taken |= 1u << slot;
@@ -535,47 +528,82 @@ static void pf_pb_resolve_keys(const struct pf_writer *w, const struct pb_event 
     }
 }
 
-void pf_pb_emit(struct pf_trace *t, struct pf_writer *w, uint64_t ts, uint32_t type, uint64_t track,
-                const char *name, bool dynamic, bool has_value, uint64_t raw_value,
-                bool value_is_double, unsigned nargs, const struct pf_arg *args)
-{
-    /* A dynamic name is built by the caller, so it differs per event. It is
-     * sent inline and never interned: a pointer key would name the wrong
-     * string once the caller reuses its buffer. It is written into the chunk
-     * from the caller's buffer, and cut there when it is long. */
-    const char *shown = has_value ? NULL : name;
-    size_t nlen = 0;
-    bool cut = false;
-    if (dynamic && shown) {
-        nlen = pf_dyn_name_fit(shown, &cut);
-        if (cut)
-            atomic_fetch_add_explicit(&t->truncated, 1, memory_order_relaxed);
-    }
+/* --- Building an event ---------------------------------------------------
+ * Each entry point below fills a pb_event with the stages its kind needs, and
+ * hands it to pf_pb_place. Only pf_pb_place reads the writer. */
 
-    struct pb_event v;
-    /* Not zeroed as a whole: a memset of the struct, now that it carries the
-     * argument fields, cost more than the rest of the event. The loop below
-     * sets every field the encoder reads; the argument fields need only
-     * these initial values. */
-    v.nargs = 0;
-    v.args = NULL;
-    v.ax = NULL;
-    /* The macros reject more than PF_MAX_ARGS arguments; a direct caller that
-     * passes more gets the first PF_MAX_ARGS. */
+/* The fields the encoder tests before it reads the rest: no name, no value,
+ * no arguments. The rest are set only by the stage that turns one of these
+ * on, so an event pays only for what it carries. Not a memset of the struct,
+ * which cost more than the rest of the event. */
+static void pb_init(struct pb_event *v, uint32_t type, uint64_t track)
+{
+    v->type = type;
+    v->track = track;
+    v->interned = false;
+    v->use_iid = false;
+    v->define = false;
+    v->nlen = 0;
+    v->has_value = false;
+    v->nargs = 0;
+}
+
+/* A literal, interned by its pointer. An empty one goes neither interned nor
+ * inline. One the cache cannot hold goes inline, whole. */
+static void pb_name_static(struct pb_event *v, const char *name)
+{
+    v->name = name;
+    v->interned = name && name[0];
+    v->cut = false;
+}
+
+/* A dynamic name is built by the caller, so it differs per event. It is sent
+ * inline and never interned: a pointer key would name the wrong string once
+ * the caller reuses its buffer. It is written into the chunk from the
+ * caller's buffer, and cut there when it is long. */
+static void pb_name_dyn(struct pf_trace *t, struct pb_event *v, const char *name)
+{
+    if (!name)
+        return;
+    v->name = name;
+    v->nlen = pf_dyn_name_fit(name, &v->cut);
+    if (v->cut)
+        atomic_fetch_add_explicit(&t->truncated, 1, memory_order_relaxed);
+}
+
+static void pb_value(struct pb_event *v, uint64_t raw_value, bool value_is_double)
+{
+    v->has_value = true;
+    v->value_is_double = value_is_double;
+    v->value = raw_value;
+}
+
+/* The macros reject more than PF_MAX_ARGS arguments; a direct caller that
+ * passes more gets the first PF_MAX_ARGS. pf_pb_place works out what each
+ * needs. */
+static void pb_args(struct pb_event *v, unsigned nargs, const struct pf_arg *args)
+{
     if (nargs > PF_MAX_ARGS)
         nargs = PF_MAX_ARGS;
-    struct pb_args ax; /* read only when there are arguments */
-    if (nargs)
-        pf_pb_args_prep(&v, &ax, nargs, args);
+    v->nargs = nargs;
+    v->args = args;
+}
 
+/* Places @v, stamped @ts, in @w's chunk: rotating when it does not fit, and
+ * dropping it when it fits no chunk or none is free. */
+static void pf_pb_place(struct pf_trace *t, struct pf_writer *w, uint64_t ts, struct pb_event *v)
+{
+    /* The argument state is a local here, not the caller's: the encoder
+     * stores the chunk byte by byte, and through a pointer that escaped, each
+     * store could alias the state and force it to be read again. */
+    struct pb_args ax;
+    v->ax = &ax;
     size_t size;
-    int slot;
-    bool define;
     for (;;) {
-        v.clk = t->cfg.clock_id;
+        v->clk = t->cfg.clock_id;
         /* Sequence 1 is the drain's, for the track descriptors and the clock
          * snapshot. Writer i owns sequence i + 2. */
-        v.seq_id = w->id + 2;
+        v->seq_id = w->id + 2;
         /* After a rotation w->cur is a fresh chunk and w->used is 0, so this
          * event opens it, behind a header that makes its track the default
          * and reads the clocks at its time. A writer with no chunk has w->used
@@ -595,43 +623,35 @@ void pf_pb_emit(struct pf_trace *t, struct pf_writer *w, uint64_t ts, uint32_t t
          *    events. A chunk that would start below w->head_max gets a header
          *    with no snapshot, whose defaults name the trace clock, and its
          *    events carry absolute times. */
-        v.head = w->used == 0;
-        bool absolute_chunk = v.head ? ts < w->head_max : w->absolute_chunk;
-        v.head_snap = v.head && !absolute_chunk;
-        v.absolute = !absolute_chunk && !v.head && ts < w->last_ts;
-        v.head_ts = ts;
-        v.head_track = track;
+        v->head = w->used == 0;
+        bool absolute_chunk = v->head ? ts < w->head_max : w->absolute_chunk;
+        v->head_snap = v->head && !absolute_chunk;
+        v->absolute = !absolute_chunk && !v->head && ts < w->last_ts;
+        v->head_ts = ts;
+        v->head_track = v->track;
         if (absolute_chunk)
-            v.ts = ts; /* on the trace clock, which the defaults name */
-        else if (v.absolute)
-            v.ts = ts;
+            v->ts = ts; /* on the trace clock, which the defaults name */
+        else if (v->absolute)
+            v->ts = ts;
         else
-            v.ts = v.head ? 0 : ts - w->last_ts;
-        v.track = track;
-        v.on_default = v.head || track == w->track;
-        v.type = type;
-        v.has_value = has_value;
-        v.value_is_double = value_is_double;
-        v.value = raw_value;
+            v->ts = v->head ? 0 : ts - w->last_ts;
+        v->on_default = v->head || v->track == w->track;
 
-        slot = -1;
-        define = false;
-        if (!dynamic && shown && shown[0])
-            slot = pf_pb_lookup(w->intern, w->epoch, 0, shown, &define);
-        /* A hit carries the name's length from when it was defined. */
-        if (!dynamic && shown)
-            nlen = (slot >= 0 && w->intern[slot].key == shown) ? w->intern[slot].len :
-                                                                 strlen(shown);
-        v.use_iid = slot >= 0;
-        v.define = v.use_iid && define;
-        v.iid = (uint64_t)slot + 1;
-        v.name = shown;
-        v.nlen = nlen;
-        v.cut = cut;
-        if (nargs)
-            pf_pb_resolve_keys(w, &v, &ax);
+        /* Rotation changes the epoch, so the names are looked up on each try.
+         * A hit carries the name's length from when it was defined. */
+        if (v->interned) {
+            bool define = false;
+            int slot = pf_pb_lookup(w->intern, w->epoch, 0, v->name, &define);
+            v->use_iid = slot >= 0;
+            v->define = v->use_iid && define;
+            v->iid = (uint64_t)slot + 1;
+            v->nlen = (slot >= 0 && w->intern[slot].key == v->name) ? w->intern[slot].len :
+                                                                      strlen(v->name);
+        }
+        if (v->nargs)
+            pf_pb_resolve_keys(w, v, &ax);
 
-        size = pf_pb_size(&v);
+        size = pf_pb_size(v);
         if (size > t->chunk_payload) {
             /* Too big for any chunk; a record is never split. */
             pf_writer_drop(w);
@@ -639,29 +659,71 @@ void pf_pb_emit(struct pf_trace *t, struct pf_writer *w, uint64_t ts, uint32_t t
         }
         if (w->cur && w->used + size <= t->chunk_payload)
             break;
-        /* Rotation changes the epoch, so the names are looked up again. */
         if (!pf_writer_rotate(t, w))
             return; /* no chunk free; pf_writer_rotate counted the drop */
     }
 
-    if (v.define)
-        pf_pb_commit_name(w->intern, w->epoch, slot, shown, nlen);
-    for (unsigned i = 0; i < nargs; i++) {
-        if (ax.key_def[i])
-            pf_pb_commit_name(w->keys, w->epoch, ax.key_slot[i], args[i].key, ax.key_len[i]);
+    if (v->define)
+        pf_pb_commit_name(w->intern, w->epoch, (int)v->iid - 1, v->name, v->nlen);
+    for (unsigned i = 0; i < v->nargs; i++) {
+        if (v->ax->key_def[i])
+            pf_pb_commit_name(w->keys, w->epoch, v->ax->key_slot[i], v->args[i].key,
+                              v->ax->key_len[i]);
     }
-    pf_pb_encode(w->cur->bytes + w->used, &v);
+    pf_pb_encode(w->cur->bytes + w->used, v);
     w->used += (uint32_t)size;
-    if (v.head) {
-        w->track = track;
-        w->absolute_chunk = !v.head_snap;
-        if (v.head_snap)
+    if (v->head) {
+        w->track = v->track;
+        w->absolute_chunk = !v->head_snap;
+        if (v->head_snap)
             w->head_max = ts;
     }
-    if (v.head_snap || (!w->absolute_chunk && !v.absolute))
+    if (v->head_snap || (!w->absolute_chunk && !v->absolute))
         w->last_ts = ts;
 
-    atomic_store_explicit(&w->cur->used, w->used, memory_order_release);
-    atomic_store_explicit(&w->events, atomic_load_explicit(&w->events, memory_order_relaxed) + 1,
-                          memory_order_relaxed);
+    pf_writer_publish(w);
+}
+
+void pf_pb_named(struct pf_trace *t, struct pf_writer *w, uint64_t ts, uint32_t type,
+                 uint64_t track, const char *name)
+{
+    struct pb_event v;
+    pb_init(&v, type, track);
+    pb_name_static(&v, name);
+    pf_pb_place(t, w, ts, &v);
+}
+
+void pf_pb_named_args(struct pf_trace *t, struct pf_writer *w, uint64_t ts, uint32_t type,
+                      uint64_t track, const char *name, unsigned nargs, const struct pf_arg *args)
+{
+    struct pb_event v;
+    pb_init(&v, type, track);
+    pb_name_static(&v, name);
+    pb_args(&v, nargs, args);
+    pf_pb_place(t, w, ts, &v);
+}
+
+void pf_pb_dyn(struct pf_trace *t, struct pf_writer *w, uint64_t ts, uint32_t type, uint64_t track,
+               const char *name)
+{
+    struct pb_event v;
+    pb_init(&v, type, track);
+    pb_name_dyn(t, &v, name);
+    pf_pb_place(t, w, ts, &v);
+}
+
+void pf_pb_end(struct pf_trace *t, struct pf_writer *w, uint64_t ts, uint64_t track)
+{
+    struct pb_event v;
+    pb_init(&v, TYPE_SLICE_END, track);
+    pf_pb_place(t, w, ts, &v);
+}
+
+void pf_pb_counter(struct pf_trace *t, struct pf_writer *w, uint64_t ts, uint64_t track,
+                   uint64_t raw_value, bool value_is_double)
+{
+    struct pb_event v;
+    pb_init(&v, TYPE_COUNTER, track);
+    pb_value(&v, raw_value, value_is_double);
+    pf_pb_place(t, w, ts, &v);
 }

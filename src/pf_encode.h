@@ -80,15 +80,30 @@ static inline uint32_t builtin_clock(clockid_t clk)
     return BUILTIN_CLOCK_BOOTTIME;
 }
 
-/* Encodes one event of @w's thread into its chunk, rotating first if it does
- * not fit. A record bigger than a whole chunk, or one with no free chunk to
- * go to, is dropped and counted. The caller holds nothing; the timestamp is
- * taken by the caller, before any of this. A @dynamic name is sent inline and
- * not interned; a static one is interned by its pointer. @nargs typed
- * arguments, from @args, are sent as debug annotations; they are read during
- * the call. */
-void pf_pb_emit(struct pf_trace *t, struct pf_writer *w, uint64_t ts, uint32_t type, uint64_t track,
-                const char *name, bool dynamic, bool has_value, uint64_t raw_value,
-                bool value_is_double, unsigned nargs, const struct pf_arg *args);
+/* Encode one event of @w's thread into its chunk, one entry point per kind of
+ * event, rotating first if it does not fit. A record bigger than a whole
+ * chunk, or one with no free chunk to go to, is dropped and counted. The
+ * caller holds nothing; the timestamp @ts is taken by the caller, before any
+ * of this. */
+
+/* An event with a static name, interned by its pointer. */
+void pf_pb_named(struct pf_trace *t, struct pf_writer *w, uint64_t ts, uint32_t type,
+                 uint64_t track, const char *name);
+
+/* pf_pb_named, with @nargs typed arguments from @args, sent as debug
+ * annotations and read during the call. */
+void pf_pb_named_args(struct pf_trace *t, struct pf_writer *w, uint64_t ts, uint32_t type,
+                      uint64_t track, const char *name, unsigned nargs, const struct pf_arg *args);
+
+/* An event with a dynamic name, sent inline and not interned. */
+void pf_pb_dyn(struct pf_trace *t, struct pf_writer *w, uint64_t ts, uint32_t type, uint64_t track,
+               const char *name);
+
+/* A slice end: no name. */
+void pf_pb_end(struct pf_trace *t, struct pf_writer *w, uint64_t ts, uint64_t track);
+
+/* A counter sample: a value, no name. */
+void pf_pb_counter(struct pf_trace *t, struct pf_writer *w, uint64_t ts, uint64_t track,
+                   uint64_t raw_value, bool value_is_double);
 
 #endif /* PF_ENCODE_H */

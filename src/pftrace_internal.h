@@ -16,7 +16,7 @@
 /* Declarations shared by pftrace.c, pftrace_pb.c, pftrace_raw.c and
  * pf_chunk.c. Not public API; see include/pftrace.h for that. */
 
-/* Event type values, as the chunks store them. Shared by emit_event and
+/* Event type values, as the chunks store them. Shared by the emit path and
  * both output formats. */
 #define TYPE_SLICE_BEGIN 1
 #define TYPE_SLICE_END 2
@@ -468,6 +468,16 @@ static inline struct pf_writer *pf_writer_for(struct pf_trace *t)
 static inline void pf_writer_drop(struct pf_writer *w)
 {
     atomic_store_explicit(&w->dropped, atomic_load_explicit(&w->dropped, memory_order_relaxed) + 1,
+                          memory_order_relaxed);
+}
+
+/* Publishes the record @w just wrote, and counts it. The release pairs with
+ * the acquire in pf_walk_enter, so a snapshot never reads a half-written
+ * record. */
+static inline void pf_writer_publish(struct pf_writer *w)
+{
+    atomic_store_explicit(&w->cur->used, w->used, memory_order_release);
+    atomic_store_explicit(&w->events, atomic_load_explicit(&w->events, memory_order_relaxed) + 1,
                           memory_order_relaxed);
 }
 

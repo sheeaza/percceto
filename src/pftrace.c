@@ -459,132 +459,237 @@ void pf_drain_wake(struct pf_trace *t)
  * or written here, and the only branch that is not the common case is the
  * rotation once per chunk. See docs/chunk_buffers_design.md.
  *
+ * Each entry point takes the stages its kind needs: emit_start, then the
+ * protobuf encoder or the raw stages below.
+ *
  * A static name is stored by address, and the drain reads its characters
  * later. A dynamic name is copied into the record now, since the caller's
  * buffer may be reused before the drain runs. */
 
-static void emit_event_args(struct pf_trace *t, uint32_t type, uint64_t track_uuid,
-                            const char *name, bool dynamic, bool has_value, uint64_t raw_value,
-                            bool value_is_double, unsigned nargs, const struct pf_arg *args)
+/* Stamps the event and finds the calling thread's writer. Returns NULL, and
+ * counts the event, when the thread has no writer.
+ *
+ * Timestamp before anything else, so the cost of finding a chunk lands
+ * between this event and the next rather than inside this one. Chunks are per
+ * thread, so records reach the drain in commit order, which is not timestamp
+ * order across threads. Perfetto sorts by timestamp. */
+static struct pf_writer *emit_start(struct pf_trace *t, uint64_t *ts)
 {
-    /* Timestamp before anything else, so the cost of finding a chunk lands
-     * between this event and the next rather than inside this one. Chunks
-     * are per thread, so records reach the drain in commit order, which is
-     * not timestamp order across threads. Perfetto sorts by timestamp. */
-    uint64_t ts = now_ns(t->cfg.clock_id);
-
+    *ts = now_ns(t->cfg.clock_id);
     struct pf_writer *w = pf_writer_for(t);
-    if (!w) {
+    if (!w)
         atomic_fetch_add_explicit(&t->overflow_dropped, 1, memory_order_relaxed);
-        return;
-    }
-    /* Protobuf records are encoded here, on the producer. */
-    if (t->cfg.format == PF_FORMAT_PROTOBUF) {
-        pf_pb_emit(t, w, ts, type, track_uuid, name, dynamic, has_value, raw_value, value_is_double,
-                   nargs, args);
-        return;
-    }
-
-    /* Raw records carry their arguments in a section after the head. */
-    if (nargs > PF_MAX_ARGS)
-        nargs = PF_MAX_ARGS;
-    uint32_t args_bytes = nargs ? PF_REC_ARGS_HEAD + nargs * PF_REC_ARG_BYTES : 0;
-
-    /* A dynamic name is copied after the head and any arguments, capped at
-     * PF_DYN_NAME_MAX. */
-    uint32_t len = 0;
-    bool copy = dynamic && name && !has_value;
-    bool cut = false;
-    if (copy) {
-        len = (uint32_t)pf_dyn_name_fit(name, &cut);
-        if (cut)
-            atomic_fetch_add_explicit(&t->truncated, 1, memory_order_relaxed);
-    }
-    uint32_t padded = (len + PF_REC_ALIGN - 1) & ~(PF_REC_ALIGN - 1);
-    uint32_t rec_size = PF_REC_HEAD_BYTES + args_bytes + (copy ? padded : 0);
-
-    /* A record that does not fit the rest of the chunk goes to the next one.
-     * Records are never split; see TODO item 3. A record larger than a whole
-     * chunk payload cannot be stored at all, so it is dropped and counted. */
-    if (rec_size > t->chunk_payload) {
-        pf_writer_drop(w);
-        return;
-    }
-    if (w->used + rec_size > t->chunk_payload && !pf_writer_rotate(t, w))
-        return; /* no chunk free; pf_writer_rotate counted the drop */
-
-    struct pf_rec *r = (struct pf_rec *)(w->cur->bytes + w->used);
-    r->ts = ts;
-    r->track = track_uuid;
-    /* Mutually exclusive by construction -- see the layout comment. */
-    if (has_value)
-        r->u.value = raw_value;
-    else if (copy)
-        r->u.name_len = len;
-    else
-        r->u.name = name;
-    r->type = type;
-    r->flags = (has_value ? RF_HAS_VALUE : 0u) | (value_is_double ? RF_VALUE_IS_DOUBLE : 0u) |
-               (copy ? RF_NAME_COPIED : 0u) | (nargs ? RF_HAS_ARGS : 0u);
-    if (nargs) {
-        /* The count, 4 reserved bytes, then one entry per argument: the key's
-         * pointer, its kind, 4 reserved bytes, and the value's 8 bytes. Keys are
-         * literals, so the pointer is what the drain interns. */
-        uint32_t *hdr = (uint32_t *)((char *)r + PF_REC_HEAD_BYTES);
-        hdr[0] = nargs;
-        hdr[1] = 0;
-        for (unsigned i = 0; i < nargs; i++) {
-            char *e = (char *)hdr + PF_REC_ARGS_HEAD + i * PF_REC_ARG_BYTES;
-            uint64_t key = (uint64_t)(uintptr_t)args[i].key;
-            uint32_t kind = (uint32_t)args[i].kind;
-            uint32_t zero = 0;
-            memcpy(e, &key, sizeof(key));
-            memcpy(e + 8, &kind, sizeof(kind));
-            memcpy(e + 12, &zero, sizeof(zero));
-            memcpy(e + 16, &args[i].v, sizeof(args[i].v));
-        }
-    }
-    if (copy) {
-        char *body = (char *)r + PF_REC_HEAD_BYTES + args_bytes;
-        pf_dyn_name_copy(body, name, len, cut);
-        memset(body + len, 0, padded - len);
-    }
-    w->used += rec_size;
-
-    /* Publish the count after the record is complete. Release pairs with the
-     * acquire in pf_walk_enter, so a snapshot never reads a half-written record. */
-    atomic_store_explicit(&w->cur->used, w->used, memory_order_release);
-    atomic_store_explicit(&w->events, atomic_load_explicit(&w->events, memory_order_relaxed) + 1,
-                          memory_order_relaxed);
+    return w;
 }
 
-static void emit_event(struct pf_trace *t, uint32_t type, uint64_t track_uuid, const char *name,
-                       bool dynamic, bool has_value, uint64_t raw_value, bool value_is_double)
+/* Returns room for a raw record of @rec_size bytes in @w's chunk, rotating
+ * when the rest of the chunk is too small, or NULL when the record is dropped.
+ * Records are never split; see TODO item 3. A record larger than a whole
+ * chunk payload cannot be stored at all, so it is dropped and counted. */
+static struct pf_rec *raw_reserve(struct pf_trace *t, struct pf_writer *w, uint32_t rec_size)
 {
-    emit_event_args(t, type, track_uuid, name, dynamic, has_value, raw_value, value_is_double, 0,
-                    NULL);
+    if (rec_size > t->chunk_payload) {
+        pf_writer_drop(w);
+        return NULL;
+    }
+    if (w->used + rec_size > t->chunk_payload && !pf_writer_rotate(t, w))
+        return NULL; /* no chunk free; pf_writer_rotate counted the drop */
+    return (struct pf_rec *)(w->cur->bytes + w->used);
+}
+
+static void raw_head(struct pf_rec *r, uint64_t ts, uint64_t track, uint32_t type, uint32_t flags)
+{
+    r->ts = ts;
+    r->track = track;
+    r->type = type;
+    r->flags = flags;
+}
+
+/* The argument section's size, for at least one argument. The macros reject
+ * more than PF_MAX_ARGS arguments; a direct caller that passes more gets the
+ * first PF_MAX_ARGS. */
+static uint32_t raw_args_bytes(unsigned *nargs)
+{
+    if (*nargs > PF_MAX_ARGS)
+        *nargs = PF_MAX_ARGS;
+    return PF_REC_ARGS_HEAD + *nargs * PF_REC_ARG_BYTES;
+}
+
+/* Writes the argument section after @r's head: the count, 4 reserved bytes,
+ * then one entry per argument: the key's pointer, its kind, 4 reserved bytes,
+ * and the value's 8 bytes. Keys are literals, so the pointer is what the drain
+ * interns. */
+static void raw_put_args(struct pf_rec *r, unsigned nargs, const struct pf_arg *args)
+{
+    uint32_t *hdr = (uint32_t *)((char *)r + PF_REC_HEAD_BYTES);
+    hdr[0] = nargs;
+    hdr[1] = 0;
+    for (unsigned i = 0; i < nargs; i++) {
+        char *e = (char *)hdr + PF_REC_ARGS_HEAD + i * PF_REC_ARG_BYTES;
+        uint64_t key = (uint64_t)(uintptr_t)args[i].key;
+        uint32_t kind = (uint32_t)args[i].kind;
+        uint32_t zero = 0;
+        memcpy(e, &key, sizeof(key));
+        memcpy(e + 8, &kind, sizeof(kind));
+        memcpy(e + 12, &zero, sizeof(zero));
+        memcpy(e + 16, &args[i].v, sizeof(args[i].v));
+    }
+}
+
+/* Publishes the record after it is complete. */
+static void raw_commit(struct pf_writer *w, uint32_t rec_size)
+{
+    w->used += rec_size;
+    pf_writer_publish(w);
+}
+
+/* A counter sample: a value and no name, in the head alone. */
+static void emit_counter(struct pf_trace *t, uint64_t track_uuid, uint64_t raw_value,
+                         bool value_is_double)
+{
+    uint64_t ts;
+    struct pf_writer *w = emit_start(t, &ts);
+    if (!w)
+        return;
+    if (t->cfg.format == PF_FORMAT_PROTOBUF) {
+        pf_pb_counter(t, w, ts, track_uuid, raw_value, value_is_double);
+        return;
+    }
+
+    struct pf_rec *r = raw_reserve(t, w, PF_REC_HEAD_BYTES);
+    if (!r)
+        return;
+    raw_head(r, ts, track_uuid, TYPE_COUNTER,
+             RF_HAS_VALUE | (value_is_double ? RF_VALUE_IS_DOUBLE : 0u));
+    r->u.value = raw_value;
+    raw_commit(w, PF_REC_HEAD_BYTES);
+}
+
+/* An event with a static name, in the head alone. */
+static void emit_named(struct pf_trace *t, uint32_t type, uint64_t track_uuid, const char *name)
+{
+    uint64_t ts;
+    struct pf_writer *w = emit_start(t, &ts);
+    if (!w)
+        return;
+    if (t->cfg.format == PF_FORMAT_PROTOBUF) {
+        pf_pb_named(t, w, ts, type, track_uuid, name);
+        return;
+    }
+
+    struct pf_rec *r = raw_reserve(t, w, PF_REC_HEAD_BYTES);
+    if (!r)
+        return;
+    raw_head(r, ts, track_uuid, type, 0u);
+    r->u.name = name;
+    raw_commit(w, PF_REC_HEAD_BYTES);
+}
+
+/* An event with a static name and 1 to PF_MAX_ARGS typed arguments, as
+ * pf_slice_begin_args_impl() documents. The raw record carries them in a
+ * section after the head. */
+static void emit_named_args(struct pf_trace *t, uint32_t type, uint64_t track_uuid,
+                            const char *name, unsigned nargs, const struct pf_arg *args)
+{
+    uint64_t ts;
+    struct pf_writer *w = emit_start(t, &ts);
+    if (!w)
+        return;
+    if (t->cfg.format == PF_FORMAT_PROTOBUF) {
+        pf_pb_named_args(t, w, ts, type, track_uuid, name, nargs, args);
+        return;
+    }
+
+    uint32_t rec_size = PF_REC_HEAD_BYTES + raw_args_bytes(&nargs);
+    struct pf_rec *r = raw_reserve(t, w, rec_size);
+    if (!r)
+        return;
+    raw_head(r, ts, track_uuid, type, RF_HAS_ARGS);
+    r->u.name = name;
+    raw_put_args(r, nargs, args);
+    raw_commit(w, rec_size);
+}
+
+/* An event with a name the caller built. The raw record copies it after the
+ * head, capped at PF_DYN_NAME_MAX. */
+static void emit_dyn(struct pf_trace *t, uint32_t type, uint64_t track_uuid, const char *name)
+{
+    uint64_t ts;
+    struct pf_writer *w = emit_start(t, &ts);
+    if (!w)
+        return;
+    if (t->cfg.format == PF_FORMAT_PROTOBUF) {
+        pf_pb_dyn(t, w, ts, type, track_uuid, name);
+        return;
+    }
+
+    if (!name) {
+        struct pf_rec *r = raw_reserve(t, w, PF_REC_HEAD_BYTES);
+        if (!r)
+            return;
+        raw_head(r, ts, track_uuid, type, 0u);
+        r->u.name = NULL;
+        raw_commit(w, PF_REC_HEAD_BYTES);
+        return;
+    }
+    bool cut;
+    uint32_t len = (uint32_t)pf_dyn_name_fit(name, &cut);
+    if (cut)
+        atomic_fetch_add_explicit(&t->truncated, 1, memory_order_relaxed);
+    uint32_t padded = (len + PF_REC_ALIGN - 1) & ~(PF_REC_ALIGN - 1);
+    uint32_t rec_size = PF_REC_HEAD_BYTES + padded;
+
+    struct pf_rec *r = raw_reserve(t, w, rec_size);
+    if (!r)
+        return;
+    raw_head(r, ts, track_uuid, type, RF_NAME_COPIED);
+    r->u.name_len = len;
+    char *body = (char *)r + PF_REC_HEAD_BYTES;
+    pf_dyn_name_copy(body, name, len, cut);
+    memset(body + len, 0, padded - len);
+    raw_commit(w, rec_size);
+}
+
+/* A slice end: no name, no value, in the head alone. */
+static void emit_end(struct pf_trace *t, uint64_t track_uuid)
+{
+    uint64_t ts;
+    struct pf_writer *w = emit_start(t, &ts);
+    if (!w)
+        return;
+    if (t->cfg.format == PF_FORMAT_PROTOBUF) {
+        pf_pb_end(t, w, ts, track_uuid);
+        return;
+    }
+
+    struct pf_rec *r = raw_reserve(t, w, PF_REC_HEAD_BYTES);
+    if (!r)
+        return;
+    raw_head(r, ts, track_uuid, TYPE_SLICE_END, 0u);
+    r->u.name = NULL;
+    raw_commit(w, PF_REC_HEAD_BYTES);
 }
 
 void pf_slice_begin_args_impl(struct pf_trace *t, uint64_t track_uuid, const char *name,
                               unsigned nargs, const struct pf_arg *args)
 {
-    emit_event_args(t, TYPE_SLICE_BEGIN, track_uuid, name, false, false, 0, false, nargs, args);
+    emit_named_args(t, TYPE_SLICE_BEGIN, track_uuid, name, nargs, args);
 }
 
 void pf_instant_event_args_impl(struct pf_trace *t, uint64_t track_uuid, const char *name,
                                 unsigned nargs, const struct pf_arg *args)
 {
-    emit_event_args(t, TYPE_INSTANT, track_uuid, name, false, false, 0, false, nargs, args);
+    emit_named_args(t, TYPE_INSTANT, track_uuid, name, nargs, args);
 }
 
 void pf_slice_begin_impl(struct pf_trace *t, uint64_t track_uuid, const char *name)
 {
-    emit_event(t, TYPE_SLICE_BEGIN, track_uuid, name, false, false, 0, false);
+    emit_named(t, TYPE_SLICE_BEGIN, track_uuid, name);
 }
 
 void pf_slice_begin_dyn_impl(struct pf_trace *t, uint64_t track_uuid, const char *name)
 {
-    emit_event(t, TYPE_SLICE_BEGIN, track_uuid, name, true, false, 0, false);
+    emit_dyn(t, TYPE_SLICE_BEGIN, track_uuid, name);
 }
 
 /* The formatter's buffer: PF_DYN_NAME_MAX bytes, one more so that a name too
@@ -637,29 +742,29 @@ void pf_instant_event_g_fmt_impl(const char *fmt, ...)
 
 void pf_instant_event_impl(struct pf_trace *t, uint64_t track_uuid, const char *name)
 {
-    emit_event(t, TYPE_INSTANT, track_uuid, name, false, false, 0, false);
+    emit_named(t, TYPE_INSTANT, track_uuid, name);
 }
 
 void pf_instant_event_dyn_impl(struct pf_trace *t, uint64_t track_uuid, const char *name)
 {
-    emit_event(t, TYPE_INSTANT, track_uuid, name, true, false, 0, false);
+    emit_dyn(t, TYPE_INSTANT, track_uuid, name);
 }
 
 void pf_slice_end(struct pf_trace *t, uint64_t track_uuid)
 {
-    emit_event(t, TYPE_SLICE_END, track_uuid, NULL, false, false, 0, false);
+    emit_end(t, track_uuid);
 }
 
 void pf_counter_set_int(struct pf_trace *t, uint64_t counter_track_uuid, int64_t value)
 {
-    emit_event(t, TYPE_COUNTER, counter_track_uuid, NULL, false, true, (uint64_t)value, false);
+    emit_counter(t, counter_track_uuid, (uint64_t)value, false);
 }
 
 void pf_counter_set_double(struct pf_trace *t, uint64_t counter_track_uuid, double value)
 {
     uint64_t bits;
     memcpy(&bits, &value, 8);
-    emit_event(t, TYPE_COUNTER, counter_track_uuid, NULL, false, true, bits, true);
+    emit_counter(t, counter_track_uuid, bits, true);
 }
 
 /* --- Tracks ------------------------------------------------------------ */
