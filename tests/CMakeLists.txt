@@ -74,6 +74,14 @@ target_link_libraries(test_rotate PRIVATE pftrace Threads::Threads)
 target_compile_definitions(test_rotate PRIVATE _GNU_SOURCE)
 add_test(NAME rotate COMMAND test_rotate WORKING_DIRECTORY ${PFTRACE_RUN_DIR})
 
+# A trace with known timestamps, including a clock that steps back, for the
+# import_timestamps test in tools/ to check against what Perfetto imports.
+add_executable(test_timestamps test_timestamps.c)
+target_link_libraries(test_timestamps PRIVATE pftrace Threads::Threads)
+target_compile_definitions(test_timestamps PRIVATE _GNU_SOURCE)
+add_test(NAME timestamps COMMAND test_timestamps WORKING_DIRECTORY ${PFTRACE_RUN_DIR})
+set_tests_properties(timestamps PROPERTIES FIXTURES_SETUP timestamp_traces)
+
 # Not a test: reports producer vs drain cost per event, to show where the
 # hot path actually stands and at what rate continuous mode starts dropping.
 add_executable(bench bench.c)

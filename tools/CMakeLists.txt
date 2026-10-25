@@ -74,6 +74,15 @@ if(PYTHON3 AND have_perfetto EQUAL 0)
     stress_continuous.pftrace WORKING_DIRECTORY ${PFTRACE_RUN_DIR})
   set_tests_properties(import_stress_continuous PROPERTIES
     FIXTURES_REQUIRED stress_traces SKIP_RETURN_CODE 77)
+  # Event timestamps are deltas on an incremental clock, so a wrong delta or a
+  # clock snapshot Perfetto rejects shows only as wrong times after import.
+  # test_timestamps records the time each event was stamped with.
+  add_test(NAME import_timestamps COMMAND ${PYTHON3}
+    ${PROJECT_SOURCE_DIR}/tools/import_trace.py --min-threads 4
+    --expect-ts timestamps.d/timestamps.expected timestamps.d/timestamps.pftrace
+    WORKING_DIRECTORY ${PFTRACE_RUN_DIR})
+  set_tests_properties(import_timestamps PROPERTIES
+    FIXTURES_REQUIRED timestamp_traces SKIP_RETURN_CODE 77)
 else()
   message(STATUS "perfetto Python package not found: verify_trace tests not added")
 endif()

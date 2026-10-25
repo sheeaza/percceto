@@ -3,11 +3,13 @@
 that it kept what the file holds.
 
 verify_trace.py checks the bytes against the schema, which a trace can pass
-while the importer still throws packets away: a packet on a sequence whose
-incremental state was never cleared, a counter value on a track that is not a
-counter track, a name iid with no definition. Those show up only in
-trace_processor's stats, so this check reads them, and compares the slices
-each thread's track imported with the track events the file carries for it.
+while the importer still throws packets away or misplaces them: a packet on a
+sequence whose incremental state was never cleared, a counter value on a track
+that is not a counter track, a name iid with no definition, a clock snapshot
+it rejects. Those show up only in trace_processor's stats or in the imported
+times, so this check reads the stats, compares the slices each thread's track
+imported with the track events the file carries for it, and with --expect-ts
+compares the imported times with the ones the events were stamped with.
 
 Needs the perfetto Python package and trace_processor_shell on PATH. When the
 shell is missing the check is skipped with a warning, and exits with
@@ -38,6 +40,12 @@ def main():
         type=int,
         default=1,
         help="fail unless at least this many thread tracks imported slices",
+    )
+    ap.add_argument(
+        "--expect-ts",
+        metavar="FILE",
+        help="fail unless the imported slice timestamps are exactly those in "
+        "FILE, one per line, in any order",
     )
     args = ap.parse_args()
 
@@ -89,6 +97,16 @@ def main():
     if len(threads) < args.min_threads:
         print(f"FAIL: {len(threads)} threads imported slices, expected at least {args.min_threads}")
         failed = True
+
+    if args.expect_ts:
+        with open(args.expect_ts) as f:
+            want = sorted(int(line) for line in f if line.strip())
+        got = sorted(r.ts for r in tp.query("select ts from slice"))
+        wrong = sum(1 for a, b in zip(got, want) if a != b) + abs(len(got) - len(want))
+        print(f"timestamps: {len(got)} imported, {len(want)} expected, {wrong} differ")
+        if wrong:
+            print("FAIL: imported slice timestamps differ from the ones the events were stamped with")
+            failed = True
 
     tp.close()
     return 1 if failed else 0
