@@ -52,6 +52,32 @@ A failure in `acquire_c` jumps to `release_b`, which frees `b` and then falls
 through to `release_a`. A failure in `acquire_a` jumps to `out` and frees
 nothing.
 
+## No unnecessary checks
+
+Test a value only when it can actually take the case the test handles. A check
+is a statement about the code: `if (p)` says that `p` may be `NULL` there.
+When it never is, the check is false documentation. A reader has to work out
+which paths would make it `NULL`, and finds none.
+
+- Before adding a check, decide whether the case is possible at that point,
+  from the callers and the invariants. If it is not, leave the check out.
+- When a function is only reached once some state holds, rely on it. A destroy
+  function, for example, runs only after its init succeeded, so the resources
+  init acquired are all there, and destroy releases them without testing.
+- Remove a check that has become dead after a change, rather than keeping it
+  in case.
+- When a value can genuinely be absent, say so where it is declared, and keep
+  the check at each use.
+
+```c
+/* Called only after thing_init succeeded: a and b are both set. */
+void thing_destroy(struct thing *t)
+{
+    free(t->b);
+    munmap(t->a, t->a_bytes);
+}
+```
+
 ## Acquisition checks
 
 Check each acquisition right after it is made, and return early on failure.
