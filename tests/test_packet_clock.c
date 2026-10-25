@@ -1,10 +1,13 @@
 /* Every packet that carries a timestamp names its clock.
  *
  * Perfetto reads a packet with no timestamp_clock_id as BOOTTIME. A dump
- * stamped with another clock therefore has to say so on each packet, or
- * Perfetto cannot relate its events to the trace clock and drops them. This
- * dumps a snapshot for each configurable clock and checks the packets' ids
- * by walking the protobuf wire format.
+ * stamped with another clock therefore has to say so, or Perfetto cannot
+ * relate its events to the trace clock and drops them. A packet names its
+ * clock directly, or through the TracePacketDefaults of its sequence. Event
+ * packets do the latter: they are on an incremental clock, which a
+ * ClockSnapshot on the same sequence ties to the trace clock. This dumps a
+ * snapshot for each configurable clock and checks, by walking the protobuf
+ * wire format, that each timestamped packet resolves to the trace clock.
  */
 
 #include <stdbool.h>
@@ -27,6 +30,11 @@
 #define FN_PACKET_CLOCK_SNAPSHOT 6
 #define FN_CLOCK_SNAPSHOT_CLOCKS 1
 #define FN_CLOCK_ID 1
+#define FN_PACKET_TRUSTED_SEQ_ID 10
+#define FN_PACKET_DEFAULTS 59
+#define FN_DEFAULTS_TIMESTAMP_CLOCK_ID 58
+#define FN_CLOCK_IS_INCREMENTAL 3
+#define MAX_SEQS 260
 
 static int failures;
 
@@ -101,14 +109,67 @@ static bool next_field(const unsigned char *b, size_t len, size_t *p, struct fie
     }
 }
 
-/* Checks each timestamped packet in a dump names @want as its clock. Returns
- * how many packets had a timestamp, so the caller can tell an empty dump from
- * a passing one, or -1 if the bytes do not parse. */
+/* Finds varint field @num in message @b, @len long. */
+static bool find_varint(const unsigned char *b, size_t len, uint64_t num, uint64_t *out)
+{
+    size_t p = 0;
+    struct field f;
+    bool found = false;
+    while (p < len) {
+        if (!next_field(b, len, &p, &f))
+            return false;
+        if (f.wt == 0 && f.num == num) {
+            *out = f.val;
+            found = true;
+        }
+    }
+    return found;
+}
+
+/* Per sequence: the default timestamp clock from TracePacketDefaults, and the
+ * clock an incremental clock id stands for, from the ClockSnapshot on that
+ * sequence that defines it beside a builtin clock. */
+static uint64_t seq_default[MAX_SEQS];
+static uint64_t seq_inc_id[MAX_SEQS];
+static uint64_t seq_inc_base[MAX_SEQS];
+
+/* Records what a snapshot on @seq says: an incremental clock in it reads the
+ * same as the builtin clock beside it, so it stands for that clock. */
+static void note_snapshot(uint64_t seq, const unsigned char *b, size_t len)
+{
+    uint64_t inc = 0, builtin = 0;
+    size_t p = 0;
+    struct field f;
+    while (p < len) {
+        if (!next_field(b, len, &p, &f))
+            return;
+        if (f.wt != 2 || f.num != FN_CLOCK_SNAPSHOT_CLOCKS)
+            continue;
+        uint64_t id = 0, is_inc = 0;
+        find_varint(f.bytes, f.size, FN_CLOCK_ID, &id);
+        find_varint(f.bytes, f.size, FN_CLOCK_IS_INCREMENTAL, &is_inc);
+        if (is_inc)
+            inc = id;
+        else if (id < 64)
+            builtin = id;
+    }
+    if (inc) {
+        seq_inc_id[seq] = inc;
+        seq_inc_base[seq] = builtin;
+    }
+}
+
+/* Checks each timestamped packet in a dump resolves to @want as its clock.
+ * Returns how many packets had a timestamp, so the caller can tell an empty
+ * dump from a passing one, or -1 if the bytes do not parse. */
 static int check_dump(const unsigned char *buf, size_t len, uint64_t want)
 {
     int timed = 0;
     size_t p = 0;
     struct field top;
+    memset(seq_default, 0, sizeof(seq_default));
+    memset(seq_inc_id, 0, sizeof(seq_inc_id));
+    memset(seq_inc_base, 0, sizeof(seq_inc_base));
     while (p < len) {
         if (!next_field(buf, len, &p, &top))
             return -1;
@@ -116,7 +177,7 @@ static int check_dump(const unsigned char *buf, size_t len, uint64_t want)
             continue;
 
         bool has_ts = false, has_clock = false;
-        uint64_t clock = 0;
+        uint64_t clock = 0, seq = 0;
         size_t q = 0;
         struct field f;
         while (q < top.size) {
@@ -128,11 +189,29 @@ static int check_dump(const unsigned char *buf, size_t len, uint64_t want)
                 has_clock = true;
                 clock = f.val;
             }
+            if (f.wt == 0 && f.num == FN_PACKET_TRUSTED_SEQ_ID)
+                seq = f.val;
+        }
+        if (seq >= MAX_SEQS)
+            return -1;
+        /* Defaults and snapshots apply to the packet that carries them too. */
+        q = 0;
+        while (q < top.size) {
+            if (!next_field(top.bytes, top.size, &q, &f))
+                return -1;
+            if (f.wt == 2 && f.num == FN_PACKET_DEFAULTS)
+                find_varint(f.bytes, f.size, FN_DEFAULTS_TIMESTAMP_CLOCK_ID, &seq_default[seq]);
+            if (f.wt == 2 && f.num == FN_PACKET_CLOCK_SNAPSHOT)
+                note_snapshot(seq, f.bytes, f.size);
         }
         if (!has_ts)
             continue;
         timed++;
-        CHECK(has_clock && clock == want, "packet %d names clock %llu, want %llu", timed,
+        if (!has_clock)
+            clock = seq_default[seq];
+        if (clock && clock == seq_inc_id[seq])
+            clock = seq_inc_base[seq];
+        CHECK(clock == want, "packet %d resolves to clock %llu, want %llu", timed,
               (unsigned long long)clock, (unsigned long long)want);
     }
     return timed;

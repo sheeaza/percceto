@@ -66,6 +66,9 @@ def main():
     # Interned names are per trusted sequence: each writer owns one sequence,
     # and its iids mean nothing to any other sequence.
     interned_names = defaultdict(dict)
+    # The track an event with no track_uuid is on, per sequence, from the
+    # TracePacketDefaults each chunk's header packet carries.
+    default_track = {}
     stray_cat = 0
     unknown_track = 0
     unresolved_name = 0
@@ -76,6 +79,11 @@ def main():
         # snapshot window stays self-contained.
         if p.sequence_flags & 1:
             interned_names.pop(seq, None)
+            default_track.pop(seq, None)
+        if p.HasField("trace_packet_defaults"):
+            d = p.trace_packet_defaults
+            if d.HasField("track_event_defaults") and d.track_event_defaults.track_uuid:
+                default_track[seq] = d.track_event_defaults.track_uuid
         names = interned_names[seq]
         if p.HasField("interned_data"):
             for en in p.interned_data.event_names:
@@ -84,17 +92,19 @@ def main():
         if not p.HasField("track_event"):
             continue
         ev = p.track_event
-        if ev.track_uuid not in uuids:
+        # An event with no track_uuid is on its sequence's default track.
+        track = ev.track_uuid if ev.HasField("track_uuid") else default_track.get(seq, 0)
+        if track not in uuids:
             unknown_track += 1
         if ev.name_iid and ev.name_iid not in names:
             unresolved_name += 1
         stray_cat += len(ev.category_iids) + len(ev.categories)
         if ev.type == TrackEvent.TYPE_SLICE_BEGIN:
-            begins[ev.track_uuid] += 1
+            begins[track] += 1
             name = names.get(ev.name_iid, ev.name) if (ev.name_iid or ev.name) else None
-            event_names_seen[ev.track_uuid].add(name)
+            event_names_seen[track].add(name)
         elif ev.type == TrackEvent.TYPE_SLICE_END:
-            ends[ev.track_uuid] += 1
+            ends[track] += 1
         elif ev.type == TrackEvent.TYPE_COUNTER:
             counter_events += 1
         elif ev.type == TrackEvent.TYPE_INSTANT:

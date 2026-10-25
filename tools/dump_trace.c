@@ -16,14 +16,26 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* Field numbers, mirroring src/pftrace.c. */
+/* Field numbers, mirroring src/pf_encode.h. */
 #define FN_TRACE_PACKET 1
+#define FN_PACKET_CLOCK_SNAPSHOT 6
 #define FN_PACKET_TIMESTAMP 8
 #define FN_PACKET_TRUSTED_SEQ_ID 10
 #define FN_PACKET_TRACK_EVENT 11
 #define FN_PACKET_INTERNED_DATA 12
 #define FN_PACKET_SEQUENCE_FLAGS 13
+#define FN_PACKET_TIMESTAMP_CLOCK_ID 58
+#define FN_PACKET_DEFAULTS 59
 #define FN_PACKET_TRACK_DESCRIPTOR 60
+
+/* ClockSnapshot.clocks, and TracePacketDefaults with its TrackEventDefaults */
+#define FN_CLOCK_SNAPSHOT_CLOCKS 1
+#define FN_CLOCK_ID 1
+#define FN_CLOCK_TIMESTAMP 2
+#define FN_CLOCK_IS_INCREMENTAL 3
+#define FN_DEFAULTS_TIMESTAMP_CLOCK_ID 58
+#define FN_DEFAULTS_TRACK_EVENT 11
+#define FN_TRACK_EVENT_DEFAULTS_TRACK_UUID 11
 
 #define SEQ_INCREMENTAL_STATE_CLEARED 1u
 
@@ -122,6 +134,15 @@ struct state {
      * resolves independently of earlier ones. */
     bool name_iid[MAX_SEQS][MAX_IIDS];
 
+    /* Per sequence, the state each chunk's header packet sets: the default
+     * track for an event with no track_uuid, the default timestamp clock,
+     * and, when that clock is incremental, the time the next delta adds to.
+     * All reset by a state clear. */
+    uint64_t default_track[MAX_SEQS];
+    uint64_t default_clock[MAX_SEQS];
+    uint64_t incremental_clock[MAX_SEQS]; /* its id, or 0 */
+    uint64_t incremental_ts[MAX_SEQS];
+
     uint64_t depth[MAX_TRACKS]; /* open slices per track, parallel to tracks */
     uint64_t last_ts;
 
@@ -184,11 +205,84 @@ static void parse_interned(struct state *s, uint64_t seq, const uint8_t *p, size
     }
 }
 
+/* Reads a varint field @want of the message at [@p, @p + @len) into *out.
+ * Returns false when the field is absent or the bytes are bad. */
+static bool find_varint(const uint8_t *p, size_t len, unsigned want, uint64_t *out)
+{
+    struct cursor c = { p, p + len, false };
+    bool found = false;
+    while (c.p < c.end && !c.bad) {
+        uint64_t tag = get_varint(&c);
+        if (c.bad)
+            break;
+        if ((tag >> 3) == want && (tag & 7) == 0) {
+            *out = get_varint(&c);
+            found = !c.bad;
+        } else if (!skip_field(&c, (unsigned)(tag & 7))) {
+            break;
+        }
+    }
+    return found;
+}
+
+/* TracePacketDefaults: the default timestamp clock, and the default track an
+ * event with no track_uuid is on. */
+static void parse_defaults(struct state *s, uint64_t seq, const uint8_t *p, size_t len)
+{
+    uint64_t v;
+    if (find_varint(p, len, FN_DEFAULTS_TIMESTAMP_CLOCK_ID, &v))
+        s->default_clock[seq] = v;
+    struct cursor c = { p, p + len, false };
+    while (c.p < c.end && !c.bad) {
+        uint64_t tag = get_varint(&c);
+        if (c.bad)
+            break;
+        if ((tag >> 3) == FN_DEFAULTS_TRACK_EVENT && (tag & 7) == 2) {
+            uint64_t sub_len = get_varint(&c);
+            if (c.bad || (uint64_t)(c.end - c.p) < sub_len)
+                break;
+            if (find_varint(c.p, sub_len, FN_TRACK_EVENT_DEFAULTS_TRACK_UUID, &v))
+                s->default_track[seq] = v;
+            c.p += sub_len;
+        } else if (!skip_field(&c, (unsigned)(tag & 7))) {
+            break;
+        }
+    }
+}
+
+/* ClockSnapshot: an incremental clock in it starts the sequence's deltas from
+ * the reading the snapshot gives it. */
+static void parse_snapshot(struct state *s, uint64_t seq, const uint8_t *p, size_t len)
+{
+    struct cursor c = { p, p + len, false };
+    while (c.p < c.end && !c.bad) {
+        uint64_t tag = get_varint(&c);
+        if (c.bad)
+            break;
+        if ((tag >> 3) == FN_CLOCK_SNAPSHOT_CLOCKS && (tag & 7) == 2) {
+            uint64_t sub_len = get_varint(&c);
+            if (c.bad || (uint64_t)(c.end - c.p) < sub_len)
+                break;
+            uint64_t id = 0, ts = 0, inc = 0;
+            find_varint(c.p, sub_len, FN_CLOCK_ID, &id);
+            find_varint(c.p, sub_len, FN_CLOCK_TIMESTAMP, &ts);
+            find_varint(c.p, sub_len, FN_CLOCK_IS_INCREMENTAL, &inc);
+            if (inc) {
+                s->incremental_clock[seq] = id;
+                s->incremental_ts[seq] = ts;
+            }
+            c.p += sub_len;
+        } else if (!skip_field(&c, (unsigned)(tag & 7))) {
+            break;
+        }
+    }
+}
+
 static void parse_track_event(struct state *s, uint64_t seq, const uint8_t *p, size_t len,
                               uint64_t ts)
 {
     struct cursor c = { p, p + len, false };
-    uint64_t type = 0, track_uuid = 0, name_iid = 0;
+    uint64_t type = 0, track_uuid = s->default_track[seq], name_iid = 0;
     bool has_name_str = false;
 
     while (c.p < c.end && !c.bad) {
@@ -268,9 +362,12 @@ static void parse_track_event(struct state *s, uint64_t seq, const uint8_t *p, s
 static void parse_packet(struct state *s, const uint8_t *p, size_t len)
 {
     struct cursor c = { p, p + len, false };
-    uint64_t ts = 0, flags = 0, seq = 0;
+    uint64_t ts = 0, flags = 0, seq = 0, clock = 0;
+    bool has_ts = false, has_clock = false;
     const uint8_t *event = NULL, *interned = NULL, *descriptor = NULL;
+    const uint8_t *defaults = NULL, *snapshot = NULL;
     size_t event_len = 0, interned_len = 0, descriptor_len = 0;
+    size_t defaults_len = 0, snapshot_len = 0;
 
     while (c.p < c.end && !c.bad) {
         uint64_t tag = get_varint(&c);
@@ -281,12 +378,17 @@ static void parse_packet(struct state *s, const uint8_t *p, size_t len)
 
         if (wt == 0) {
             uint64_t v = get_varint(&c);
-            if (field == FN_PACKET_TIMESTAMP)
+            if (field == FN_PACKET_TIMESTAMP) {
                 ts = v;
-            else if (field == FN_PACKET_SEQUENCE_FLAGS)
+                has_ts = true;
+            } else if (field == FN_PACKET_TIMESTAMP_CLOCK_ID) {
+                clock = v;
+                has_clock = true;
+            } else if (field == FN_PACKET_SEQUENCE_FLAGS) {
                 flags = v;
-            else if (field == FN_PACKET_TRUSTED_SEQ_ID)
+            } else if (field == FN_PACKET_TRUSTED_SEQ_ID) {
                 seq = v;
+            }
         } else if (wt == 2) {
             uint64_t sub_len = get_varint(&c);
             if (c.bad || (uint64_t)(c.end - c.p) < sub_len) {
@@ -302,6 +404,12 @@ static void parse_packet(struct state *s, const uint8_t *p, size_t len)
             } else if (field == FN_PACKET_TRACK_DESCRIPTOR) {
                 descriptor = c.p;
                 descriptor_len = sub_len;
+            } else if (field == FN_PACKET_DEFAULTS) {
+                defaults = c.p;
+                defaults_len = sub_len;
+            } else if (field == FN_PACKET_CLOCK_SNAPSHOT) {
+                snapshot = c.p;
+                snapshot_len = sub_len;
             }
             c.p += sub_len;
         } else if (!skip_field(&c, wt)) {
@@ -311,12 +419,32 @@ static void parse_packet(struct state *s, const uint8_t *p, size_t len)
     }
     CHECK(!c.bad, "malformed TracePacket at offset");
     CHECK(seq < MAX_SEQS, "trusted_packet_sequence_id %" PRIu64 " out of range", seq);
+    if (seq >= MAX_SEQS)
+        return;
 
-    /* A state clear restarts interning for this packet's sequence; anything
-     * still referring to an older iid afterwards would be unreadable. */
+    /* A state clear restarts interning and the defaults for this packet's
+     * sequence; anything still referring to an older iid afterwards would be
+     * unreadable. */
     if (flags & SEQ_INCREMENTAL_STATE_CLEARED) {
         memset(s->name_iid[seq], 0, sizeof(s->name_iid[seq]));
+        s->default_track[seq] = 0;
+        s->default_clock[seq] = 0;
+        s->incremental_clock[seq] = 0;
         s->n_state_clears++;
+    }
+    if (defaults)
+        parse_defaults(s, seq, defaults, defaults_len);
+    if (snapshot)
+        parse_snapshot(s, seq, snapshot, snapshot_len);
+
+    /* An incremental clock's timestamp is a delta from the packet before it
+     * on the sequence. Resolve it to the clock's own time, so the inversion
+     * check below compares absolute times. */
+    if (!has_clock)
+        clock = s->default_clock[seq];
+    if (has_ts && clock && clock == s->incremental_clock[seq]) {
+        s->incremental_ts[seq] += ts;
+        ts = s->incremental_ts[seq];
     }
 
     if (descriptor) {
