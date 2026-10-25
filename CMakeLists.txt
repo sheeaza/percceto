@@ -64,7 +64,7 @@ option(PFTRACE_BUILD_SANITIZED "Build ASan/UBSan and TSan variants" ON)
 option(PFTRACE_BUILD_BENCH "Build the benchmarks" OFF)
 
 # Tests and examples run here, so the trace files they write stay out of the
-# build tree. The dump_trace and verify_trace tests read them from here too.
+# build tree. The dump_trace and import_trace tests read them from here too.
 set(PFTRACE_RUN_DIR ${CMAKE_BINARY_DIR}/run)
 file(MAKE_DIRECTORY ${PFTRACE_RUN_DIR})
 

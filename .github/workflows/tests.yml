@@ -75,7 +75,7 @@ jobs:
           nproc
 
       - name: Install perfetto for the trace checks
-        # tools/CMakeLists.txt adds the verify_trace tests only when
+        # tools/CMakeLists.txt adds the import_trace tests only when
         # `import perfetto` succeeds, and it checks at configure time, so this
         # must run before Configure. Installed into a venv and put first on
         # PATH, since Ubuntu's system Python refuses global pip installs

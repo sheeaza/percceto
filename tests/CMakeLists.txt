@@ -1,5 +1,5 @@
 # Each test below is built against libpftrace and runs in PFTRACE_RUN_DIR, where
-# the dump_trace and verify_trace tests look for the traces it writes.
+# the dump_trace and import_trace tests look for the traces it writes.
 #
 # Drives enough events through a small buffer to force many chunk rotations
 # and drops, which is where snapshot windowing and continuous gaplessness

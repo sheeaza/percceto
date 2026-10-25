@@ -122,7 +122,7 @@ Files affected:
   a snapshot case that dumps twice and checks two distinct files.
 - `tests/test_noalloc.c`: dump with a generated name must not allocate. Name
   generation uses stack buffers.
-- `tools/dump_trace.c`, `tools/verify_trace.py`: no format change, but any
+- `tools/dump_trace.c`, `tools/import_trace.py`: no format change, but any
   scripts that expect a single snapshot file need updating.
 
 ## Open questions

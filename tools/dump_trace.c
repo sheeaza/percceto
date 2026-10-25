@@ -1,7 +1,7 @@
 /* Validates a trace against the protobuf wire format, with no external
  * dependencies.
  *
- * tools/verify_trace.py is the stronger check -- it parses with Google's
+ * tools/import_trace.py is the stronger check -- it parses with Google's
  * own generated code from the real Perfetto schema -- but it needs the
  * perfetto Python package, which is not installable in every environment.
  * This covers the properties that actually break when a buffer is
