@@ -85,7 +85,8 @@ endif()
 # The raw-to-protobuf converter. Its unit tests need only the standard
 # library, so they run wherever python3 does. The end-to-end test converts
 # the raw file the raw_roundtrip test writes, and checks the result with
-# dump_trace, which validates the wire format without any library.
+# dump_trace, which validates the wire format without any library, and with
+# import_trace.py, which checks it against perfetto's schema and importer.
 if(PYTHON3 AND have_perfetto EQUAL 0)
   add_test(NAME pfraw2pb_unit COMMAND ${PYTHON3} -m unittest discover
     -s ${PROJECT_SOURCE_DIR}/tools -p test_pfraw2pb.py
@@ -116,4 +117,21 @@ if(PYTHON3 AND have_perfetto EQUAL 0)
     WORKING_DIRECTORY ${PFTRACE_RUN_DIR})
   set_tests_properties(dump_raw_roundtrip_snapshot PROPERTIES
     DEPENDS pfraw2pb_convert_snapshot)
+
+  # The converted traces through import_trace.py as well. raw_roundtrip
+  # checks that every emitted event reads back from the raw file, so both
+  # hold the whole sequence and must balance exactly, the snapshot too.
+  add_test(NAME import_raw_roundtrip COMMAND ${PYTHON3}
+    ${PROJECT_SOURCE_DIR}/tools/import_trace.py --expect-complete
+    raw_roundtrip_continuous.converted.pftrace
+    WORKING_DIRECTORY ${PFTRACE_RUN_DIR})
+  set_tests_properties(import_raw_roundtrip PROPERTIES
+    DEPENDS pfraw2pb_convert SKIP_RETURN_CODE 77)
+
+  add_test(NAME import_raw_roundtrip_snapshot COMMAND ${PYTHON3}
+    ${PROJECT_SOURCE_DIR}/tools/import_trace.py --expect-complete
+    raw_roundtrip_snapshot.converted.pftrace
+    WORKING_DIRECTORY ${PFTRACE_RUN_DIR})
+  set_tests_properties(import_raw_roundtrip_snapshot PROPERTIES
+    DEPENDS pfraw2pb_convert_snapshot SKIP_RETURN_CODE 77)
 endif()
