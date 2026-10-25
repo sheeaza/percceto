@@ -153,6 +153,23 @@ struct pf_writer {
     /* Bumped on every rotation. A name's definition is in the current chunk
      * only if its cache slot was stamped with this epoch. */
     uint32_t epoch;
+    /* Protobuf: the chunk's packet defaults and clock. Each chunk opens with a
+     * header packet that sets @track as the default track, and ties the
+     * incremental clock to the trace clock at the chunk's first event. Every
+     * event's timestamp is then a delta from @last_ts, the previous event's in
+     * the chunk. Both are set when the header is written.
+     *
+     * Perfetto rejects a clock snapshot whose trace clock reading is below the
+     * last one on the same sequence. @head_max is the highest reading this
+     * writer has put in a header; a chunk that starts below it, as after
+     * REALTIME steps back, gets a header with no snapshot, and its events
+     * carry absolute times on the trace clock (@absolute_chunk). Bind does
+     * not reset it: a slot's next thread writes the same sequence, after the
+     * snapshots the last one left in the file. */
+    uint64_t track;
+    uint64_t last_ts;
+    uint64_t head_max;
+    bool absolute_chunk;
     /* Protobuf: this writer's interned names. Slot i is iid i + 1 in the
      * writer's own sequence, so iids never collide across writers. */
     struct pb_intern_slot intern[PF_PB_INTERN_SLOTS];

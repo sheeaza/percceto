@@ -766,21 +766,65 @@ Option: read the TSC (or `cntvct_el0` on ARM) and have the drain emit a
 converts on import. Needs an invariant TSC check at open and a fallback to
 `clock_gettime`.
 
-## 17. Smaller packets with incremental state
+## ~~17. Smaller packets with incremental state~~ (done)
 
-Each packet repeats the full timestamp (8 to 9 bytes), the clock id,
-`sequence_flags` and `track_uuid`.
+~~Each packet repeats the full timestamp (8 to 9 bytes), the clock id,
+`sequence_flags` and `track_uuid`.~~
 
-- Incremental timestamps (`ClockSnapshot.Clock.is_incremental`) make the
-  timestamp a 1 to 3 byte delta.
-- `TracePacketDefaults` (`timestamp_clock_id`,
+~~- Incremental timestamps (`ClockSnapshot.Clock.is_incremental`) make the
+  timestamp a 1 to 3 byte delta.~~
+~~- `TracePacketDefaults` (`timestamp_clock_id`,
   `track_event_defaults.track_uuid`) drops the clock id, and the track uuid
-  for events on the thread's own track.
+  for events on the thread's own track.~~
 
-Expected: about 25 to 12-14 bytes per event, so about half the rotations and
+~~Expected: about 25 to 12-14 bytes per event, so about half the rotations and
 pool-lock trips, and about twice the events per snapshot window. Deltas chain
 packets within a sequence; that holds because records are never split, but
-the first packet of each chunk needs an absolute timestamp.
+the first packet of each chunk needs an absolute timestamp.~~
+
+Done. Each chunk opens with a header packet on the writer's sequence: the
+state clear, `TracePacketDefaults` naming clock 64 and the default track, and
+a `ClockSnapshot` that defines clock 64 as incremental and reads it and the
+trace clock at the chunk's first event. Event packets then carry a delta on
+clock 64, no clock id, and no `track_uuid` when they are on the chunk's
+default track: the track of its first event.
+
+REALTIME can step back, and Perfetto handles that in two places, both found
+with `trace_processor_shell` before the fix:
+
+- A delta cannot be negative. An event below the previous one in a chunk
+  carries its absolute time and names the trace clock, which overrides the
+  default for that packet. The next delta is still from the last event on the
+  incremental clock.
+- Perfetto rejects a `ClockSnapshot` whose trace clock reading is below an
+  earlier one on the same sequence (`invalid_clock_snapshots`), and then
+  places the chunk's events at the old snapshot's time. Rejection is per
+  sequence: snapshots across writers may arrive in any order. A chunk that
+  would start below the writer's highest header reading gets a header with
+  no snapshot, whose defaults name the trace clock, and its events carry
+  absolute times.
+
+Checked with trace_processor: the import of a fixed four-thread trace,
+continuous and snapshot, and with REALTIME stepping back, is identical to
+HEAD's, every slice and counter with its timestamp, duration, track and
+args. `tests/test_timestamps.c` and the `import_timestamps` test keep the
+step-back case covered: with the absolute-chunk fallback disabled, 25,698 of
+25,716 imported times were wrong.
+
+`bench_side` Release, clang, one thread. Bytes per event from the final file
+size; producer ns/event, eight interleaved runs:
+
+| workload | bytes, HEAD | bytes, this | producer, HEAD | producer, this |
+|---|---:|---:|---:|---:|
+| simple | 21.0 | 13.0 | 19.2 | 17.9 |
+| realistic | 22.4 | 14.4 | 29.2 | 28.0 |
+| args | 31.5 | 23.5 | 32.4 | 29.9 |
+
+About 8 bytes fewer per event on every workload, so 38% smaller on simple and
+36% on realistic, and the producer is 1 to 2.5 ns faster, since fewer bytes
+are written and chunks rotate less often. The 8-byte cut is the clock id (3),
+most of the timestamp (5 to 6) and the track uuid (2), less the header (about
+35 bytes per chunk).
 
 ## 18. Fast path for the common protobuf event
 

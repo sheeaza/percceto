@@ -12,13 +12,9 @@
  * official schema), not from memory. The event-side numbers are in
  * pf_encode.h, where the producer encodes them. */
 
-/* TracePacket, for the descriptor and clock packets this file writes */
-#define FN_PACKET_CLOCK_SNAPSHOT 6
+/* TracePacket, for the descriptor packets this file writes. The clock snapshot
+ * fields are in pf_encode.h, since each chunk's header carries one too. */
 #define FN_PACKET_TRACK_DESCRIPTOR 60
-#define FN_CLOCK_SNAPSHOT_CLOCKS 1
-#define FN_CLOCK_SNAPSHOT_PRIMARY 2
-#define FN_CLOCK_ID 1
-#define FN_CLOCK_TIMESTAMP 2
 
 /* Writes a packet's timestamp with its clock. Perfetto reads a packet with no
  * timestamp_clock_id as BOOTTIME, so a REALTIME or MONOTONIC reading must name

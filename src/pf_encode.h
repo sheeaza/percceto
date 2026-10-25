@@ -13,12 +13,31 @@
 
 /* Trace and TracePacket */
 #define FN_TRACE_PACKET 1
+#define FN_PACKET_CLOCK_SNAPSHOT 6
 #define FN_PACKET_TIMESTAMP 8
 #define FN_PACKET_TRUSTED_SEQ_ID 10
 #define FN_PACKET_TRACK_EVENT 11
 #define FN_PACKET_INTERNED_DATA 12
 #define FN_PACKET_SEQUENCE_FLAGS 13
 #define FN_PACKET_TIMESTAMP_CLOCK_ID 58
+#define FN_PACKET_DEFAULTS 59
+
+/* ClockSnapshot and its Clock */
+#define FN_CLOCK_SNAPSHOT_CLOCKS 1
+#define FN_CLOCK_SNAPSHOT_PRIMARY 2
+#define FN_CLOCK_ID 1
+#define FN_CLOCK_TIMESTAMP 2
+#define FN_CLOCK_IS_INCREMENTAL 3
+
+/* TracePacketDefaults and TrackEventDefaults */
+#define FN_DEFAULTS_TIMESTAMP_CLOCK_ID 58
+#define FN_DEFAULTS_TRACK_EVENT 11
+#define FN_TRACK_EVENT_DEFAULTS_TRACK_UUID 11
+
+/* The clock event timestamps are on: sequence scoped (ids 64 to 127 are), and
+ * incremental, so each timestamp is a delta from the packet before it. Each
+ * chunk's header ties it to the trace clock. */
+#define PF_INCREMENTAL_CLOCK_ID 64
 
 /* TrackEvent */
 #define FN_EVENT_TYPE 9

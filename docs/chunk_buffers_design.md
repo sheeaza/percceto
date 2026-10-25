@@ -83,6 +83,24 @@ state on a sequence that was never cleared, so without the flag it drops every
 event of a writer whose sequence the drain does not also clear. Each chunk is
 also a point the reader can resume from after a lost chunk.
 
+The first packet of a chunk is a header, written ahead of the chunk's first
+event. Besides the clear, it carries `TracePacketDefaults`, naming clock 64 as
+the timestamp clock and the first event's track as the default track, and a
+`ClockSnapshot` defining clock 64 as incremental and reading it and the trace
+clock at the first event's time. Clock ids 64 to 127 are scoped to their
+sequence, so each writer's clock 64 is its own. An event packet then carries
+its time as a delta from the event before it in the chunk, no clock id, and
+no `track_uuid` when it is on the default track: about 13 bytes for a slice
+begin with an interned name, against 21 with absolute times.
+
+REALTIME can step back, so a delta could be negative, and Perfetto rejects a
+snapshot whose trace clock reading is below an earlier one on the same
+sequence. An event below the one before it in the chunk carries its absolute
+time and names the trace clock; a chunk that would start below the highest
+reading the writer has put in a header gets a header with no snapshot, whose
+defaults name the trace clock, and all its events carry absolute times. The
+monotonic clocks never take either path.
+
 A record that does not fit the rest of its chunk moves to the next chunk; it is
 never split. A record larger than a whole chunk is dropped and counted.
 

@@ -29,14 +29,30 @@ struct pb_args {
 
 /* One event, as the encoder takes it. */
 struct pb_event {
-    clockid_t clk; /* trace clock, named on the packet's timestamp */
+    clockid_t clk; /* trace clock, which the chunk's header ties to its own */
+    /* The event's time, as a delta from the previous event in the chunk on the
+     * incremental clock. The first event is relative to the header's reading,
+     * which is its own time, so its delta is 0. An @absolute event carries its
+     * time on @clk instead, and names it. */
     uint64_t ts;
+    bool absolute;
     uint32_t seq_id; /* trusted_packet_sequence_id: the writer's sequence */
-    /* sequence_flags. The first packet of a chunk also clears the sequence's
-     * incremental state, since the chunk defines every name it uses. */
-    uint32_t seq_flags;
     uint32_t type; /* TYPE_* */
-    uint64_t track; /* track_uuid */
+    /* track_uuid. Left out when @on_default, for an event on the chunk's
+     * default track, which the header's defaults name. A flag, not a 0
+     * track: 0 is what a failed registration returns, and an event on it
+     * must still say so rather than land on the default. */
+    uint64_t track;
+    bool on_default;
+
+    /* The chunk's header packet, written ahead of the event when the event
+     * opens a chunk. It clears the sequence's state, sets the packet defaults,
+     * and ties the incremental clock to @clk at @head_ts. */
+    bool head;
+    bool head_snap; /* the header ties the incremental clock; see head_clock */
+    uint64_t head_ts;
+    uint64_t head_track;
+    size_t head_body_len;
 
     /* The name. A name the writer has interned is sent as iid, and its
      * definition rides in this packet when @define is set. Otherwise the
@@ -171,7 +187,9 @@ static size_t ann_body_len(const struct pb_event *v, unsigned i)
 
 static size_t event_body_len(const struct pb_event *v)
 {
-    size_t n = vfield_len(FN_EVENT_TYPE, v->type) + vfield_len(FN_EVENT_TRACK_UUID, v->track);
+    size_t n = vfield_len(FN_EVENT_TYPE, v->type);
+    if (!v->on_default)
+        n += vfield_len(FN_EVENT_TRACK_UUID, v->track);
     if (v->use_iid)
         n += vfield_len(FN_EVENT_NAME_IID, v->iid);
     else if (v->nlen)
@@ -225,7 +243,8 @@ static void enc_annotation(struct enc *e, const struct pb_event *v, unsigned i)
 static void enc_event_body(struct enc *e, const struct pb_event *v)
 {
     e_vfield(e, FN_EVENT_TYPE, v->type);
-    e_vfield(e, FN_EVENT_TRACK_UUID, v->track);
+    if (!v->on_default)
+        e_vfield(e, FN_EVENT_TRACK_UUID, v->track);
     if (v->use_iid)
         e_vfield(e, FN_EVENT_NAME_IID, v->iid);
     else if (v->nlen)
@@ -243,12 +262,96 @@ static void enc_event_body(struct enc *e, const struct pb_event *v)
     }
 }
 
+/* The chunk header's ClockSnapshot body: the trace clock and the incremental
+ * clock, both read as @ts. The incremental clock is sequence scoped, so the
+ * snapshot is on the writer's own sequence. */
+static size_t clock_entry_len(uint32_t id, uint64_t ts, bool incremental)
+{
+    return vfield_len(FN_CLOCK_ID, id) + vfield_len(FN_CLOCK_TIMESTAMP, ts) +
+           (incremental ? vfield_len(FN_CLOCK_IS_INCREMENTAL, 1) : 0);
+}
+
+static size_t head_snapshot_len(const struct pb_event *v)
+{
+    return msg_len(FN_CLOCK_SNAPSHOT_CLOCKS,
+                   clock_entry_len(builtin_clock(v->clk), v->head_ts, false)) +
+           msg_len(FN_CLOCK_SNAPSHOT_CLOCKS,
+                   clock_entry_len(PF_INCREMENTAL_CLOCK_ID, v->head_ts, true));
+}
+
+static size_t head_track_defaults_len(const struct pb_event *v)
+{
+    return vfield_len(FN_TRACK_EVENT_DEFAULTS_TRACK_UUID, v->head_track);
+}
+
+/* The clock a chunk's events are on: the incremental clock, tied to the trace
+ * clock by the header's snapshot, or the trace clock itself when the header
+ * has no snapshot. */
+static uint32_t head_clock(const struct pb_event *v)
+{
+    return v->head_snap ? PF_INCREMENTAL_CLOCK_ID : builtin_clock(v->clk);
+}
+
+static size_t head_defaults_len(const struct pb_event *v)
+{
+    return vfield_len(FN_DEFAULTS_TIMESTAMP_CLOCK_ID, head_clock(v)) +
+           msg_len(FN_DEFAULTS_TRACK_EVENT, head_track_defaults_len(v));
+}
+
+static size_t head_body_len(const struct pb_event *v)
+{
+    return vfield_len(FN_PACKET_TRUSTED_SEQ_ID, v->seq_id) +
+           vfield_len(FN_PACKET_SEQUENCE_FLAGS,
+                      SEQ_INCREMENTAL_STATE_CLEARED | SEQ_NEEDS_INCREMENTAL_STATE) +
+           msg_len(FN_PACKET_DEFAULTS, head_defaults_len(v)) +
+           (v->head_snap ? msg_len(FN_PACKET_CLOCK_SNAPSHOT, head_snapshot_len(v)) : 0);
+}
+
+static void enc_clock_entry(struct enc *e, uint32_t id, uint64_t ts, bool incremental)
+{
+    e_tag(e, FN_CLOCK_SNAPSHOT_CLOCKS, 2);
+    e_varint(e, clock_entry_len(id, ts, incremental));
+    e_vfield(e, FN_CLOCK_ID, id);
+    e_vfield(e, FN_CLOCK_TIMESTAMP, ts);
+    if (incremental)
+        e_vfield(e, FN_CLOCK_IS_INCREMENTAL, 1);
+}
+
+/* Writes the chunk's header packet. Perfetto reads a packet that needs
+ * incremental state only after a clear on its sequence, so every chunk opens
+ * with one: the chunk defines every name it uses, and is readable alone. */
+static void enc_head(struct enc *e, const struct pb_event *v)
+{
+    e_tag(e, FN_TRACE_PACKET, 2);
+    e_varint(e, v->head_body_len);
+    e_vfield(e, FN_PACKET_TRUSTED_SEQ_ID, v->seq_id);
+    e_vfield(e, FN_PACKET_SEQUENCE_FLAGS,
+             SEQ_INCREMENTAL_STATE_CLEARED | SEQ_NEEDS_INCREMENTAL_STATE);
+    e_tag(e, FN_PACKET_DEFAULTS, 2);
+    e_varint(e, head_defaults_len(v));
+    e_vfield(e, FN_DEFAULTS_TIMESTAMP_CLOCK_ID, head_clock(v));
+    e_tag(e, FN_DEFAULTS_TRACK_EVENT, 2);
+    e_varint(e, head_track_defaults_len(v));
+    e_vfield(e, FN_TRACK_EVENT_DEFAULTS_TRACK_UUID, v->head_track);
+    if (!v->head_snap)
+        return;
+    e_tag(e, FN_PACKET_CLOCK_SNAPSHOT, 2);
+    e_varint(e, head_snapshot_len(v));
+    enc_clock_entry(e, builtin_clock(v->clk), v->head_ts, false);
+    enc_clock_entry(e, PF_INCREMENTAL_CLOCK_ID, v->head_ts, true);
+}
+
+/* The event packet. Its timestamp is on the clock the chunk's defaults name:
+ * the incremental clock, or the trace clock in a chunk whose header has no
+ * snapshot. An @absolute event in an incremental chunk names the trace clock
+ * itself. Its track is left out when it is the default. */
 static void enc_packet_body(struct enc *e, const struct pb_event *v)
 {
     e_vfield(e, FN_PACKET_TIMESTAMP, v->ts);
-    e_vfield(e, FN_PACKET_TIMESTAMP_CLOCK_ID, builtin_clock(v->clk));
+    if (v->absolute)
+        e_vfield(e, FN_PACKET_TIMESTAMP_CLOCK_ID, builtin_clock(v->clk));
     e_vfield(e, FN_PACKET_TRUSTED_SEQ_ID, v->seq_id);
-    e_vfield(e, FN_PACKET_SEQUENCE_FLAGS, v->seq_flags);
+    e_vfield(e, FN_PACKET_SEQUENCE_FLAGS, SEQ_NEEDS_INCREMENTAL_STATE);
     if (v->intern_len) {
         e_tag(e, FN_PACKET_INTERNED_DATA, 2);
         e_varint(e, v->intern_len);
@@ -271,9 +374,10 @@ static void enc_packet_body(struct enc *e, const struct pb_event *v)
 }
 
 /* Sizes @v: sets its argument annotation lengths and body lengths, and returns
- * the length of @v encoded as one Trace.packet, length prefix included, without
- * encoding it. The encoder reuses the lengths, so each is computed once per
- * event and chunk. */
+ * the length of @v encoded as one Trace.packet, length prefix included, plus
+ * the chunk's header packet when @v opens a chunk, without encoding either.
+ * The encoder reuses the lengths, so each is computed once per event and
+ * chunk. */
 static size_t pf_pb_size(struct pb_event *v)
 {
     size_t intern = v->define ? msg_len(FN_INTERNED_EVENT_NAMES, name_entry_len(v)) : 0;
@@ -285,20 +389,29 @@ static size_t pf_pb_size(struct pb_event *v)
     }
     v->intern_len = intern;
     v->event_len = event_body_len(v);
-    v->body_len = vfield_len(FN_PACKET_TIMESTAMP, v->ts) +
-                  vfield_len(FN_PACKET_TIMESTAMP_CLOCK_ID, builtin_clock(v->clk)) +
-                  vfield_len(FN_PACKET_TRUSTED_SEQ_ID, v->seq_id) +
-                  vfield_len(FN_PACKET_SEQUENCE_FLAGS, v->seq_flags) +
-                  (intern ? msg_len(FN_PACKET_INTERNED_DATA, intern) : 0) +
-                  msg_len(FN_PACKET_TRACK_EVENT, v->event_len);
-    return msg_len(FN_TRACE_PACKET, v->body_len);
+    v->body_len =
+        vfield_len(FN_PACKET_TIMESTAMP, v->ts) +
+        (v->absolute ? vfield_len(FN_PACKET_TIMESTAMP_CLOCK_ID, builtin_clock(v->clk)) : 0) +
+        vfield_len(FN_PACKET_TRUSTED_SEQ_ID, v->seq_id) +
+        vfield_len(FN_PACKET_SEQUENCE_FLAGS, SEQ_NEEDS_INCREMENTAL_STATE) +
+        (intern ? msg_len(FN_PACKET_INTERNED_DATA, intern) : 0) +
+        msg_len(FN_PACKET_TRACK_EVENT, v->event_len);
+    size_t size = msg_len(FN_TRACE_PACKET, v->body_len);
+    if (v->head) {
+        v->head_body_len = head_body_len(v);
+        size += msg_len(FN_TRACE_PACKET, v->head_body_len);
+    }
+    return size;
 }
 
-/* Encodes @v, sized by pf_pb_size, as one Trace.packet into @dst, which must hold
- * the length pf_pb_size returned. Returns the length. */
+/* Encodes @v, sized by pf_pb_size, into @dst, which must hold the length
+ * pf_pb_size returned: the chunk's header packet if @v opens the chunk, then
+ * the event as one Trace.packet. Returns the length. */
 static size_t pf_pb_encode(uint8_t *dst, const struct pb_event *v)
 {
     struct enc e = { dst, 0 };
+    if (v->head)
+        enc_head(&e, v);
     e_tag(&e, FN_TRACE_PACKET, 2);
     e_varint(&e, v->body_len);
     enc_packet_body(&e, v);
@@ -430,17 +543,43 @@ void pf_pb_emit(struct pf_trace *t, struct pf_writer *w, uint64_t ts, uint32_t t
     bool define;
     for (;;) {
         v.clk = t->cfg.clock_id;
-        v.ts = ts;
         /* Sequence 1 is the drain's, for the track descriptors and the clock
          * snapshot. Writer i owns sequence i + 2. */
         v.seq_id = w->id + 2;
-        /* After a rotation w->cur is a fresh chunk and w->used is 0. A writer
-         * with no chunk has w->used at the payload, and its first try only
-         * rotates, so the flag is set on the try that is encoded. */
-        v.seq_flags = SEQ_NEEDS_INCREMENTAL_STATE |
-                      (w->used == 0 ? SEQ_INCREMENTAL_STATE_CLEARED : 0u);
-        v.type = type;
+        /* After a rotation w->cur is a fresh chunk and w->used is 0, so this
+         * event opens it, behind a header that makes its track the default
+         * and reads the clocks at its time. A writer with no chunk has w->used
+         * at the payload, and its first try only rotates, so the header is set
+         * up on the try that is encoded.
+         *
+         * One thread's events reach its chunk in the order they were stamped,
+         * so a monotonic clock gives every delta >= 0. REALTIME can step back,
+         * and Perfetto handles that in two places:
+         *  - A delta cannot be negative. An event below the previous one in an
+         *    incremental chunk carries its absolute time on the trace clock,
+         *    and names the clock, which overrides the default for that packet.
+         *    @last_ts is not moved by it, so the next delta is still from the
+         *    last event on the incremental clock.
+         *  - Perfetto rejects a snapshot whose trace clock reading is below an
+         *    earlier one on the same sequence, and then misplaces the chunk's
+         *    events. A chunk that would start below w->head_max gets a header
+         *    with no snapshot, whose defaults name the trace clock, and its
+         *    events carry absolute times. */
+        v.head = w->used == 0;
+        bool absolute_chunk = v.head ? ts < w->head_max : w->absolute_chunk;
+        v.head_snap = v.head && !absolute_chunk;
+        v.absolute = !absolute_chunk && !v.head && ts < w->last_ts;
+        v.head_ts = ts;
+        v.head_track = track;
+        if (absolute_chunk)
+            v.ts = ts; /* on the trace clock, which the defaults name */
+        else if (v.absolute)
+            v.ts = ts;
+        else
+            v.ts = v.head ? 0 : ts - w->last_ts;
         v.track = track;
+        v.on_default = v.head || track == w->track;
+        v.type = type;
         v.has_value = has_value;
         v.value_is_double = value_is_double;
         v.value = raw_value;
@@ -482,6 +621,14 @@ void pf_pb_emit(struct pf_trace *t, struct pf_writer *w, uint64_t ts, uint32_t t
     }
     pf_pb_encode(w->cur->bytes + w->used, &v);
     w->used += (uint32_t)size;
+    if (v.head) {
+        w->track = track;
+        w->absolute_chunk = !v.head_snap;
+        if (v.head_snap)
+            w->head_max = ts;
+    }
+    if (v.head_snap || (!w->absolute_chunk && !v.absolute))
+        w->last_ts = ts;
 
     atomic_store_explicit(&w->cur->used, w->used, memory_order_release);
     atomic_store_explicit(&w->events, atomic_load_explicit(&w->events, memory_order_relaxed) + 1,
