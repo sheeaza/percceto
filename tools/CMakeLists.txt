@@ -54,6 +54,26 @@ if(PYTHON3 AND have_perfetto EQUAL 0)
     stress_continuous.pftrace WORKING_DIRECTORY ${PFTRACE_RUN_DIR})
   set_tests_properties(verify_stress_continuous PROPERTIES
     FIXTURES_REQUIRED stress_traces)
+
+  # The multi-threaded traces through trace_processor, Perfetto's importer.
+  # A trace can pass the schema check above while the importer drops packets,
+  # so this reads the importer's own stats and per-thread slice counts. It
+  # needs trace_processor_shell on PATH; without it the tests skip.
+  find_program(TRACE_PROCESSOR_SHELL trace_processor_shell)
+  if(NOT TRACE_PROCESSOR_SHELL)
+    message(WARNING "trace_processor_shell not found: install Perfetto's "
+      "trace processor to run the import_* tests, which are skipped without it")
+  endif()
+  add_test(NAME import_demo_threads COMMAND ${PYTHON3}
+    ${PROJECT_SOURCE_DIR}/tools/import_trace.py --min-threads 2
+    demo_threads.pftrace WORKING_DIRECTORY ${PFTRACE_RUN_DIR})
+  set_tests_properties(import_demo_threads PROPERTIES
+    FIXTURES_REQUIRED demo_traces SKIP_RETURN_CODE 77)
+  add_test(NAME import_stress_continuous COMMAND ${PYTHON3}
+    ${PROJECT_SOURCE_DIR}/tools/import_trace.py --min-threads 4
+    stress_continuous.pftrace WORKING_DIRECTORY ${PFTRACE_RUN_DIR})
+  set_tests_properties(import_stress_continuous PROPERTIES
+    FIXTURES_REQUIRED stress_traces SKIP_RETURN_CODE 77)
 else()
   message(STATUS "perfetto Python package not found: verify_trace tests not added")
 endif()

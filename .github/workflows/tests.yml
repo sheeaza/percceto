@@ -87,6 +87,19 @@ jobs:
           "$RUNNER_TEMP/venv/bin/python" -c "import perfetto"
           echo "$RUNNER_TEMP/venv/bin" >> "$GITHUB_PATH"
 
+      - name: Install trace_processor_shell for the import checks
+        # tools/CMakeLists.txt runs the import_* tests through
+        # trace_processor_shell, Perfetto's trace importer, which reports
+        # packets it drops that a schema check cannot see. Without it on PATH
+        # those tests skip, so it is installed here and run once, so a broken
+        # install fails the job rather than the tests being quietly skipped.
+        # The perfetto package pins a version for each arch and verifies its
+        # SHA-256 on download. Like perfetto, this must run before Configure.
+        run: |
+          tp=$("$RUNNER_TEMP/venv/bin/python" -c "from perfetto.prebuilts.manifests.trace_processor_shell import TRACE_PROCESSOR_SHELL_MANIFEST as m; from perfetto.prebuilts.perfetto_prebuilts import get_perfetto_prebuilt; print(get_perfetto_prebuilt(m))")
+          ln -s "$tp" "$RUNNER_TEMP/venv/bin/trace_processor_shell"
+          "$RUNNER_TEMP/venv/bin/trace_processor_shell" --version
+
       - name: Configure
         # Warnings are errors by default (-Werror in the root CMakeLists.txt),
         # so nothing is passed here to set that.
