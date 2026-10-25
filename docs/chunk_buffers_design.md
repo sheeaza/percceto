@@ -106,6 +106,11 @@ Rotate takes the pool lock:
      overwritten, which snapshot mode does by design, so nothing is counted as
      dropped.
 
+A writer left with no chunk tries to rotate on each event. In continuous mode
+it first reads the free count, kept beside the free list, without the lock. If
+the count is 0, it drops the event and does not take the lock, so starved
+producers do not queue on the lock the drain needs to free chunks.
+
 ## Drain
 
 - Continuous: under the lock, detach the committed FIFO. Unlock, write it in
@@ -189,7 +194,8 @@ address reused while the cache points at it. This needs no registry.
 - `events` counts records emitted into chunks, per writer, including records
   that a snapshot later overwrites. It matches the old ring's meaning.
 - `dropped` counts events lost to a full pool, and events from threads past
-  `max_threads`.
+  `max_threads`. Each writer counts its own drops, as it does `events`, and
+  stats sums them with the trace's count for threads that have no writer.
 
 ## Removed
 

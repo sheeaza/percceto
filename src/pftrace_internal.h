@@ -162,6 +162,9 @@ struct pf_writer {
     /* Records this writer has emitted into its chunks, including any that a
      * snapshot later overwrites. Written only by the owner, read by stats. */
     _Atomic uint64_t events;
+    /* Events this writer lost: no chunk free in the pool, or a record larger
+     * than a chunk. Written only by the owner, read by stats, like @events. */
+    _Atomic uint64_t dropped;
     bool bound;
 };
 
@@ -251,6 +254,10 @@ struct pf_trace {
      * reaches this and rotates. */
     uint32_t chunk_payload;
     struct pf_chunk *free_list;
+    /* Chunks on free_list. Written under pool_lock, read without it, so a
+     * producer that has no chunk while the pool is empty drops its event
+     * without taking the lock. */
+    _Atomic uint32_t free_count;
     struct pf_chunk *committed_head;
     struct pf_chunk *committed_tail;
     uint32_t committed_count;
@@ -263,9 +270,9 @@ struct pf_trace {
     struct pf_writer *writers;
     pthread_mutex_t reg_lock;
 
-    /* Records lost to a full pool in continuous mode. Atomic because the
-     * producer that loses an event does not take pool_lock. */
-    _Atomic uint64_t dropped;
+    /* Events from overflow threads, those past max_threads. They have no
+     * writer, so their losses are counted here, apart from pf_writer.dropped. */
+    _Atomic uint64_t overflow_dropped;
     _Atomic uint64_t truncated;
 
     /* Serializes drains: a caller's pf_trace_dump() against the drain
@@ -396,6 +403,9 @@ void pf_unlink_partials_locked(struct pf_trace *t);
 
 /* Total records emitted by every writer. Takes reg_lock. */
 uint64_t pf_writers_events(struct pf_trace *t);
+/* Total records lost by every writer. Overflow threads' losses are not
+ * included; they are in pf_trace.overflow_dropped. Takes reg_lock. */
+uint64_t pf_writers_dropped(struct pf_trace *t);
 
 /* Wakes the drain thread once committed chunks pass the watermark. Defined
  * in pftrace.c. Continuous mode only. */
@@ -434,6 +444,14 @@ static inline struct pf_writer *pf_writer_for(struct pf_trace *t)
     if (s->trace == t)
         return s->writer;
     return pf_writer_bind(t);
+}
+
+/* Counts one event @w lost. Only the owner writes the counter, so a relaxed
+ * load and store suffice. */
+static inline void pf_writer_drop(struct pf_writer *w)
+{
+    atomic_store_explicit(&w->dropped, atomic_load_explicit(&w->dropped, memory_order_relaxed) + 1,
+                          memory_order_relaxed);
 }
 
 /* --- Walking committed chunks ------------------------------------------

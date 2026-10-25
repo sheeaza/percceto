@@ -157,6 +157,7 @@ int pf_pool_init(struct pf_trace *t)
         c->next = t->free_list;
         t->free_list = c;
     }
+    atomic_init(&t->free_count, (uint32_t)count);
 
     t->chunk_bytes = chunk_bytes;
     t->chunk_count = (uint32_t)count;
@@ -257,16 +258,30 @@ static struct pf_chunk *steal_oldest_locked(struct pf_trace *t)
 
 bool pf_writer_rotate(struct pf_trace *t, struct pf_writer *w)
 {
+    /* A writer with no chunk while the pool is empty has nothing to commit and
+     * nothing to take, so it drops without the lock. Otherwise every event of
+     * every starved producer would take pool_lock, and slow the drain that is
+     * freeing chunks. The count may be stale; the cost is one more drop. */
+    if (!w->cur && t->cfg.mode == PF_MODE_CONTINUOUS &&
+        atomic_load_explicit(&t->free_count, memory_order_relaxed) == 0) {
+        pf_writer_drop(w);
+        return false;
+    }
+
     pthread_mutex_lock(&t->pool_lock);
 
     if (w->cur)
         commit_locked(t, w);
 
     struct pf_chunk *c = t->free_list;
-    if (c)
+    if (c) {
         t->free_list = c->next;
-    else if (t->cfg.mode == PF_MODE_SNAPSHOT)
+        atomic_store_explicit(&t->free_count,
+                              atomic_load_explicit(&t->free_count, memory_order_relaxed) - 1,
+                              memory_order_relaxed);
+    } else if (t->cfg.mode == PF_MODE_SNAPSHOT) {
         c = steal_oldest_locked(t);
+    }
 
     if (c) {
         c->next = NULL;
@@ -285,7 +300,7 @@ bool pf_writer_rotate(struct pf_trace *t, struct pf_writer *w)
     if (over_watermark)
         pf_drain_wake(t);
     if (!c)
-        atomic_fetch_add_explicit(&t->dropped, 1, memory_order_relaxed);
+        pf_writer_drop(w);
     return c != NULL;
 }
 
@@ -295,6 +310,16 @@ uint64_t pf_writers_events(struct pf_trace *t)
     pthread_mutex_lock(&t->reg_lock);
     for (uint32_t i = 0; i < t->cfg.max_threads; i++)
         total += atomic_load_explicit(&t->writers[i].events, memory_order_relaxed);
+    pthread_mutex_unlock(&t->reg_lock);
+    return total;
+}
+
+uint64_t pf_writers_dropped(struct pf_trace *t)
+{
+    uint64_t total = 0;
+    pthread_mutex_lock(&t->reg_lock);
+    for (uint32_t i = 0; i < t->cfg.max_threads; i++)
+        total += atomic_load_explicit(&t->writers[i].dropped, memory_order_relaxed);
     pthread_mutex_unlock(&t->reg_lock);
     return total;
 }
@@ -361,11 +386,16 @@ void pf_chunks_release(struct pf_trace *t, struct pf_chunk *head)
         return;
 
     pthread_mutex_lock(&t->pool_lock);
+    uint32_t n = 0;
     while (head) {
         struct pf_chunk *next = head->next;
         head->next = t->free_list;
         t->free_list = head;
         head = next;
+        n++;
     }
+    atomic_store_explicit(&t->free_count,
+                          atomic_load_explicit(&t->free_count, memory_order_relaxed) + n,
+                          memory_order_relaxed);
     pthread_mutex_unlock(&t->pool_lock);
 }

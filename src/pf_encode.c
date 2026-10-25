@@ -454,7 +454,7 @@ void pf_pb_emit(struct pf_trace *t, struct pf_writer *w, uint64_t ts, uint32_t t
         size = pf_pb_size(&v);
         if (size > t->chunk_payload) {
             /* Too big for any chunk; a record is never split. */
-            atomic_fetch_add_explicit(&t->dropped, 1, memory_order_relaxed);
+            pf_writer_drop(w);
             return;
         }
         if (w->cur && w->used + size <= t->chunk_payload)

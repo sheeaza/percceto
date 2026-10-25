@@ -475,7 +475,7 @@ static void emit_event_args(struct pf_trace *t, uint32_t type, uint64_t track_uu
 
     struct pf_writer *w = pf_writer_for(t);
     if (!w) {
-        atomic_fetch_add_explicit(&t->dropped, 1, memory_order_relaxed);
+        atomic_fetch_add_explicit(&t->overflow_dropped, 1, memory_order_relaxed);
         return;
     }
     /* Protobuf records are encoded here, on the producer. */
@@ -507,7 +507,7 @@ static void emit_event_args(struct pf_trace *t, uint32_t type, uint64_t track_uu
      * Records are never split; see TODO item 3. A record larger than a whole
      * chunk payload cannot be stored at all, so it is dropped and counted. */
     if (rec_size > t->chunk_payload) {
-        atomic_fetch_add_explicit(&t->dropped, 1, memory_order_relaxed);
+        pf_writer_drop(w);
         return;
     }
     if (w->used + rec_size > t->chunk_payload && !pf_writer_rotate(t, w))
@@ -1164,7 +1164,8 @@ void pf_trace_stats(const struct pf_trace *t, struct pf_stats *out)
      * does not modify the trace in any observable way. */
     struct pf_trace *m = (struct pf_trace *)t;
     out->events = pf_writers_events(m);
-    out->dropped = atomic_load_explicit(&m->dropped, memory_order_relaxed);
+    out->dropped =
+        pf_writers_dropped(m) + atomic_load_explicit(&m->overflow_dropped, memory_order_relaxed);
     out->truncated = atomic_load_explicit(&m->truncated, memory_order_relaxed);
     out->bytes_written = atomic_load_explicit(&m->bytes_written, memory_order_relaxed);
     out->files = atomic_load_explicit(&m->files, memory_order_relaxed);
