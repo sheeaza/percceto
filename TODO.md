@@ -818,6 +818,19 @@ of a 256-byte stack buffer.
 Built into a shared object, `pf_tls` becomes a `__tls_get_addr` call. Set
 `-ftls-model=initial-exec` on the library.
 
+## 23. Counter values on a track that is not a counter track
+
+`pf_counter_set_int` and `pf_counter_set_double` take any track uuid. Perfetto
+accepts a counter value only on a counter track, and drops the rest with
+`track_event_counter_invalid_track_uuid`. `tests/test_stress.c` set counters
+on thread tracks, and every one of those values was lost on import (found by
+the `import_*` tests).
+
+Options: reject the call, or drop the event and count it. Either needs the
+track's kind on the hot path, which today reads only the uuid. The track
+table is behind `track_lock`, so the check would need a lock-free lookup, for
+example a kind bit encoded in the uuid. Not decided.
+
 ## Notes
 
 - Continuous mode has no timer flush. A thread's partial chunk is written when
