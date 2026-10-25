@@ -45,7 +45,9 @@
 
 #define MAX_TRACKS 4096
 #define MAX_IIDS 65536
-#define MAX_SEQS 64 /* trusted_packet_sequence_id values the writer can emit */
+/* trusted_packet_sequence_id values the writer can emit: 1 for the drain, and
+ * id + 2 for each of the default 256 writers. */
+#define MAX_SEQS 260
 
 static int failures;
 

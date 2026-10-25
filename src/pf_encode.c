@@ -32,6 +32,9 @@ struct pb_event {
     clockid_t clk; /* trace clock, named on the packet's timestamp */
     uint64_t ts;
     uint32_t seq_id; /* trusted_packet_sequence_id: the writer's sequence */
+    /* sequence_flags. The first packet of a chunk also clears the sequence's
+     * incremental state, since the chunk defines every name it uses. */
+    uint32_t seq_flags;
     uint32_t type; /* TYPE_* */
     uint64_t track; /* track_uuid */
 
@@ -245,7 +248,7 @@ static void enc_packet_body(struct enc *e, const struct pb_event *v)
     e_vfield(e, FN_PACKET_TIMESTAMP, v->ts);
     e_vfield(e, FN_PACKET_TIMESTAMP_CLOCK_ID, builtin_clock(v->clk));
     e_vfield(e, FN_PACKET_TRUSTED_SEQ_ID, v->seq_id);
-    e_vfield(e, FN_PACKET_SEQUENCE_FLAGS, SEQ_NEEDS_INCREMENTAL_STATE);
+    e_vfield(e, FN_PACKET_SEQUENCE_FLAGS, v->seq_flags);
     if (v->intern_len) {
         e_tag(e, FN_PACKET_INTERNED_DATA, 2);
         e_varint(e, v->intern_len);
@@ -285,7 +288,7 @@ static size_t pf_pb_size(struct pb_event *v)
     v->body_len = vfield_len(FN_PACKET_TIMESTAMP, v->ts) +
                   vfield_len(FN_PACKET_TIMESTAMP_CLOCK_ID, builtin_clock(v->clk)) +
                   vfield_len(FN_PACKET_TRUSTED_SEQ_ID, v->seq_id) +
-                  vfield_len(FN_PACKET_SEQUENCE_FLAGS, SEQ_NEEDS_INCREMENTAL_STATE) +
+                  vfield_len(FN_PACKET_SEQUENCE_FLAGS, v->seq_flags) +
                   (intern ? msg_len(FN_PACKET_INTERNED_DATA, intern) : 0) +
                   msg_len(FN_PACKET_TRACK_EVENT, v->event_len);
     return msg_len(FN_TRACE_PACKET, v->body_len);
@@ -428,7 +431,14 @@ void pf_pb_emit(struct pf_trace *t, struct pf_writer *w, uint64_t ts, uint32_t t
     for (;;) {
         v.clk = t->cfg.clock_id;
         v.ts = ts;
-        v.seq_id = w->id + 1;
+        /* Sequence 1 is the drain's, for the track descriptors and the clock
+         * snapshot. Writer i owns sequence i + 2. */
+        v.seq_id = w->id + 2;
+        /* After a rotation w->cur is a fresh chunk and w->used is 0. A writer
+         * with no chunk has w->used at the payload, and its first try only
+         * rotates, so the flag is set on the try that is encoded. */
+        v.seq_flags = SEQ_NEEDS_INCREMENTAL_STATE |
+                      (w->used == 0 ? SEQ_INCREMENTAL_STATE_CLEARED : 0u);
         v.type = type;
         v.track = track;
         v.has_value = has_value;

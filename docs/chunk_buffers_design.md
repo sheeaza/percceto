@@ -72,11 +72,16 @@ encode. Each event is one `Trace.packet`, encoded in one pass into the chunk. Th
 length of each submessage is computed from its fields before the packet is
 written, so every byte is written once.
 
-Interned names are per writer. A writer owns trusted sequence `id + 1`, and its
-slot `i` is interned as iid `i + 1` in that sequence. The writer's cache holds 32
+Interned names are per writer. A writer owns trusted sequence `id + 2`, and its
+slot `i` is interned as iid `i + 1` in that sequence. Sequence 1 is the drain's,
+so no writer shares it. The writer's cache holds 32
 names, each stamped with the epoch of the chunk its definition went into. A
 rotation advances the epoch, so a name used in a new chunk is defined again there.
-Each chunk is therefore self-contained.
+Each chunk is therefore self-contained, and says so: its first packet carries
+`SEQ_INCREMENTAL_STATE_CLEARED`. Perfetto skips a packet that needs incremental
+state on a sequence that was never cleared, so without the flag it drops every
+event of a writer whose sequence the drain does not also clear. Each chunk is
+also a point the reader can resume from after a lost chunk.
 
 A record that does not fit the rest of its chunk moves to the next chunk; it is
 never split. A record larger than a whole chunk is dropped and counted.
