@@ -874,7 +874,7 @@ it, from the compiler's changed code for `pf_pb_emit`. Not traced further. The p
 shift, `(ptr >> 4) & 31`, ran more instructions than the multiplicative hash on
 every workload (realistic 128.7M), since nearby literals collide.
 
-## 20. Dynamic names are copied twice
+## ~~20. Dynamic names are copied twice~~ (done: one copy)
 
 `pf_pb_emit` copies a dynamic name into `fit[]`, then `e_sfield` copies it into
 the chunk. Write from the source directly, with the `...` cut applied in
@@ -904,9 +904,12 @@ the name.
 The `_fmt` buffer is now `PF_DYN_NAME_MAX + 2` bytes, not 256: the cap, one
 byte so that a longer name still reads as too long, and the NUL.
 
-Not done: `vsnprintf` into the chunk. The record's size, and so whether the
-chunk must rotate, depends on the formatted length, so the formatter would
-need a reservation it can give back, on both formats.
+`vsnprintf` into the chunk is not done, by choice. Formatting is the caller's
+cost, not the trace's: the name is formatted before the event's timestamp is
+read, so the slice does not include it. Moving it into the chunk would put it
+after the timestamp and inside the slice, and the record's size, and so
+whether the chunk must rotate, would depend on the formatted length on both
+formats.
 
 ## 21. Drain writes chunks without a copy
 
