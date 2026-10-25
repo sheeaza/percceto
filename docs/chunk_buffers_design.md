@@ -8,7 +8,8 @@ sorts by timestamp on import.
 ## Layout
 
     trace
-     ├─ pool         one allocation at open: buffer_bytes / chunk_bytes chunks
+     ├─ pool         one mapping at open: buffer_bytes / chunk_bytes chunks,
+     │               populated at open so producers take no page faults
      ├─ free list    chunks nobody holds
      ├─ committed    FIFO of full chunks, in commit order
      ├─ writers[]    max_threads slots, bound on a thread's first emit

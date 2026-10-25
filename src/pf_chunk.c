@@ -8,6 +8,8 @@
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
+#include <unistd.h>
 
 #include "pftrace_internal.h"
 
@@ -122,14 +124,24 @@ int pf_pool_init(struct pf_trace *t)
         return -1;
     }
 
-    /* chunk_bytes is a multiple of 64, so the pool is too, as aligned_alloc
-     * requires. Zeroed by hand, as for the writers. */
-    t->pool_mem = aligned_alloc(64, count * chunk_bytes);
-    if (!t->pool_mem) {
+    /* mmap, not malloc and memset: the kernel hands the pages over zeroed, so
+     * there is no pass to clear them. MADV_POPULATE_WRITE maps them now, so no
+     * producer takes a page fault on its first use of a chunk. Kernels before
+     * 5.14 lack it, and touch each page instead. A mapping is page aligned, so
+     * every chunk starts on a cache line. */
+    size_t pool_bytes = count * chunk_bytes;
+    t->pool_mem =
+        mmap(NULL, pool_bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (t->pool_mem == MAP_FAILED) {
+        t->pool_mem = NULL;
         errno = ENOMEM;
         return -1;
     }
-    memset(t->pool_mem, 0, count * chunk_bytes);
+    if (madvise(t->pool_mem, pool_bytes, MADV_POPULATE_WRITE) != 0) {
+        long page = sysconf(_SC_PAGESIZE);
+        for (size_t off = 0; off < pool_bytes; off += (size_t)page)
+            ((volatile char *)t->pool_mem)[off] = 0;
+    }
 
     /* aligned_alloc, not calloc: the writers need a cache-line boundary, and
      * sizeof is a multiple of 64, as aligned_alloc requires. Zeroed by hand. */
@@ -157,7 +169,7 @@ int pf_pool_init(struct pf_trace *t)
     return 0;
 
 free_pool:
-    free(t->pool_mem);
+    munmap(t->pool_mem, pool_bytes);
     t->pool_mem = NULL;
     errno = ENOMEM;
     return -1;
@@ -168,7 +180,7 @@ void pf_pool_destroy(struct pf_trace *t)
     pthread_mutex_destroy(&t->reg_lock);
     pthread_mutex_destroy(&t->pool_lock);
     free(t->writers);
-    free(t->pool_mem);
+    munmap(t->pool_mem, (size_t)t->chunk_count * t->chunk_bytes);
     t->writers = NULL;
     t->pool_mem = NULL;
 }
