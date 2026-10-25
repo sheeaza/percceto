@@ -85,8 +85,10 @@ enum workload {
 static const char *const kLabels[] = { "simple", "realistic", "formatted", "manual", "args" };
 static int want_raw; /* set by "raw" on the command line */
 
+/* One line per worker: each thread adds to @events on every iteration, so
+ * workers packed together would share lines and slow each other down. */
 struct worker {
-    struct pf_trace *t;
+    _Alignas(64) struct pf_trace *t;
     uint64_t trk;
     uint64_t pairs;
     enum workload load;
