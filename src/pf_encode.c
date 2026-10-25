@@ -423,14 +423,34 @@ static size_t pf_pb_encode(uint8_t *dst, const struct pb_event *v)
  * slot holding it in an older epoch is redefined here. A new name takes the
  * first slot whose definition is from an older epoch, since a slot defined in
  * this chunk may already be named by a record above it. Slots in @taken are
- * already claimed by this event and are skipped. */
+ * already claimed by this event and are skipped.
+ *
+ * Each name has a home slot, from a hash of its address, and a hit there costs
+ * one compare. A name takes its home slot when that slot is stale, so after
+ * the first use it is found there. On a conflict the whole table is scanned,
+ * and a name is never held in two slots. */
+static unsigned pf_pb_home(const char *name)
+{
+    /* Multiplicative: literals sit close together in .rodata, so the low
+     * address bits alone would put neighbours in the same slot. */
+    return (unsigned)(((uint64_t)(uintptr_t)name * 0x9E3779B97F4A7C15ull) >> 59);
+}
+
+_Static_assert(PF_PB_INTERN_SLOTS == 32, "pf_pb_home takes 5 bits");
+
 /* Looks up @name in @tab. Returns its slot, or -1 when the table has no slot
  * free for it. Sets *define when the name's definition must go into the
  * current chunk. Read-only, so nothing changes until the record is placed. */
 static int pf_pb_lookup(const struct pb_intern_slot *tab, uint32_t epoch, uint32_t taken,
                         const char *name, bool *define)
 {
-    int stale = -1;
+    int home = (int)pf_pb_home(name);
+    bool home_free = !(taken & (1u << home));
+    if (home_free && tab[home].key == name) {
+        *define = tab[home].epoch != epoch;
+        return home;
+    }
+    int stale = home_free && tab[home].epoch != epoch ? home : -1;
     for (int i = 0; i < PF_PB_INTERN_SLOTS; i++) {
         if (taken & (1u << i))
             continue;

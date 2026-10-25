@@ -833,7 +833,12 @@ fixed except for the `ts`, `track` and `iid` varints, so a dedicated encoder
 can skip `pf_pb_size` and the `struct pb_event` setup. Write varints a word at
 a time rather than a byte at a time.
 
-## 19. Intern lookup
+## ~~19. Intern lookup~~ (done: pointer hash)
+
+Done with the hash below. The call-site hint is not done: it needs a hint
+argument on every begin and instant entry point, so it changes the API, and
+writers keep a name in different slots, so a shared hint would bounce between
+threads anyway.
 
 `pf_pb_lookup` scans all 32 slots and tests the `taken` mask on each, even when
 the first slot hits.
@@ -843,6 +848,31 @@ the first slot hits.
 - Or keep a `static` slot hint per call site in the `pf_slice_begin` macro. The
   hint is verified, so it is safe. Write it only on a miss, so the line does
   not bounce between threads.
+
+Tried the hash: each name has a home slot, from a multiplicative hash of its
+address (top 5 bits). A hit there is one compare. A new name takes its home
+slot when that slot is stale, and anything else falls back to the full scan,
+so a name is never held in two slots. Event names and argument keys both use
+it. All 48 ctest tests pass.
+
+`bench_side` Release, clang 21.1.8, one thread, producer ns/event, ten
+interleaved runs, mean [min-max]; instructions from callgrind, 100k events:
+
+| workload | HEAD | hash | instructions, HEAD | instructions, hash |
+|---|---|---|---:|---:|
+| simple | 18.5 [17.8-19.1] | 17.4 [17.1-18.0] | 82.4M | 85.1M |
+| realistic | 27.6 [26.9-28.1] | 27.4 [26.7-28.7] | 124.5M | 121.0M |
+| args | 28.7 [27.8-29.9] | 27.3 [26.7-27.6] | 115.6M | 120.0M |
+
+Time falls about 1 to 1.5 ns on simple and args, where the scan hit slot 0
+(simple has one name, args one name and two keys). Realistic, with 16 names
+that the old scan found at slots 0 to 15, changes within noise, even though it
+runs 2.8% fewer instructions. On simple and args the hash runs 3 to 4% more
+instructions but less time. The lookup's own lines run fewer instructions in
+the annotated profile; the extra ones are spread over the encode lines around
+it, from the compiler's changed code for `pf_pb_emit`. Not traced further. The plain
+shift, `(ptr >> 4) & 31`, ran more instructions than the multiplicative hash on
+every workload (realistic 128.7M), since nearby literals collide.
 
 ## 20. Dynamic names are copied twice
 
