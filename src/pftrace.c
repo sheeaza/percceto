@@ -587,9 +587,9 @@ void pf_slice_begin_dyn_impl(struct pf_trace *t, uint64_t track_uuid, const char
     emit_event(t, TYPE_SLICE_BEGIN, track_uuid, name, true, false, 0, false);
 }
 
-/* Longest name the formatter writes. A result longer than this is cut by the
- * dynamic path, which ends it in "..." like any long name. */
-#define FMT_NAME_BYTES 256
+/* The formatter's buffer: PF_DYN_NAME_MAX bytes, one more so that a name too
+ * long for the cap still reads as too long and is cut with "...", and the NUL. */
+#define FMT_NAME_BYTES (PF_DYN_NAME_MAX + 2)
 
 /* Formats @fmt into @buf and returns @buf. A failed format leaves an empty name. */
 static const char *format_name(char *buf, size_t size, const char *fmt, va_list ap)

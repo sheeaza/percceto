@@ -63,6 +63,9 @@ struct pb_event {
     uint64_t iid;
     const char *name;
     size_t nlen;
+    /* A dynamic name longer than PF_DYN_NAME_MAX: @nlen is the cap, and the
+     * encoder writes "..." over its last three bytes. */
+    bool cut;
 
     bool has_value; /* counters: the value replaces the name */
     bool value_is_double;
@@ -111,6 +114,16 @@ static void e_sfield(struct enc *e, uint32_t field, const char *s, size_t n)
     e_tag(e, field, 2);
     e_varint(e, n);
     memcpy(e->base + e->pos, s, n);
+    e->pos += n;
+}
+
+/* A string field whose last three bytes become "..." when @cut, so a long
+ * dynamic name is cut as it is written, without a copy of its own. */
+static void e_name_sfield(struct enc *e, uint32_t field, const char *s, size_t n, bool cut)
+{
+    e_tag(e, field, 2);
+    e_varint(e, n);
+    pf_dyn_name_copy((char *)e->base + e->pos, s, n, cut);
     e->pos += n;
 }
 
@@ -248,7 +261,7 @@ static void enc_event_body(struct enc *e, const struct pb_event *v)
     if (v->use_iid)
         e_vfield(e, FN_EVENT_NAME_IID, v->iid);
     else if (v->nlen)
-        e_sfield(e, FN_EVENT_NAME_STR, v->name, v->nlen);
+        e_name_sfield(e, FN_EVENT_NAME_STR, v->name, v->nlen, v->cut);
     if (v->has_value) {
         if (v->value_is_double)
             e_fixed64(e, FN_EVENT_DOUBLE_COUNTER_VALUE, v->value);
@@ -528,16 +541,13 @@ void pf_pb_emit(struct pf_trace *t, struct pf_writer *w, uint64_t ts, uint32_t t
 {
     /* A dynamic name is built by the caller, so it differs per event. It is
      * sent inline and never interned: a pointer key would name the wrong
-     * string once the caller reuses its buffer. */
+     * string once the caller reuses its buffer. It is written into the chunk
+     * from the caller's buffer, and cut there when it is long. */
     const char *shown = has_value ? NULL : name;
     size_t nlen = 0;
-    char fit[PF_DYN_NAME_MAX + 1];
+    bool cut = false;
     if (dynamic && shown) {
-        bool cut = false;
         nlen = pf_dyn_name_fit(shown, &cut);
-        pf_dyn_name_copy(fit, shown, nlen, cut);
-        fit[nlen] = '\0';
-        shown = fit;
         if (cut)
             atomic_fetch_add_explicit(&t->truncated, 1, memory_order_relaxed);
     }
@@ -617,6 +627,7 @@ void pf_pb_emit(struct pf_trace *t, struct pf_writer *w, uint64_t ts, uint32_t t
         v.iid = (uint64_t)slot + 1;
         v.name = shown;
         v.nlen = nlen;
+        v.cut = cut;
         if (nargs)
             pf_pb_resolve_keys(w, &v, &ax);
 

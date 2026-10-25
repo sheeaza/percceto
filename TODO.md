@@ -881,6 +881,33 @@ the chunk. Write from the source directly, with the `...` cut applied in
 place. The `_fmt` path could also `vsnprintf` into reserved chunk space instead
 of a 256-byte stack buffer.
 
+The first part is done: `pf_pb_emit` keeps the caller's pointer and the cut
+flag, and `e_name_sfield` writes the name into the chunk with the `...` applied
+there. `test_long_names` now checks a cut dynamic name on the protobuf path,
+which no test did before. All 48 ctest tests pass.
+
+`bench_side` Release, clang, one thread, producer ns/event, ten interleaved
+runs, mean [min-max]:
+
+| workload | HEAD | one copy |
+|---|---|---|
+| simple | 17.8 [17.0-18.3] | 18.0 [17.5-18.6] |
+| realistic | 27.2 [26.6-28.2] | 27.9 [27.0-28.4] |
+| formatted | 33.9 [32.8-35.5] | 32.7 [31.8-33.3] |
+| manual | 33.6 [32.7-34.2] | 33.0 [32.2-33.6] |
+| args | 26.5 [25.0-30.7] | 27.3 [26.3-27.9] |
+
+The two dynamic workloads drop 0.6 to 1.2 ns; the rest is within noise. Their
+names are 5 to 7 bytes, so the copy saved is small, and the saving grows with
+the name.
+
+The `_fmt` buffer is now `PF_DYN_NAME_MAX + 2` bytes, not 256: the cap, one
+byte so that a longer name still reads as too long, and the NUL.
+
+Not done: `vsnprintf` into the chunk. The record's size, and so whether the
+chunk must rotate, depends on the formatted length, so the formatter would
+need a reservation it can give back, on both formats.
+
 ## 21. Drain writes chunks without a copy
 
 `pb_drain_locked` copies every chunk into `t->out` before `write()`. A

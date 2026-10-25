@@ -350,12 +350,23 @@ static void test_long_names(void)
         pf_slice_begin(t, track, LONG_NAME);
         pf_slice_end(t, track);
     }
+    /* The same name built at run time takes the dynamic path, and is cut to
+     * 128 bytes ending in "..." as it is written. */
+    static char built[sizeof(LONG_NAME)];
+    memcpy(built, LONG_NAME, sizeof(built));
+    pf_slice_begin_dyn_impl(t, track, built);
+    pf_slice_end(t, track);
+    /* Formatted, it is cut the same way: the formatter's buffer keeps one
+     * byte past the cap, so the name still reads as too long. */
+    pf_slice_begin(t, track, "%s", built);
+    pf_slice_end(t, track);
     char leaf[512] = "";
     CHECK(pf_trace_dump(t, "names", leaf, sizeof(leaf)) == 0, "dump");
 
     struct pf_stats s;
     pf_trace_stats(t, &s);
-    CHECK(s.events == 100, "50 begin/end pairs published, got %" PRIu64, s.events);
+    CHECK(s.events == 104, "52 begin/end pairs published, got %" PRIu64, s.events);
+    CHECK(s.truncated == 2, "the built names were cut twice, got %" PRIu64, s.truncated);
 
     pf_trace_close(t);
 
@@ -373,6 +384,15 @@ static void test_long_names(void)
         fclose(f);
         CHECK(memmem(buf, n, LONG_NAME, want) != NULL, "the full %zu-byte name reached the file",
               want);
+        /* The cut name, behind its length prefix: 128 as a varint. Both built
+         * names are cut to these bytes. */
+        char cut[2 + 128];
+        cut[0] = (char)0x80;
+        cut[1] = 0x01;
+        memset(cut + 2, 'x', 125);
+        memcpy(cut + 2 + 125, "...", 3);
+        CHECK(memmem(buf, n, cut, sizeof(cut)) != NULL,
+              "the dynamic name reached the file cut to 128 bytes ending in \"...\"");
     }
     /* tools/CMakeLists.txt reads this trace by its fixed name. */
     CHECK(rename(file, PF_TRACE_PREFIX "stress_names.pftrace") == 0,
