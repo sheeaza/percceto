@@ -95,6 +95,10 @@ target_link_libraries(bench_chunk PRIVATE pftrace Threads::Threads)
 add_executable(bench_side bench_side.c)
 target_link_libraries(bench_side PRIVATE pftrace Threads::Threads)
 
+# Producer cost per event kind, protobuf and raw.
+add_executable(bench_emit bench_emit.c)
+target_link_libraries(bench_emit PRIVATE pftrace Threads::Threads)
+
 # Prototype for TODO item 3: protobuf encoding cost on the producer.
 add_executable(bench_encode bench_encode.c)
 target_link_libraries(bench_encode PRIVATE pftrace)
