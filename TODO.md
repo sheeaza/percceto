@@ -591,6 +591,9 @@ get harder to read and the measured gain is not there.
 Decision: the change to make is `always_inline` on `emit_event_args`. Keep the
 three bools. Not yet applied to `src/pftrace.c`.
 
+Withdrawn: with clang 21.1.8 the same change is about 1.3 ns slower at one
+thread. See item 15, cancelled.
+
 ## Performance review
 
 Candidates from a read of the hot path, not yet measured. They are in the
@@ -711,15 +714,45 @@ in place of the `madvise` was about 1 ns slower at 1 thread, not explained.
 
 All 43 ctest tests pass, including the TSan and ASan builds.
 
-## 15. Fewer call layers on the hot path
+## ~~15. Fewer call layers on the hot path~~ (cancelled)
 
-A static begin goes `pf_slice_begin_impl` → `emit_event_args` (out of line) →
-`pf_pb_emit` (another translation unit, 12 parameters).
+~~A static begin goes `pf_slice_begin_impl` → `emit_event_args` (out of line) →
+`pf_pb_emit` (another translation unit, 12 parameters).~~
 
-- Apply the `always_inline` decision above.
-- Turn on LTO (`CMAKE_INTERPROCEDURAL_OPTIMIZATION`), or move `pf_pb_emit`
-  into the same unit, so the format branch and the encoder inline together.
-- Choose the format at open instead of branching on `cfg.format` per event.
+~~- Apply the `always_inline` decision above.~~
+~~- Turn on LTO (`CMAKE_INTERPROCEDURAL_OPTIMIZATION`), or move `pf_pb_emit`
+  into the same unit, so the format branch and the encoder inline together.~~
+~~- Choose the format at open instead of branching on `cfg.format` per event.~~
+
+Cancelled after measuring with clang 21.1.8. `bench_side`, scratch builds,
+4096 slots, producer ns/event, interleaved runs, instructions from callgrind:
+
+| variant | instructions, simple | simple, 1 thread | args, 1 thread |
+|---|---:|---:|---:|
+| HEAD | 1.747G | 19.5 | 33.2 |
+| `always_inline` on `emit_event_args` | 1.723G | 20.9 | 33.1 |
+| that, with `pftrace.c` and `pf_encode.c` in one unit | 1.723G | 19.4 | 32.4 |
+| that, with `pf_pb_emit` forced inline | 1.575G | 19.0 | 31.7 |
+
+- `always_inline` alone is about 1.3 ns slower at 1 thread, steady over 16
+  runs, though it runs 1.4% fewer instructions. Clang keeps `emit_event` out
+  of line, shared by every caller, so one call layer goes and code placement
+  costs more than that saves. The decision in "Emit path: argument count" was
+  from gcc and does not hold for clang.
+- One unit is not enough: clang does not inline `pf_pb_emit` on its own, so
+  LTO alone would not help. Not tested with LTO itself, since the build
+  environment has no lld.
+- Moving the emit path into `pf_encode.c` with `pf_pb_emit` forced inline gave
+  protobuf about 2.5 to 3 ns at 1 thread (simple 19.5 to 17.1, realistic 29.3
+  to 26.3, args 33.0 to 30.1) and 4 threads simple 25.1 to 19.6. Raw got
+  slower, 8.4 to 9.3 ns, and up 4% in instructions: the shared function now
+  carries the encoder's register saves and stack frame. Moving raw into its
+  own out-of-line function raised raw instructions another 14%, from the
+  12-argument call. Not worth the restructuring for a gain on one format and
+  a loss on the other.
+- Choosing the format at open was not tried. The check is one load from the
+  line `pf_writer_for` already reads and a branch that never changes for a
+  trace, so the expected gain is under 1 ns.
 
 ## 16. Timestamp source
 
