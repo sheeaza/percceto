@@ -591,6 +591,200 @@ get harder to read and the measured gain is not there.
 Decision: the change to make is `always_inline` on `emit_event_args`. Keep the
 three bools. Not yet applied to `src/pftrace.c`.
 
+## Performance review
+
+Candidates from a read of the hot path, not yet measured. They are in the
+order to try them: the cheap ones that target the per-thread cost growth come
+first.
+
+The per-thread producer cost grows with thread count, from about 17 ns at 1
+thread to about 45 ns at 8 on the simple workload. The single-thread encoder
+cannot explain that, so items 14 and 15 come first.
+
+## 14. Per-thread cost growth with thread count
+
+Find out why the cost per event rises with threads before changing the encoder.
+Profile `bench_side` at 1 and 8 threads with `perf stat` and `perf c2c`.
+
+- False sharing in `struct pf_trace`. The fields the hot path reads on every
+  event (`index`, `cfg.format`, `cfg.clock_id`, `chunk_payload`) share lines
+  with `free_list`, `committed_*`, `pool_lock`, `dropped` and `refs`, which
+  every rotation and drain cycle writes. Option: copy the read-only fields into
+  `pf_writer`, or put them on their own line.
+- Rotation takes the global `pool_lock`. Options: take a small batch of free
+  chunks per lock, or commit onto a lock-free list that the drain detaches
+  with one atomic exchange. Snapshot mode's steal of the oldest chunk makes the
+  lock-free form harder.
+- The bench itself. Both machines are Alder Lake with P and E cores, and the
+  i5 has 8 logical CPUs, so 8 producers plus the drain oversubscribe it. Pin
+  threads, and report per core type, to see how much of the growth is real.
+
+Profile, 2026-10-25: i5-12500H VMware guest, 8 vCPUs, no hardware counters
+(`perf stat` cycles are not supported), so only `cpu-clock` sampling. Scratch
+copy of `bench_side` in `/tmp`, one workload and thread count per run, simple
+workload, RelWithDebInfo library. Producer ns/event, three runs each.
+
+Most of the growth is in the bench. `struct worker w[MAX_THREADS]` is a packed
+array, and each thread adds to `w->events` on every iteration, so neighbouring
+workers share a line. Aligning `struct worker` to 64 bytes:
+
+| threads | bench as is | worker aligned to 64 |
+|---:|---|---|
+| 1 | 19.8, 20.6, 19.7 | 18.2, 18.2, 18.2 |
+| 4 | 41.7, 39.8, 40.7 | 19.8, 20.0, 27.7 |
+| 8 | 47.9, 50.9, 43.0 | 29.4, 27.2, 29.1 |
+
+With the bench fixed: 2 threads 18.8, 4 threads 19.5, 6 threads 25.4, 7 threads
+28.0, 8 threads 30.9. The 4- and 8-thread rows in the tables above include this
+false sharing.
+
+What is left past 4 threads is mostly the machine, not the library:
+
+- Snapshot mode, with no drain thread, gives about the same: 8 threads 24.7 to
+  32.2 at every pool size from 1 to 256 MiB.
+- A loop with no shared memory and no library calls slows down by about 1.3
+  times at 8 threads against 1 on this VM (0.73 to 0.84-1.03 ns per
+  iteration). The vCPUs share host cores.
+- In the normal case `pf_writer_rotate` and the mutex together take under 0.2%
+  of samples at 8 threads. A 4096-slot chunk holds about 5000 events, so the
+  pool lock is not contended. False sharing on `struct pf_trace` (the hot
+  `index`, `cfg` and `chunk_payload` share lines 0 to 2 with `refs`,
+  `free_list` and `pool_lock`) can only cost at rotation, so it is not worth
+  changing at this chunk size.
+
+Found on the drop path: once the pool is empty in continuous mode, every event
+takes `pool_lock`. A failed rotate leaves `w->cur` NULL, so the next event
+rotates again. At 8 threads with a 64 MiB pool, about 5% of events dropped,
+`__lll_lock_wake` and `__lll_lock_wait` take 38% of samples and the producer
+cost goes up to 54 to 56 ns (16 MiB: 71 to 81 ns). A producer that is already
+dropping slows down every other producer and the drain. Option: after a failed
+rotate, retry only every N events, or check a free-chunk count without the
+lock first.
+
+Also seen: `pf_trace_open` zeroes the whole pool by hand (`memset` after
+`aligned_alloc`). At the bench's 2 GiB that takes 97% of the process's
+samples at 1 thread and 524k page faults, all at open. The producer numbers do
+not include it, but a large `buffer_bytes` costs that much at startup and
+commits the whole buffer. `mmap` (already zeroed, page aligned) would make it
+lazy.
+
+Changes made from this profile:
+
+- `tests/bench_side.c`: `struct worker` is aligned to 64 bytes. `bench_chunk`
+  does not write its workers in the loop, so it does not need the change: its
+  8-thread rise (18.9 to 33.1 ns at 256 slots) matches the VM effect above.
+- Drop path: a writer with no chunk, in continuous mode, reads a free-chunk
+  count (`free_count`, updated under `pool_lock`) without the lock, and drops
+  without locking when it is 0. Drops are counted per writer
+  (`pf_writer.dropped`) and summed by stats, since a shared counter written by
+  every starved producer would be a new contended line. Overflow threads,
+  those past `max_threads`, have no writer; their losses are counted apart in
+  `pf_trace.overflow_dropped`. Stats adds the two.
+- Pool: `mmap` plus `MADV_POPULATE_WRITE` in place of `aligned_alloc` and
+  `memset`. Pages are mapped at open, so producers take no faults, and the
+  kernel zeroes them. Before 5.14 the `madvise` fails and each page is touched.
+
+Before and after, same session, interleaved runs, producer ns/event, 8 threads
+unless noted:
+
+| case | HEAD | this change |
+|---|---|---|
+| 64 MiB pool, about 5% dropped | 76.2 mean (57.0 to 131.9) | 33.6 mean (28.2 to 42.6) |
+| 16 MiB pool | 73.4 to 91.0 | 26.4 to 30.0 |
+| 2 GiB pool, no drops | 35.1 mean | 33.6 mean |
+| 1 thread, 2 GiB pool | 18.8 to 19.1 mean | 20.2 to 20.5 mean |
+| open + run, 1 thread, 2 GiB | 3.65 s wall | 0.51 s wall |
+
+Drops rise with the change: at 64 MiB, 1.5M to 2.8M before against 11M to
+20M after. Producers now drop at the speed of the fast path instead of
+waiting on the lock, so they emit more events in the time the drain frees
+chunks. Events kept per second of wall time are the same, 59 to 78 M/s before
+against 59 to 75 M/s after. The caller is no longer slowed down by a full
+pool, which is the purpose of a dropping mode; the count is what it costs.
+
+The 1-thread rise of about 1.5 ns is not from extra work. Callgrind counts
+1,864,355,901 instructions for HEAD against 1,864,358,465 for the drop change
+alone, a difference of 2,564. Built with `-falign-functions=64`, both are 19.8
+ns, so it is code placement. The `mmap` change alone, with
+`MADV_POPULATE_WRITE`, measured 18.9 against 18.7 for HEAD. `MAP_POPULATE`
+in place of the `madvise` was about 1 ns slower at 1 thread, not explained.
+
+All 43 ctest tests pass, including the TSan and ASan builds.
+
+## 15. Fewer call layers on the hot path
+
+A static begin goes `pf_slice_begin_impl` → `emit_event_args` (out of line) →
+`pf_pb_emit` (another translation unit, 12 parameters).
+
+- Apply the `always_inline` decision above.
+- Turn on LTO (`CMAKE_INTERPROCEDURAL_OPTIMIZATION`), or move `pf_pb_emit`
+  into the same unit, so the format branch and the encoder inline together.
+- Choose the format at open instead of branching on `cfg.format` per event.
+
+## 16. Timestamp source
+
+`now_ns()` calls `clock_gettime(CLOCK_BOOTTIME)` on every event. `bench_side`
+stubs it, so no table above includes it. A vDSO call costs about 15 to 25 ns
+on bare metal, the size of the whole encoder, and 4.4 us was measured on a VM
+(see "Emit path: argument count").
+
+Option: read the TSC (or `cntvct_el0` on ARM) and have the drain emit a
+`ClockSnapshot` that maps a custom clock id to BOOTTIME periodically. Perfetto
+converts on import. Needs an invariant TSC check at open and a fallback to
+`clock_gettime`.
+
+## 17. Smaller packets with incremental state
+
+Each packet repeats the full timestamp (8 to 9 bytes), the clock id,
+`sequence_flags` and `track_uuid`.
+
+- Incremental timestamps (`ClockSnapshot.Clock.is_incremental`) make the
+  timestamp a 1 to 3 byte delta.
+- `TracePacketDefaults` (`timestamp_clock_id`,
+  `track_event_defaults.track_uuid`) drops the clock id, and the track uuid
+  for events on the thread's own track.
+
+Expected: about 25 to 12-14 bytes per event, so about half the rotations and
+pool-lock trips, and about twice the events per snapshot window. Deltas chain
+packets within a sequence; that holds because records are never split, but
+the first packet of each chunk needs an absolute timestamp.
+
+## 18. Fast path for the common protobuf event
+
+A static name already defined in this chunk, no args, no value. Its size is
+fixed except for the `ts`, `track` and `iid` varints, so a dedicated encoder
+can skip `pf_pb_size` and the `struct pb_event` setup. Write varints a word at
+a time rather than a byte at a time.
+
+## 19. Intern lookup
+
+`pf_pb_lookup` scans all 32 slots and tests the `taken` mask on each, even when
+the first slot hits.
+
+- Index by pointer hash, `(ptr >> 4) & 31`, and fall back to the scan on a
+  conflict.
+- Or keep a `static` slot hint per call site in the `pf_slice_begin` macro. The
+  hint is verified, so it is safe. Write it only on a miss, so the line does
+  not bounce between threads.
+
+## 20. Dynamic names are copied twice
+
+`pf_pb_emit` copies a dynamic name into `fit[]`, then `e_sfield` copies it into
+the chunk. Write from the source directly, with the `...` cut applied in
+place. The `_fmt` path could also `vsnprintf` into reserved chunk space instead
+of a 256-byte stack buffer.
+
+## 21. Drain writes chunks without a copy
+
+`pb_drain_locked` copies every chunk into `t->out` before `write()`. A
+`writev` over the chunk list removes the copy. The drain's tail is already 1 to
+3 ns/event, so this mainly saves memory bandwidth. Low priority.
+
+## 22. TLS model
+
+Built into a shared object, `pf_tls` becomes a `__tls_get_addr` call. Set
+`-ftls-model=initial-exec` on the library.
+
 ## Notes
 
 - Continuous mode has no timer flush. A thread's partial chunk is written when
