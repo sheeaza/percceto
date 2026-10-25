@@ -52,6 +52,7 @@ static int failures;
 struct worker_arg {
     struct pf_trace *t;
     uint64_t track;
+    uint64_t counter; /* a counter track: Perfetto drops a value on any other */
     unsigned n;
 };
 
@@ -60,7 +61,7 @@ static void *worker_fn(void *p)
     struct worker_arg *a = p;
     for (unsigned i = 0; i < a->n; i++) {
         pf_slice_begin(a->t, a->track, "work");
-        pf_counter_set_int(a->t, a->track, i);
+        pf_counter_set_int(a->t, a->counter, i);
         pf_slice_end(a->t, a->track);
     }
     return NULL;
@@ -177,7 +178,10 @@ static void test_continuous_gapless(void)
         char name[16];
         snprintf(name, sizeof(name), "w%u", i);
         tracks[i] = pf_track_thread(t, 4322, (int32_t)(i + 1), name);
-        args[i] = (struct worker_arg){ .t = t, .track = tracks[i], .n = EVENTS / 4 };
+        snprintf(name, sizeof(name), "w%u.count", i);
+        uint64_t counter = pf_track_counter(t, tracks[i], name, PF_UNIT_UNSPECIFIED);
+        args[i] =
+            (struct worker_arg){ .t = t, .track = tracks[i], .counter = counter, .n = EVENTS / 4 };
         CHECK(pthread_create(&th[i], NULL, worker_fn, &args[i]) == 0, "spawn %u", i);
     }
     for (unsigned i = 0; i < 4; i++)
@@ -234,13 +238,14 @@ static void test_continuous_paced(void)
         return;
 
     uint64_t track = pf_track_thread(t, 4324, 1, "main");
+    uint64_t counter = pf_track_counter(t, track, "main.count", PF_UNIT_UNSPECIFIED);
 
     /* ~100k events over ~2s: 50k events/s, far above most real tracing
      * and far below what the drain thread sustains. */
     const unsigned rounds = 20000;
     for (unsigned i = 0; i < rounds; i++) {
         pf_slice_begin(t, track, "request");
-        pf_counter_set_int(t, track, i % 97);
+        pf_counter_set_int(t, counter, i % 97);
         pf_instant_event(t, track, "checkpoint");
         pf_slice_end(t, track);
         if (i % 200 == 0)
