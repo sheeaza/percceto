@@ -139,8 +139,8 @@ def check_file(trace, args):
 
     total_begins = sum(begins.values())
     total_ends = sum(ends.values())
-    if total_begins == 0:
-        fail("trace contains no slices")
+    if total_begins + instant_events == 0:
+        fail("trace contains no slices or instants")
 
     if args.expect_complete:
         if begins != ends:

@@ -83,55 +83,53 @@ else()
 endif()
 
 # The raw-to-protobuf converter. Its unit tests need only the standard
-# library, so they run wherever python3 does. The end-to-end test converts
-# the raw file the raw_roundtrip test writes, and checks the result with
-# dump_trace, which validates the wire format without any library, and with
+# library, so they run wherever python3 does. The end-to-end tests convert
+# every raw file the tests write, and check each result with dump_trace,
+# which validates the wire format without any library, and with
 # import_trace.py, which checks it against perfetto's schema and importer.
 if(PYTHON3 AND have_perfetto EQUAL 0)
   add_test(NAME pfraw2pb_unit COMMAND ${PYTHON3} -m unittest discover
     -s ${PROJECT_SOURCE_DIR}/tools -p test_pfraw2pb.py
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
 
-  add_test(NAME pfraw2pb_convert COMMAND ${PYTHON3}
-    ${PROJECT_SOURCE_DIR}/tools/pfraw2pb.py raw_roundtrip_continuous.pfraw
-    -o raw_roundtrip_continuous.converted.pftrace
-    WORKING_DIRECTORY ${PFTRACE_RUN_DIR})
-  set_tests_properties(pfraw2pb_convert PROPERTIES
-    FIXTURES_REQUIRED raw_traces)
+  # Each raw file and the fixture that writes it. Every one holds the whole
+  # sequence its test emitted, so the converted traces must balance exactly,
+  # the snapshot too. raw_roundtrip_bad_args is left out: it is written with a
+  # record the reader must reject, and pfraw2pb.py does.
+  set(raw_traces_files
+    raw_roundtrip_continuous raw_roundtrip_snapshot raw_roundtrip_header
+    raw_roundtrip_torn raw_roundtrip_dyn raw_roundtrip_args
+    raw_roundtrip_simple_threads raw_roundtrip_simple_rename)
+  set(args_traces_files args_raw)
+  foreach(fixture raw_traces args_traces)
+    foreach(trace IN LISTS ${fixture}_files)
+      add_test(NAME pfraw2pb_${trace} COMMAND ${PYTHON3}
+        ${PROJECT_SOURCE_DIR}/tools/pfraw2pb.py ${trace}.pfraw
+        -o ${trace}.converted.pftrace
+        WORKING_DIRECTORY ${PFTRACE_RUN_DIR})
+      set_tests_properties(pfraw2pb_${trace} PROPERTIES
+        FIXTURES_REQUIRED ${fixture} FIXTURES_SETUP converted_${trace})
 
-  add_test(NAME dump_raw_roundtrip COMMAND dump_trace
-    raw_roundtrip_continuous.converted.pftrace
-    WORKING_DIRECTORY ${PFTRACE_RUN_DIR})
-  set_tests_properties(dump_raw_roundtrip PROPERTIES
-    DEPENDS pfraw2pb_convert)
+      add_test(NAME dump_${trace} COMMAND dump_trace ${trace}.converted.pftrace
+        WORKING_DIRECTORY ${PFTRACE_RUN_DIR})
+      set_tests_properties(dump_${trace} PROPERTIES
+        FIXTURES_REQUIRED converted_${trace})
 
-  add_test(NAME pfraw2pb_convert_snapshot COMMAND ${PYTHON3}
-    ${PROJECT_SOURCE_DIR}/tools/pfraw2pb.py raw_roundtrip_snapshot.pfraw
-    -o raw_roundtrip_snapshot.converted.pftrace
-    WORKING_DIRECTORY ${PFTRACE_RUN_DIR})
-  set_tests_properties(pfraw2pb_convert_snapshot PROPERTIES
-    FIXTURES_REQUIRED raw_traces)
+      add_test(NAME import_${trace} COMMAND ${PYTHON3}
+        ${PROJECT_SOURCE_DIR}/tools/import_trace.py --expect-complete
+        ${trace}.converted.pftrace
+        WORKING_DIRECTORY ${PFTRACE_RUN_DIR})
+      set_tests_properties(import_${trace} PROPERTIES
+        FIXTURES_REQUIRED converted_${trace} SKIP_RETURN_CODE 77)
+    endforeach()
+  endforeach()
 
-  add_test(NAME dump_raw_roundtrip_snapshot COMMAND dump_trace
-    raw_roundtrip_snapshot.converted.pftrace
-    WORKING_DIRECTORY ${PFTRACE_RUN_DIR})
-  set_tests_properties(dump_raw_roundtrip_snapshot PROPERTIES
-    DEPENDS pfraw2pb_convert_snapshot)
-
-  # The converted traces through import_trace.py as well. raw_roundtrip
-  # checks that every emitted event reads back from the raw file, so both
-  # hold the whole sequence and must balance exactly, the snapshot too.
-  add_test(NAME import_raw_roundtrip COMMAND ${PYTHON3}
-    ${PROJECT_SOURCE_DIR}/tools/import_trace.py --expect-complete
-    raw_roundtrip_continuous.converted.pftrace
-    WORKING_DIRECTORY ${PFTRACE_RUN_DIR})
-  set_tests_properties(import_raw_roundtrip PROPERTIES
-    DEPENDS pfraw2pb_convert SKIP_RETURN_CODE 77)
-
-  add_test(NAME import_raw_roundtrip_snapshot COMMAND ${PYTHON3}
-    ${PROJECT_SOURCE_DIR}/tools/import_trace.py --expect-complete
-    raw_roundtrip_snapshot.converted.pftrace
-    WORKING_DIRECTORY ${PFTRACE_RUN_DIR})
-  set_tests_properties(import_raw_roundtrip_snapshot PROPERTIES
-    DEPENDS pfraw2pb_convert_snapshot SKIP_RETURN_CODE 77)
+  # test_rotate's raw run, as many files as the size limit cut it into. Each
+  # file has its own header, so each converts alone.
+  add_test(NAME pfraw2pb_rotate_raw COMMAND ${CMAKE_COMMAND}
+    -DDIR=${PFTRACE_RUN_DIR}/rotate_raw -DPYTHON3=${PYTHON3}
+    -DTOOLS=${PROJECT_SOURCE_DIR}/tools -DDUMP_TRACE=$<TARGET_FILE:dump_trace>
+    -P ${PROJECT_SOURCE_DIR}/tools/convert_raw_dir.cmake)
+  set_tests_properties(pfraw2pb_rotate_raw PROPERTIES
+    FIXTURES_REQUIRED rotate_traces SKIP_REGULAR_EXPRESSION "import checks skipped")
 endif()

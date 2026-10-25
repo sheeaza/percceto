@@ -66,6 +66,7 @@ add_executable(test_args test_args.c)
 target_link_libraries(test_args PRIVATE pftrace Threads::Threads)
 target_compile_definitions(test_args PRIVATE _GNU_SOURCE)
 add_test(NAME args COMMAND test_args WORKING_DIRECTORY ${PFTRACE_RUN_DIR})
+set_tests_properties(args PROPERTIES FIXTURES_SETUP args_traces)
 
 # Output rotation in continuous mode: file names, the size limit, name reuse,
 # and each raw file's own header.
@@ -73,6 +74,7 @@ add_executable(test_rotate test_rotate.c)
 target_link_libraries(test_rotate PRIVATE pftrace Threads::Threads)
 target_compile_definitions(test_rotate PRIVATE _GNU_SOURCE)
 add_test(NAME rotate COMMAND test_rotate WORKING_DIRECTORY ${PFTRACE_RUN_DIR})
+set_tests_properties(rotate PROPERTIES FIXTURES_SETUP rotate_traces)
 
 # A trace with known timestamps, including a clock that steps back, for the
 # import_timestamps test in tools/ to check against what Perfetto imports.
