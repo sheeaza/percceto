@@ -22,8 +22,6 @@ static pthread_once_t g_exit_key_once = PTHREAD_ONCE_INIT;
 static pthread_mutex_t g_index_lock = PTHREAD_MUTEX_INITIALIZER;
 static bool g_index_used[PF_MAX_TRACES];
 
-static void commit_locked(struct pf_trace *t, struct pf_writer *w);
-
 int pf_index_acquire(struct pf_trace *t)
 {
     pthread_mutex_lock(&g_index_lock);
@@ -45,6 +43,24 @@ void pf_index_release(struct pf_trace *t)
     pthread_mutex_lock(&g_index_lock);
     g_index_used[t->index] = false;
     pthread_mutex_unlock(&g_index_lock);
+}
+
+/* Links @w's full chunk onto the committed FIFO. The caller holds pool_lock.
+ * The unlock that follows is the release that publishes the chunk's records
+ * to the drain. */
+static void commit_locked(struct pf_trace *t, struct pf_writer *w)
+{
+    struct pf_chunk *c = w->cur;
+
+    c->used = w->used;
+    c->next = NULL;
+    if (t->committed_tail)
+        t->committed_tail->next = c;
+    else
+        t->committed_head = c;
+    t->committed_tail = c;
+    t->committed_count++;
+    w->cur = NULL;
 }
 
 /* Gives back the calling thread's slot for @t. The partial chunk is committed,
@@ -108,8 +124,7 @@ static void make_exit_key(void)
 /* A chunk's size, padded to a cache line so no two chunks share one. */
 size_t pf_chunk_bytes(uint32_t slots)
 {
-    size_t bytes = sizeof(struct pf_chunk) + slots * PF_REC_HEAD_BYTES;
-    return (bytes + 63) & ~(size_t)63;
+    return roundup(sizeof(struct pf_chunk) + slots * PF_REC_HEAD_BYTES, (size_t)64);
 }
 
 int pf_pool_init(struct pf_trace *t)
@@ -220,24 +235,6 @@ struct pf_writer *pf_writer_bind(struct pf_trace *t)
     pf_tls.slots[t->index].trace = t;
     pf_tls.slots[t->index].writer = w;
     return w;
-}
-
-/* Links @w's full chunk onto the committed FIFO. The caller holds pool_lock.
- * The unlock that follows is the release that publishes the chunk's records
- * to the drain. */
-static void commit_locked(struct pf_trace *t, struct pf_writer *w)
-{
-    struct pf_chunk *c = w->cur;
-
-    c->used = w->used;
-    c->next = NULL;
-    if (t->committed_tail)
-        t->committed_tail->next = c;
-    else
-        t->committed_head = c;
-    t->committed_tail = c;
-    t->committed_count++;
-    w->cur = NULL;
 }
 
 /* Snapshot mode only: takes the oldest committed chunk to reuse. Its records

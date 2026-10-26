@@ -8,6 +8,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
+#include <sys/param.h>
 #include <time.h>
 
 #include "pb_writer.h"
@@ -500,6 +501,18 @@ static inline void pf_walk_enter(struct pf_walk *w, const struct pf_chunk *c)
     w->end = c ? atomic_load_explicit(&c->used, memory_order_acquire) : 0;
 }
 
+/* The argument section of a record with RF_HAS_ARGS: its argument count, and
+ * the start of argument @i's entry. */
+static inline uint32_t pf_rec_nargs(const struct pf_rec *r)
+{
+    return *(const uint32_t *)((const char *)r + PF_REC_HEAD_BYTES);
+}
+
+static inline const char *pf_rec_arg(const struct pf_rec *r, uint32_t i)
+{
+    return (const char *)r + PF_REC_HEAD_BYTES + PF_REC_ARGS_HEAD + i * PF_REC_ARG_BYTES;
+}
+
 /* A record's size in its chunk: the head, the argument section if any, and any
  * copied name padded to PF_REC_ALIGN. Read from the head, so the walk needs no
  * index. */
@@ -507,8 +520,7 @@ static inline uint32_t pf_rec_args_bytes(const struct pf_rec *r)
 {
     if (!(r->flags & RF_HAS_ARGS))
         return 0;
-    uint32_t n = *(const uint32_t *)((const char *)r + PF_REC_HEAD_BYTES);
-    return PF_REC_ARGS_HEAD + n * PF_REC_ARG_BYTES;
+    return PF_REC_ARGS_HEAD + pf_rec_nargs(r) * PF_REC_ARG_BYTES;
 }
 
 static inline uint32_t pf_rec_size(const struct pf_rec *r)
@@ -517,7 +529,7 @@ static inline uint32_t pf_rec_size(const struct pf_rec *r)
     if (!(r->flags & RF_NAME_COPIED))
         return size;
     uint32_t len = (uint32_t)r->u.name_len;
-    return size + ((len + PF_REC_ALIGN - 1) & ~(PF_REC_ALIGN - 1));
+    return size + roundup(len, PF_REC_ALIGN);
 }
 
 static inline const struct pf_rec *pf_walk_next(struct pf_walk *w)

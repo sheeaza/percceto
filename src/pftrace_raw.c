@@ -179,12 +179,10 @@ static int raw_emit_record(struct pf_trace *t, const struct pf_rec *r)
         raw_define_once(&t->name_table, &t->raw.names, name);
 
     if (r->flags & RF_HAS_ARGS) {
-        uint32_t n = *(const uint32_t *)((const char *)r + PF_REC_HEAD_BYTES);
+        uint32_t n = pf_rec_nargs(r);
         for (uint32_t i = 0; i < n; i++) {
             uint64_t ptr;
-            const char *entry =
-                (const char *)r + PF_REC_HEAD_BYTES + PF_REC_ARGS_HEAD + i * PF_REC_ARG_BYTES;
-            memcpy(&ptr, entry, sizeof(ptr));
+            memcpy(&ptr, pf_rec_arg(r, i), sizeof(ptr));
             raw_define_once(&t->key_table, &t->raw.keys, (const char *)(uintptr_t)ptr);
         }
     }

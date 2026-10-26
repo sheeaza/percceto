@@ -15,15 +15,6 @@
  * fields are in pf_encode.h, since each chunk's header carries one too. */
 #define FN_PACKET_TRACK_DESCRIPTOR 60
 
-/* Writes a packet's timestamp with its clock. Perfetto reads a packet with no
- * timestamp_clock_id as BOOTTIME, so a REALTIME or MONOTONIC reading must name
- * its clock or the packet cannot be related to the trace clock. */
-static void put_packet_timestamp(struct pb_buf *packet, clockid_t clk, uint64_t ts)
-{
-    pb_put_varint_field(packet, FN_PACKET_TIMESTAMP, ts);
-    pb_put_varint_field(packet, FN_PACKET_TIMESTAMP_CLOCK_ID, builtin_clock(clk));
-}
-
 /* TrackDescriptor */
 #define FN_TRACK_UUID 1
 #define FN_TRACK_NAME 2
@@ -41,6 +32,15 @@ static void put_packet_timestamp(struct pb_buf *packet, clockid_t clk, uint64_t 
 
 /* CounterDescriptor */
 #define FN_COUNTER_UNIT 3
+
+/* Writes a packet's timestamp with its clock. Perfetto reads a packet with no
+ * timestamp_clock_id as BOOTTIME, so a REALTIME or MONOTONIC reading must name
+ * its clock or the packet cannot be related to the trace clock. */
+static void put_packet_timestamp(struct pb_buf *packet, clockid_t clk, uint64_t ts)
+{
+    pb_put_varint_field(packet, FN_PACKET_TIMESTAMP, ts);
+    pb_put_varint_field(packet, FN_PACKET_TIMESTAMP_CLOCK_ID, builtin_clock(clk));
+}
 
 /* Frames `packet` as one entry of the (implicit, streamed) Trace.packet
  * repeated field and stages it for writing. */

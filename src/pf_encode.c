@@ -629,9 +629,9 @@ static void pf_pb_place(struct pf_trace *t, struct pf_writer *w, uint64_t ts, st
         v->absolute = !absolute_chunk && !v->head && ts < w->last_ts;
         v->head_ts = ts;
         v->head_track = v->track;
-        if (absolute_chunk)
-            v->ts = ts; /* on the trace clock, which the defaults name */
-        else if (v->absolute)
+        /* An absolute chunk's or event's time is on the trace clock, which
+         * the defaults or the packet name. */
+        if (absolute_chunk || v->absolute)
             v->ts = ts;
         else
             v->ts = v->head ? 0 : ts - w->last_ts;

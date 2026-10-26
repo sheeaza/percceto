@@ -637,7 +637,7 @@ static void emit_dyn(struct pf_trace *t, uint32_t type, uint64_t track_uuid, con
     uint32_t len = (uint32_t)pf_dyn_name_fit(name, &cut);
     if (cut)
         atomic_fetch_add_explicit(&t->truncated, 1, memory_order_relaxed);
-    uint32_t padded = (len + PF_REC_ALIGN - 1) & ~(PF_REC_ALIGN - 1);
+    uint32_t padded = roundup(len, PF_REC_ALIGN);
     uint32_t rec_size = PF_REC_HEAD_BYTES + padded;
 
     struct pf_rec *r = raw_reserve(t, w, rec_size);
@@ -770,11 +770,17 @@ void pf_counter_set_double(struct pf_trace *t, uint64_t counter_track_uuid, doub
 
 /* --- Tracks ------------------------------------------------------------ */
 
-static void set_track_name(struct track_def *td, const char *name)
+/* Copies @name into @dst, a PF_TRACK_NAME_MAX buffer, cut to fit. */
+static void copy_track_name(char *dst, const char *name)
 {
     size_t n = strnlen(name, PF_TRACK_NAME_MAX - 1);
-    memcpy(td->name, name, n);
-    td->name[n] = '\0';
+    memcpy(dst, name, n);
+    dst[n] = '\0';
+}
+
+static void set_track_name(struct track_def *td, const char *name)
+{
+    copy_track_name(td->name, name);
     td->has_name = true;
 }
 
@@ -1008,9 +1014,7 @@ void pf_thread_name(const char *name)
 {
     if (!name)
         return;
-    size_t n = strnlen(name, PF_TRACK_NAME_MAX - 1);
-    memcpy(pf_tls.name, name, n);
-    pf_tls.name[n] = '\0';
+    copy_track_name(pf_tls.name, name);
     pf_tls.has_name = true;
 
     struct pf_trace *t = default_trace();
@@ -1095,17 +1099,23 @@ struct pf_trace *pf_trace_default_g(void)
 
 /* --- Lifecycle --------------------------------------------------------- */
 
+/* Defaults for the pf_config fields that take 0 to mean "the default". */
+#define DEFAULT_BUFFER_BYTES (8u * 1024u * 1024u)
+#define DEFAULT_WATERMARK_PCT 75
+#define DEFAULT_DRAIN_INTERVAL_MS 100
+#define DEFAULT_MAX_TRACKS 256
+
 void pf_config_init(struct pf_config *cfg)
 {
     memset(cfg, 0, sizeof(*cfg));
-    cfg->buffer_bytes = 8u * 1024u * 1024u;
+    cfg->buffer_bytes = DEFAULT_BUFFER_BYTES;
     cfg->chunk_slots = 256;
     cfg->max_threads = 256;
     cfg->mode = PF_MODE_SNAPSHOT;
     cfg->format = PF_FORMAT_PROTOBUF;
-    cfg->watermark_pct = 75;
-    cfg->drain_interval_ms = 100;
-    cfg->max_tracks = 256;
+    cfg->watermark_pct = DEFAULT_WATERMARK_PCT;
+    cfg->drain_interval_ms = DEFAULT_DRAIN_INTERVAL_MS;
+    cfg->max_tracks = DEFAULT_MAX_TRACKS;
     cfg->clock_id = CLOCK_BOOTTIME;
 }
 
@@ -1116,12 +1126,23 @@ static bool clock_ok(clockid_t clk)
     return clk == CLOCK_REALTIME || clk == CLOCK_MONOTONIC || clk == CLOCK_BOOTTIME;
 }
 
+/* Whether pf_trace_open can take @cfg. A rotating trace needs room for the
+ * rotated names' suffix within NAME_MAX. */
+static bool config_ok(const struct pf_config *cfg)
+{
+    if (!cfg || !cfg->path || !open_name_ok(cfg) || !clock_ok(cfg->clock_id))
+        return false;
+    if (cfg->watermark_pct > 99 || cfg->chunk_slots == 0 || cfg->max_threads == 0)
+        return false;
+    if (cfg->mode == PF_MODE_CONTINUOUS && cfg->max_file_bytes &&
+        strlen(cfg->name) + ROTATE_SUFFIX_MAX > NAME_MAX)
+        return false;
+    return true;
+}
+
 struct pf_trace *pf_trace_open(const struct pf_config *cfg)
 {
-    if (!cfg || !cfg->path || cfg->watermark_pct > 99 || !open_name_ok(cfg) ||
-        (cfg->mode == PF_MODE_CONTINUOUS && cfg->max_file_bytes &&
-         strlen(cfg->name) + ROTATE_SUFFIX_MAX > NAME_MAX) ||
-        !clock_ok(cfg->clock_id) || cfg->chunk_slots == 0 || cfg->max_threads == 0) {
+    if (!config_ok(cfg)) {
         errno = EINVAL;
         return NULL;
     }
@@ -1134,13 +1155,13 @@ struct pf_trace *pf_trace_open(const struct pf_config *cfg)
     t->dirfd = -1;
     t->cfg = *cfg;
     if (t->cfg.buffer_bytes == 0)
-        t->cfg.buffer_bytes = 8u * 1024u * 1024u;
+        t->cfg.buffer_bytes = DEFAULT_BUFFER_BYTES;
     if (t->cfg.watermark_pct == 0)
-        t->cfg.watermark_pct = 75;
+        t->cfg.watermark_pct = DEFAULT_WATERMARK_PCT;
     if (t->cfg.drain_interval_ms == 0)
-        t->cfg.drain_interval_ms = 100;
+        t->cfg.drain_interval_ms = DEFAULT_DRAIN_INTERVAL_MS;
     if (t->cfg.max_tracks == 0)
-        t->cfg.max_tracks = 256;
+        t->cfg.max_tracks = DEFAULT_MAX_TRACKS;
     /* Rotation is continuous only, like the watermark and drain interval. */
     if (t->cfg.mode != PF_MODE_CONTINUOUS || t->cfg.max_file_bytes == 0) {
         t->cfg.max_file_bytes = 0;
