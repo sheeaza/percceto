@@ -33,8 +33,10 @@
 #define _GNU_SOURCE
 #include <inttypes.h>
 #include <pthread.h>
+#include <sched.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <sys/syscall.h>
 #include <time.h>
 #include <unistd.h>
@@ -43,7 +45,8 @@
 #include "pftrace.h"
 
 #define DIR "bench_side.d"
-#define MAX_THREADS 12
+#define MAX_THREADS 256
+#define MAX_CPUS 256
 #define EVENTS_PER_THREAD 2000000u
 
 /* Stubs the library's clock. Thread-local, so the stub adds no shared cache
@@ -82,6 +85,7 @@ enum workload {
 
 static const char *const kLabels[] = { "simple", "realistic", "formatted", "manual", "args" };
 static int want_raw; /* set by "raw" on the command line */
+static int want_pin; /* set by "pin" on the command line */
 
 /* One line per worker: each thread adds to @events on every iteration, so
  * workers packed together would share lines and slow each other down. */
@@ -95,6 +99,56 @@ struct worker {
 };
 
 static pthread_barrier_t go;
+
+/* Hybrid CPUs, from sysfs. Producers are pinned to P cores first, then E
+ * cores, so each run can report how many ran on each core type. On a machine
+ * without the cpu_core and cpu_atom lists, nothing is pinned. */
+static unsigned g_pcpu[MAX_CPUS], g_ecpu[MAX_CPUS];
+static unsigned g_np, g_ne;
+
+static unsigned read_cpu_list(const char *path, unsigned *out, unsigned max)
+{
+    char buf[256];
+    unsigned n = 0;
+    FILE *f = fopen(path, "r");
+    if (!f)
+        return 0;
+    if (fgets(buf, sizeof(buf), f)) {
+        char *p = buf;
+        while (*p >= '0' && *p <= '9') {
+            unsigned lo = (unsigned)strtoul(p, &p, 10);
+            unsigned hi = lo;
+            if (*p == '-')
+                hi = (unsigned)strtoul(p + 1, &p, 10);
+            for (unsigned c = lo; c <= hi && n < max; c++)
+                out[n++] = c;
+            if (*p == ',')
+                p++;
+        }
+    }
+    fclose(f);
+    return n;
+}
+
+/* Pins producer @i to its CPU when "pin" is given, and counts it as P when it
+ * lands on one. Unpinned, the scheduler places producers. */
+static void pin_producer(pthread_t th, unsigned i, unsigned *on_p)
+{
+    unsigned all = g_np + g_ne;
+    cpu_set_t set;
+    unsigned cpu;
+    if (!want_pin || all == 0)
+        return;
+    if (i % all < g_np) {
+        cpu = g_pcpu[i % all];
+        (*on_p)++;
+    } else {
+        cpu = g_ecpu[i % all - g_np];
+    }
+    CPU_ZERO(&set);
+    CPU_SET(cpu, &set);
+    pthread_setaffinity_np(th, sizeof(set), &set);
+}
 
 static void *emit_loop(void *arg)
 {
@@ -176,6 +230,7 @@ static void run(unsigned threads, size_t slots, uint64_t pairs, enum workload lo
     struct worker w[MAX_THREADS];
     pthread_t th[MAX_THREADS];
     pthread_barrier_init(&go, NULL, threads + 1);
+    unsigned on_p = 0;
     for (unsigned i = 0; i < threads; i++) {
         w[i].t = t;
         w[i].trk = pf_track_thread(t, 1, (int32_t)i + 1, NULL);
@@ -183,6 +238,7 @@ static void run(unsigned threads, size_t slots, uint64_t pairs, enum workload lo
         w[i].load = load;
         w[i].events = 0;
         pthread_create(&th[i], NULL, emit_loop, &w[i]);
+        pin_producer(th[i], i, &on_p);
     }
     pthread_barrier_wait(&go);
     for (unsigned i = 0; i < threads; i++)
@@ -205,26 +261,73 @@ static void run(unsigned threads, size_t slots, uint64_t pairs, enum workload lo
     producer_ns /= threads;
     double consumer_ns = (double)(closed - producers_done) / emitted;
 
-    printf("%-9s threads %2u, chunk_slots %5zu: producer %6.1f ns/event, "
+    char place[32];
+    if (want_pin)
+        snprintf(place, sizeof(place), "P %2u, E %2u", on_p, threads - on_p);
+    else
+        snprintf(place, sizeof(place), "unpinned");
+    printf("%-9s threads %2u (%s), chunk_slots %5zu: producer %6.1f ns/event, "
            "consumer tail %6.1f ns/event, %" PRIu64 " events, %" PRIu64 " dropped\n",
-           kLabels[load], threads, slots, producer_ns, consumer_ns, emitted, s.dropped);
+           kLabels[load], threads, place, slots, producer_ns, consumer_ns, emitted, s.dropped);
     dir_reset(DIR);
+}
+
+/* True for the first hardware thread of its core, the one listed first in its
+ * sibling list. A CPU with no topology file counts as primary. */
+static unsigned is_primary(unsigned cpu)
+{
+    char path[96];
+    unsigned sib[MAX_CPUS];
+    snprintf(path, sizeof(path), "/sys/devices/system/cpu/cpu%u/topology/thread_siblings_list",
+             cpu);
+    unsigned n = read_cpu_list(path, sib, MAX_CPUS);
+    return n == 0 || sib[0] == cpu;
+}
+
+/* Puts the first hardware thread of each core in front, so producers spread
+ * over physical cores before any two share one. */
+static void order_primary_first(unsigned *cpus, unsigned n)
+{
+    unsigned tmp[MAX_CPUS];
+    unsigned m = 0;
+    for (unsigned i = 0; i < n; i++)
+        if (is_primary(cpus[i]))
+            tmp[m++] = cpus[i];
+    for (unsigned i = 0; i < n; i++)
+        if (!is_primary(cpus[i]))
+            tmp[m++] = cpus[i];
+    memcpy(cpus, tmp, n * sizeof(*cpus));
 }
 
 int main(int argc, char **argv)
 {
     want_raw = argc > 1 && strcmp(argv[1], "raw") == 0;
-    printf("cores online: %ld, format: %s\n", sysconf(_SC_NPROCESSORS_ONLN),
-           want_raw ? "raw" : "protobuf");
+    for (int a = 1; a < argc; a++)
+        if (strcmp(argv[a], "pin") == 0)
+            want_pin = 1;
+    g_np = read_cpu_list("/sys/devices/cpu_core/cpus", g_pcpu, MAX_CPUS);
+    order_primary_first(g_pcpu, g_np);
+    g_ne = read_cpu_list("/sys/devices/cpu_atom/cpus", g_ecpu, MAX_CPUS);
+    order_primary_first(g_ecpu, g_ne);
+    printf("cores online: %ld, P cores: %u, E cores: %u, format: %s\n",
+           sysconf(_SC_NPROCESSORS_ONLN), g_np, g_ne, want_raw ? "raw" : "protobuf");
 
     printf("\nContinuous mode, %u iterations per thread:\n", EVENTS_PER_THREAD);
-    static const unsigned threads[] = { 1, 4, 8 };
+    /* 1 thread, then steps of 2 up to 16 CPUs or steps of 4 above, up to twice
+     * the online CPU count. */
+    long ncpu = sysconf(_SC_NPROCESSORS_ONLN);
+    unsigned step = ncpu <= 16 ? 2 : 4;
+    unsigned counts[MAX_THREADS];
+    unsigned nc = 0;
+    counts[nc++] = 1;
+    for (unsigned t = step; t <= 2u * (unsigned)ncpu && nc < MAX_THREADS; t += step)
+        counts[nc++] = t;
     static const size_t slots[] = { 4096 };
     static const enum workload loads[] = { SIMPLE, REALISTIC, FORMATTED, MANUAL, ARGS };
     for (unsigned s = 0; s < sizeof(slots) / sizeof(slots[0]); s++)
         for (unsigned l = 0; l < sizeof(loads) / sizeof(loads[0]); l++)
-            for (unsigned i = 0; i < sizeof(threads) / sizeof(threads[0]); i++)
-                run(threads[i], slots[s], EVENTS_PER_THREAD, loads[l]);
+            for (unsigned i = 0; i < nc; i++)
+                run(counts[i], slots[s], EVENTS_PER_THREAD, loads[l]);
 
     pthread_barrier_destroy(&go);
     return 0;

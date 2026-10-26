@@ -714,6 +714,50 @@ in place of the `madvise` was about 1 ns slower at 1 thread, not explained.
 
 All 43 ctest tests pass, including the TSan and ASan builds.
 
+Bench fix, 2026-10-26 (`tests/bench_side.c`). The 4- and 8-thread rows above
+were partly the bench. Producers were pinned to CPUs 0, 1, 2, ... in order, and
+on this i5-12500H CPUs 0 and 1 are one core, so 4 producers shared 2 cores.
+The bench now:
+
+- takes the thread counts from the CPU count: 1, then steps of 2 up to 16 CPUs
+  and 4 above, up to twice the online count (here 1 to 40 in steps of 4);
+- leaves producers unpinned by default, and pins them with a `pin` argument.
+  Pinned, P cores are used first, one hardware thread per core before any
+  sibling, and each row reports how many producers landed on P and E cores;
+- prints the P/E split only for pinned runs.
+
+With one producer per physical core, `simple` is flat from 1 to 8 threads, at
+17.1, 17.4 and 17.5 ns, against 18.0, 35.5 and 35.4 before. The unpinned run
+gives the same 1 to 8 thread numbers. Above 8 threads the cost rises with
+oversubscription: this machine has 20 CPUs. The full run is in the table
+below. Each cell is producer ns/event / consumer tail ns/event / drops, one run
+per row, unpinned:
+
+| threads | simple | realistic | formatted | manual | args |
+|---:|---|---|---|---|---|
+| 1 | 17.0 / 12.4 / 0 | 30.3 / 11.4 / 0 | 35.6 / 12.8 / 0 | 35.9 / 12.2 / 0 | 28.6 / 12.6 / 0 |
+| 4 | 17.0 / 3.2 / 0 | 30.3 / 2.9 / 0 | 36.0 / 3.2 / 0 | 36.1 / 3.2 / 0 | 28.3 / 5.2 / 0 |
+| 8 | 18.1 / 3.3 / 0 | 31.5 / 1.9 / 0 | 37.7 / 1.6 / 0 | 37.7 / 1.5 / 0 | 30.4 / 5.2 / 0 |
+| 12 | 22.0 / 3.5 / 0 | 36.5 / 2.6 / 0 | 43.3 / 3.5 / 0 | 45.2 / 2.7 / 0 | 36.7 / 5.9 / 0 |
+| 16 | 28.0 / 3.9 / 0 | 44.2 / 3.6 / 0 | 56.6 / 3.8 / 0 | 54.6 / 4.3 / 0 | 46.9 / 6.6 / 0 |
+| 20 | 35.7 / 4.5 / 0 | 53.8 / 4.0 / 0 | 73.0 / 3.7 / 0 | 71.6 / 4.3 / 0 | 56.0 / 7.2 / 0 |
+| 24 | 39.1 / 4.1 / 0 | 61.9 / 3.7 / 0 | 81.8 / 4.5 / 0 | 82.4 / 4.4 / 0 | 65.5 / 6.7 / 0 |
+| 28 | 44.5 / 4.2 / 0 | 69.6 / 4.3 / 0 | 94.8 / 4.7 / 0 | 92.0 / 4.5 / 0 | 69.8 / 6.3 / 18.8M |
+| 32 | 48.7 / 3.8 / 0 | 83.1 / 3.8 / 0 | 99.0 / 5.0 / 0 | 99.5 / 5.1 / 0 | 76.7 / 4.8 / 32.3M |
+| 36 | 59.6 / 4.3 / 0 | 89.2 / 4.3 / 0 | 123.3 / 4.5 / 11.2M | 115.5 / 4.6 / 10.2M | 84.3 / 5.0 / 44.2M |
+| 40 | 66.8 / 4.4 / 0 | 91.2 / 3.7 / 23.5M | 129.1 / 5.3 / 19.5M | 135.8 / 4.5 / 10.4M | 91.5 / 4.2 / 61.9M |
+
+Drops are total events across all producers. The drop onset at high thread
+counts moved between two full runs (`formatted` and `manual` at 40 threads in
+one, at 36 in the other), so treat those cells as approximate. Consumer tail
+is 11 to 13 ns at 1 thread, the one producer's backlog, and 1.5 to 7 ns at
+every other count.
+
+What is left of item 14: `perf c2c` was not run (no hardware counters on this
+VM). The pool-lock options were not measured under the fixed bench; at 4096
+slots the lock is not contended (see above), and the drop path now avoids it.
+Re-measure the pool lock only if the 1-thread or 8-thread rows regress.
+
 ## ~~15. Fewer call layers on the hot path~~ (cancelled)
 
 ~~A static begin goes `pf_slice_begin_impl` → `emit_event_args` (out of line) →
