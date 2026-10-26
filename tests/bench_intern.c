@@ -1,7 +1,7 @@
 /* Prototype for the shared intern table: what a name lookup costs with the
  * current per-writer cache against one frozen table shared by every writer.
  *
- * The current cache (pf_pb_lookup in src/pf_encode.c) scans a writer's 32
+ * The current cache (pf_pb_lookup in src/pf_pb_encode.c) scans a writer's 32
  * slots and compares pointers. The prototype builds a global table once, from
  * the static names, and looks a name up by hashing its address. Both tables
  * hold the same 16 literals. This measures the lookup alone, on one thread,

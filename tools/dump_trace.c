@@ -16,7 +16,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* Field numbers, mirroring src/pf_encode.h. */
+/* Field numbers, mirroring src/pf_pb_encode.h. */
 #define FN_TRACE_PACKET 1
 #define FN_PACKET_CLOCK_SNAPSHOT 6
 #define FN_PACKET_TIMESTAMP 8

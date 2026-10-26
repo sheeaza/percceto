@@ -4,15 +4,15 @@
 #include <string.h>
 
 #include "pb_writer.h"
-#include "pf_encode.h"
+#include "pf_pb_encode.h"
 #include "pftrace_internal.h"
 
 /* --- Perfetto wire-format field numbers ------------------------------
  * From the official Perfetto schema. The event-side numbers are in
- * pf_encode.h, where the producer encodes them. */
+ * pf_pb_encode.h, where the producer encodes them. */
 
 /* TracePacket, for the descriptor packets this file writes. The clock snapshot
- * fields are in pf_encode.h, since each chunk's header carries one too. */
+ * fields are in pf_pb_encode.h, since each chunk's header carries one too. */
 #define FN_PACKET_TRACK_DESCRIPTOR 60
 
 /* TrackDescriptor */

@@ -287,7 +287,7 @@ class Converter:
         if primary != ClockSnapshot.Clock.REALTIME:
             readings[ClockSnapshot.Clock.REALTIME] = offset_ns
         # Perfetto links BOOTTIME to the trace clock for a proto trace, so the
-        # snapshot always names it. See pftrace_pb.c emit_clock_snapshot().
+        # snapshot always names it. See pf_pb_drain.c emit_clock_snapshot().
         if primary != ClockSnapshot.Clock.BOOTTIME:
             readings[ClockSnapshot.Clock.BOOTTIME] = boottime_offset_ns
         base = max(0, -min(readings.values()))
@@ -475,7 +475,7 @@ class Converter:
 
 
 # One conversion: "%[flags][width][.prec][len]conv". Mirrors parse_spec() and
-# render_arg() in src/pftrace_pb.c, so both writers agree on every name.
+# render_arg() in src/pf_pb_drain.c, so both writers agree on every name.
 def convert(src, dst):
     """Converts src (a path) to dst (a path). Returns the stats Counter and
     the number of torn bytes at the end of the input."""

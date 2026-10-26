@@ -19,7 +19,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#include "pf_encode.h"
+#include "pf_pb_encode.h"
 #include "pftrace_internal.h"
 
 /* --- Interning table --------------------------------------------------

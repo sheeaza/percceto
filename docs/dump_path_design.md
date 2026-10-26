@@ -75,7 +75,7 @@ The name is bound at a different point depending on mode.
 
 - **Protobuf:** each snapshot file is self-contained already. The dump re-emits
   tracks at the head, and interning restarts from scratch per dump (see
-  `src/pftrace_pb.c`). Nothing changes beyond the file handling.
+  `src/pf_pb_drain.c`). Nothing changes beyond the file handling.
 - **Raw:** each snapshot file gets its own header. `raw_write_header()` runs
   once per file, not once per trace. The "file must be empty" check (`EEXIST`)
   now applies only in continuous mode. Snapshot mode overwrites instead.
@@ -113,7 +113,7 @@ Files affected:
   close no longer dumps in snapshot mode.
 - `src/pftrace_internal.h`: `fd` becomes per-dump in snapshot mode; `dump_seq`
   counter.
-- `src/pftrace_raw.c`: header written per file; `EEXIST` check gated on
+- `src/pf_raw.c`: header written per file; `EEXIST` check gated on
   continuous mode.
 - `docs/raw_format.md`: the header is written once per file, not once per trace.
 - `examples/example_basic.c`, `examples/example_threads.c`: `path` is a

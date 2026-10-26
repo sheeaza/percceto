@@ -14,7 +14,7 @@
 #include "pb_writer.h"
 #include "pftrace.h"
 
-/* Declarations shared by pftrace.c, pftrace_pb.c, pftrace_raw.c and
+/* Declarations shared by pftrace.c, pf_pb_drain.c, pf_raw.c and
  * pf_chunk.c. Not public API; see include/pftrace.h for that. */
 
 /* Event type values, as the chunks store them. Shared by the emit path and
@@ -570,7 +570,7 @@ bool track_emit_due(struct pf_trace *t, unsigned i, unsigned first, struct track
  * with out_lock held. */
 int pb_drain_locked(struct pf_trace *t, const struct pf_chunk *head);
 int raw_drain_locked(struct pf_trace *t, const struct pf_chunk *head);
-int raw_write_header(struct pf_trace *t); /* pftrace_raw.c */
+int raw_write_header(struct pf_trace *t); /* pf_raw.c */
 /* Continuous rotation, pftrace.c. Caller holds out_lock. */
 bool rotate_due(const struct pf_trace *t, size_t next);
 int rotate_locked(struct pf_trace *t);

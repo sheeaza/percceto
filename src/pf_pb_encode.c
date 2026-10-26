@@ -1,4 +1,4 @@
-/* Producer-side protobuf encoding. See pf_encode.h.
+/* Producer-side protobuf encoding. See pf_pb_encode.h.
  *
  * Each length prefix is computed from the fields before the packet is written,
  * so every byte is written once. The *_len helpers and the writers below must
@@ -6,7 +6,7 @@
 
 #include <string.h>
 
-#include "pf_encode.h"
+#include "pf_pb_encode.h"
 #include "pftrace_internal.h"
 
 struct enc {

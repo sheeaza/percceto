@@ -1,5 +1,5 @@
-#ifndef PF_ENCODE_H
-#define PF_ENCODE_H
+#ifndef PF_PB_ENCODE_H
+#define PF_PB_ENCODE_H
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -109,4 +109,4 @@ void pf_pb_end(struct pf_trace *t, struct pf_writer *w, uint64_t ts, uint64_t tr
 void pf_pb_counter(struct pf_trace *t, struct pf_writer *w, uint64_t ts, uint64_t track,
                    uint64_t raw_value, bool value_is_double);
 
-#endif /* PF_ENCODE_H */
+#endif /* PF_PB_ENCODE_H */

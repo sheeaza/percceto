@@ -7,7 +7,7 @@
  * a chunk would fill, and compared against storing the same record as a plain
  * 48-byte struct, which is what the producer does today.
  *
- * The packet shape follows emit_record() in src/pftrace_pb.c: timestamp,
+ * The packet shape follows emit_record() in src/pf_pb_drain.c: timestamp,
  * trusted sequence id, sequence flags, an interned name id on the first use of
  * a name, then the track event with its type, track uuid and name iid. Field
  * numbers are placeholders; they are one byte each, as in the real layout, so
