@@ -753,10 +753,31 @@ one, at 36 in the other), so treat those cells as approximate. Consumer tail
 is 11 to 13 ns at 1 thread, the one producer's backlog, and 1.5 to 7 ns at
 every other count.
 
-What is left of item 14: `perf c2c` was not run (no hardware counters on this
-VM). The pool-lock options were not measured under the fixed bench; at 4096
-slots the lock is not contended (see above), and the drop path now avoids it.
-Re-measure the pool lock only if the 1-thread or 8-thread rows regress.
+What is left of item 14. The machine is bare metal (i7-12700); hardware
+counters were enabled with `kernel.perf_event_paranoid=1`, which the earlier
+"no counters on this VM" note got wrong.
+
+The pool-lock options are cancelled. Profiles with `perf record` (cycles on the
+P-core event, unpinned, 256-slot chunks, 8 threads):
+
+- `formatted`: `pf_writer_rotate` 0.46%, `pthread_mutex_lock` 0.17%,
+  `pthread_mutex_unlock` 0.10%, `pb_drain_locked` 0.07%.
+- `simple`: `pf_writer_rotate` 0.40%, `pthread_mutex_lock` 0.17%,
+  `pb_drain_locked` 0.09%, `__lll_lock_wait` 0.02%.
+
+So rotation and the pool lock are under 1% of cycles, and batching or a
+lock-free list would not change that. The 256-slot rise (for example `simple`
+at 8 threads, 18.1 at 4096 slots against 21.6 at 256) is not the lock. The
+profile is dominated by the event path (`pf_pb_place` 27% for `simple`).
+
+Two symbols in the profile are outside the producer numbers. `clock_gettime`
+(8.5%) is the bench's fake clock stub. The unresolved kernel path (8.6%) is
+`__madvise` from the pool pre-fault in `pf_trace_open`, which the producer
+window does not include.
+
+`perf c2c` is still not run. The `pf_trace` field split was judged not worth
+changing at 4096 slots and is not measured. Re-measure the pool lock only if
+the 1-thread or 8-thread rows regress.
 
 ## ~~15. Fewer call layers on the hot path~~ (cancelled)
 

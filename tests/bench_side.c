@@ -86,6 +86,9 @@ enum workload {
 static const char *const kLabels[] = { "simple", "realistic", "formatted", "manual", "args" };
 static int want_raw; /* set by "raw" on the command line */
 static int want_pin; /* set by "pin" on the command line */
+static size_t g_slots = 4096; /* set by "slots=N" on the command line */
+static const char *g_load; /* set by "load=NAME" on the command line */
+static unsigned g_threads; /* set by "threads=N" on the command line */
 
 /* One line per worker: each thread adds to @events on every iteration, so
  * workers packed together would share lines and slow each other down. */
@@ -305,6 +308,12 @@ int main(int argc, char **argv)
     for (int a = 1; a < argc; a++)
         if (strcmp(argv[a], "pin") == 0)
             want_pin = 1;
+        else if (strncmp(argv[a], "slots=", 6) == 0)
+            g_slots = (size_t)strtoul(argv[a] + 6, NULL, 10);
+        else if (strncmp(argv[a], "load=", 5) == 0)
+            g_load = argv[a] + 5;
+        else if (strncmp(argv[a], "threads=", 8) == 0)
+            g_threads = (unsigned)strtoul(argv[a] + 8, NULL, 10);
     g_np = read_cpu_list("/sys/devices/cpu_core/cpus", g_pcpu, MAX_CPUS);
     order_primary_first(g_pcpu, g_np);
     g_ne = read_cpu_list("/sys/devices/cpu_atom/cpus", g_ecpu, MAX_CPUS);
@@ -322,12 +331,17 @@ int main(int argc, char **argv)
     counts[nc++] = 1;
     for (unsigned t = step; t <= 2u * (unsigned)ncpu && nc < MAX_THREADS; t += step)
         counts[nc++] = t;
-    static const size_t slots[] = { 4096 };
+    size_t slots[] = { g_slots };
     static const enum workload loads[] = { SIMPLE, REALISTIC, FORMATTED, MANUAL, ARGS };
     for (unsigned s = 0; s < sizeof(slots) / sizeof(slots[0]); s++)
         for (unsigned l = 0; l < sizeof(loads) / sizeof(loads[0]); l++)
-            for (unsigned i = 0; i < nc; i++)
+            for (unsigned i = 0; i < nc; i++) {
+                if (g_load && strcmp(g_load, kLabels[loads[l]]) != 0)
+                    continue;
+                if (g_threads && counts[i] != g_threads)
+                    continue;
                 run(counts[i], slots[s], EVENTS_PER_THREAD, loads[l]);
+            }
 
     pthread_barrier_destroy(&go);
     return 0;
