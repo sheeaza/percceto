@@ -25,6 +25,13 @@ void probe_slices_dynamic(pf_trace *t, uint64_t trk, const char *built)
     PF_SCOPED_SLICE_G(local);
 }
 
+/* A printf format with arguments takes the format path, as pf_slice_begin() does. */
+void probe_slices_format(pf_trace *t, uint64_t trk, int i)
+{
+    PF_SCOPED_SLICE(t, trk, "req-%d", i);
+    PF_SCOPED_SLICE_G("job-%s", "x");
+}
+
 /* Typed arguments, with integer, unsigned and floating values. */
 void probe_slices_args(pf_trace *t, uint64_t trk)
 {

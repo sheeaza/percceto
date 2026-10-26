@@ -126,23 +126,19 @@ template <typename... Args> inline std::array<pf_arg, sizeof...(Args)> make_args
 }
 
 /**
- * class Slice - Begins a slice on a track; ends it when the scope exits.
+ * class Slice - Ends a slice on a track when the scope exits.
  *
- * Use PF_SCOPED_SLICE() rather than constructing this directly: the macro
- * passes __builtin_constant_p(name) as static_name, which picks the same
- * static or dynamic path as pf_slice_begin().
+ * Use PF_SCOPED_SLICE() rather than constructing this directly. The macro
+ * begins the slice with pf_slice_begin(), so it takes the same static,
+ * dynamic, or format path, then hands the guard the track to end.
  */
 class Slice {
 public:
-    Slice(pf_trace *t, uint64_t track_uuid, const char *name, bool static_name) noexcept
-        : t_(t),
-          track_uuid_(track_uuid)
+    /* Tag for the constructor below: the slice has already begun. */
+    struct Begun {};
+
+    Slice(Begun, pf_trace *t, uint64_t track_uuid) noexcept : t_(t), track_uuid_(track_uuid)
     {
-        if (static_name) {
-            pf_slice_begin_impl(t_, track_uuid_, name);
-        } else {
-            pf_slice_begin_dyn_impl(t_, track_uuid_, name);
-        }
     }
 
     /* Typed arguments, as pf_slice_begin_args(). The name must be a literal. */
@@ -175,17 +171,15 @@ private:
  * default trace; ends it when the scope exits.
  *
  * Use PF_SCOPED_SLICE_G() rather than constructing this directly. The macro
- * passes static_name as it does for Slice.
+ * begins the slice with pf_slice_begin_g(), as it does for Slice.
  */
 class ThreadSlice {
 public:
-    ThreadSlice(const char *name, bool static_name) noexcept
+    /* Tag for the constructor below: the slice has already begun. */
+    struct Begun {};
+
+    explicit ThreadSlice(Begun) noexcept
     {
-        if (static_name) {
-            pf_slice_begin_g_impl(name);
-        } else {
-            pf_slice_begin_g_dyn_impl(name);
-        }
     }
 
     /* Typed arguments, as pf_slice_begin_args_g(). The name must be a literal. */
@@ -229,21 +223,26 @@ inline void instant_args(pf_trace *t, uint64_t track_uuid, const char *name,
  * scope.
  * @t: Trace context (pf_trace *).
  * @track_uuid: Track to begin the slice on.
- * @name: Slice name: a string literal, or a name the caller built. A name
- *      with a constant address (a literal or a static buffer) is kept by
- *      address, so its contents must not change; see pf_slice_begin().
+ * @name: Slice name: a string literal, a name the caller built, or a printf
+ *      format when @... is given. Dispatched as pf_slice_begin() is, including
+ *      the constraint on static buffers.
+ * @...: Arguments for @name as a printf format.
  */
-#define PF_SCOPED_SLICE(t, track_uuid, name)                                   \
-    pf::Slice PF_CAT(pf_scoped_slice_, __COUNTER__)((t), (track_uuid), (name), \
-                                                    __builtin_constant_p(name))
+#define PF_SCOPED_SLICE(t, track_uuid, name, ...)                                 \
+    pf::Slice PF_CAT(pf_scoped_slice_, __COUNTER__)(                              \
+        (pf_slice_begin((t), (track_uuid), name __VA_OPT__(, ) __VA_ARGS__),      \
+         pf::Slice::Begun{}),                                                     \
+        (t), (track_uuid))
 
 /**
  * PF_SCOPED_SLICE_G() - PF_SCOPED_SLICE() on the calling thread's track of
  * the default trace.
  * @name: Slice name, dispatched as PF_SCOPED_SLICE() dispatches it.
+ * @...: Arguments for @name as a printf format.
  */
-#define PF_SCOPED_SLICE_G(name) \
-    pf::ThreadSlice PF_CAT(pf_scoped_slice_g_, __COUNTER__)((name), __builtin_constant_p(name))
+#define PF_SCOPED_SLICE_G(name, ...)                                                    \
+    pf::ThreadSlice PF_CAT(pf_scoped_slice_g_, __COUNTER__)(                            \
+        (pf_slice_begin_g(name __VA_OPT__(, ) __VA_ARGS__), pf::ThreadSlice::Begun{}))
 
 /*
  * PF_KV() in C selects its helper with _Generic, which C++ lacks. Redefine it
