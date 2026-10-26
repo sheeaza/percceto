@@ -202,7 +202,7 @@ static int raw_emit_record(struct pf_trace *t, const struct pf_rec *r)
 int raw_drain_locked(struct pf_trace *t, const struct pf_chunk *head)
 {
     struct pf_walk w;
-    pf_walk_begin(&w, head);
+    pf_walk_enter(&w, head);
 
     const struct pf_rec *rec;
     while ((rec = pf_walk_next(&w)) != NULL) {

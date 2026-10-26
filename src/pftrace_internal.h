@@ -195,9 +195,6 @@ struct pf_writer {
 #define PF_NAME_WARM 256u
 #define PF_PACKET_WARM (PF_REC_HEAD_BYTES + PF_NAME_WARM)
 
-/* Longest name an event with args may take once its arguments are rendered,
- * including the NUL. A longer result falls back to the bare format string. */
-
 /* Flush the staging buffer once it passes this, so one write() carries many
  * packets instead of one syscall per event. */
 #define PF_OUT_FLUSH_THRESHOLD (128u * 1024u)
@@ -351,9 +348,6 @@ struct pf_trace {
         struct pb_buf scratch_a;
         struct pb_buf scratch_b;
         struct pb_buf scratch_c;
-        /* Holds one InternedData entry while it is built, before being
-         * embedded into scratch_a. Separate so the two never alias. */
-        struct pb_buf scratch_entry;
     } pb;
 
     /* Staging for the raw path, one buffer per chunk kind. Each is emitted
@@ -372,9 +366,12 @@ struct pf_trace {
 
 /* --- Chunk pool and writers, defined in pf_chunk.c ---------------------- */
 
+/* Bytes one chunk of @slots records takes in the pool, header included,
+ * padded to a cache line. */
+size_t pf_chunk_bytes(uint32_t slots);
+
 /* Allocates the pool and writer table. The pool is the trace's only sizeable
  * allocation. Returns 0, or -1 with errno set. */
-size_t pf_chunk_bytes(uint32_t slots);
 int pf_pool_init(struct pf_trace *t);
 void pf_pool_destroy(struct pf_trace *t);
 
@@ -503,11 +500,6 @@ static inline void pf_walk_enter(struct pf_walk *w, const struct pf_chunk *c)
     w->end = c ? atomic_load_explicit(&c->used, memory_order_acquire) : 0;
 }
 
-static inline void pf_walk_begin(struct pf_walk *w, const struct pf_chunk *head)
-{
-    pf_walk_enter(w, head);
-}
-
 /* A record's size in its chunk: the head, the argument section if any, and any
  * copied name padded to PF_REC_ALIGN. Read from the head, so the walk needs no
  * index. */
@@ -539,7 +531,8 @@ static inline const struct pf_rec *pf_walk_next(struct pf_walk *w)
     return r;
 }
 
-/* --- Shared helpers, defined in pftrace.c ------------------------------ */
+/* --- Shared helpers ----------------------------------------------------
+ * now_ns is inline; the rest are defined in pftrace.c. */
 
 static inline uint64_t now_ns(clockid_t clk)
 {

@@ -12,7 +12,7 @@ struct pf_writer;
 
 /* Producer-side protobuf encoding. Each event is encoded into its writer's
  * chunk as one Trace.packet, so the drain copies bytes and does not encode.
- * Field numbers are from the Perfetto schema, as pftrace_pb.c used them. */
+ * Field numbers are from the Perfetto schema. */
 
 /* Trace and TracePacket */
 #define FN_TRACE_PACKET 1

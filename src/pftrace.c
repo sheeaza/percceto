@@ -26,8 +26,8 @@
  * Fixed-capacity open-addressing hash table (name -> iid). Owned
  * exclusively by whichever thread is draining, serialized by
  * pf_trace.out_lock, so it needs no locking of its own. If it ever fills
- * up, callers fall back to inline string fields instead of iids -- always
- * correct, just less deduplicated.
+ * up, a lookup of a new key fails and the caller writes its definition
+ * again -- always correct, just less deduplicated.
  *
  * Keyed on the name's *address*, not its bytes. Names are string literals
  * (pf_slice_begin enforces it), so one call site always presents the same
@@ -108,11 +108,9 @@ static void staging_init(struct pf_trace *t)
         pb_buf_init(&t->pb.scratch_a);
         pb_buf_init(&t->pb.scratch_b);
         pb_buf_init(&t->pb.scratch_c);
-        pb_buf_init(&t->pb.scratch_entry);
         pb_buf_warm(&t->pb.scratch_a, PF_PACKET_WARM + 256);
         pb_buf_warm(&t->pb.scratch_b, PF_PACKET_WARM + 256);
         pb_buf_warm(&t->pb.scratch_c, PF_PACKET_WARM + 512);
-        pb_buf_warm(&t->pb.scratch_entry, PF_NAME_WARM + 64);
     }
 }
 
@@ -130,7 +128,6 @@ static void staging_free(struct pf_trace *t)
         pb_buf_free(&t->pb.scratch_a);
         pb_buf_free(&t->pb.scratch_b);
         pb_buf_free(&t->pb.scratch_c);
-        pb_buf_free(&t->pb.scratch_entry);
     }
 }
 
@@ -264,13 +261,13 @@ static bool leaf_name_ok(const char *name)
            strcmp(name, ".") != 0 && strcmp(name, "..") != 0;
 }
 
-/* The name a caller passes to pf_trace_open or a dump must match the mode:
- * continuous names its one file at open and dumps take none; snapshot names
- * each dump and takes no name at open. */
 /* Room a rotated file name needs after the configured name: a dot and up to
  * ten digits for a 32-bit slot index. */
 #define ROTATE_SUFFIX_MAX 12
 
+/* The name a caller passes to pf_trace_open or a dump must match the mode:
+ * continuous names its one file at open and dumps take none; snapshot names
+ * each dump and takes no name at open. */
 static bool open_name_ok(const struct pf_config *cfg)
 {
     return cfg->mode == PF_MODE_CONTINUOUS ? leaf_name_ok(cfg->name) : cfg->name == NULL;
@@ -487,7 +484,8 @@ static struct pf_writer *emit_start(struct pf_trace *t, uint64_t *ts)
 
 /* Returns room for a raw record of @rec_size bytes in @w's chunk, rotating
  * when the rest of the chunk is too small, or NULL when the record is dropped.
- * Records are never split; see TODO item 3. A record larger than a whole
+ * Records are never split across chunks, so the drain can walk each chunk on
+ * its own. A record larger than a whole
  * chunk payload cannot be stored at all, so it is dropped and counted. */
 static struct pf_rec *raw_reserve(struct pf_trace *t, struct pf_writer *w, uint32_t rec_size)
 {

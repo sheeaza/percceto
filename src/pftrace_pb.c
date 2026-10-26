@@ -7,9 +7,8 @@
 #include "pf_encode.h"
 #include "pftrace_internal.h"
 
-/* --- Confirmed Perfetto wire-format field numbers -------------------
- * Pulled directly from the compiled perfetto_trace_pb2 DESCRIPTOR (the
- * official schema), not from memory. The event-side numbers are in
+/* --- Perfetto wire-format field numbers ------------------------------
+ * From the official Perfetto schema. The event-side numbers are in
  * pf_encode.h, where the producer encodes them. */
 
 /* TracePacket, for the descriptor packets this file writes. The clock snapshot
