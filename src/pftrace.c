@@ -1,4 +1,7 @@
+/* gettid() and pthread_getname_np() are GNU extensions. */
+#ifndef _GNU_SOURCE
 #define _GNU_SOURCE
+#endif
 
 #include <errno.h>
 #include <fcntl.h>
