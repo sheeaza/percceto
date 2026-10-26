@@ -984,10 +984,18 @@ formats.
 `writev` over the chunk list removes the copy. The drain's tail is already 1 to
 3 ns/event, so this mainly saves memory bandwidth. Low priority.
 
-## 22. TLS model
+## ~~22. TLS model~~ (done)
 
 Built into a shared object, `pf_tls` becomes a `__tls_get_addr` call. Set
 `-ftls-model=initial-exec` on the library.
+
+Done: `src/CMakeLists.txt` sets `-ftls-model=initial-exec` on the `pftrace`
+target. `pf_chunk.o` now reads `pf_tls` through `%fs` with no
+`__tls_get_addr` call. The full `ctest` suite passes, 70 of 70. The library is
+still static, so this has no effect until it is linked into a shared object.
+A `dlopen`ed shared object with initial-exec TLS can fail when static TLS
+space runs out. Check that case before relying on it. The sanitized variants
+are not changed.
 
 ## 23. Counter values on a track that is not a counter track
 

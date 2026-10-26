@@ -23,6 +23,11 @@ target_link_libraries(pftrace PUBLIC Threads::Threads)
 # feature macro from consumers.
 target_compile_definitions(pftrace PRIVATE _DEFAULT_SOURCE)
 
+# pf_tls is accessed only from these sources. initial-exec gives each access
+# a fixed TLS offset, so it does not go through __tls_get_addr when the
+# library is linked into a shared object.
+target_compile_options(pftrace PRIVATE -ftls-model=initial-exec)
+
 set_target_properties(pftrace PROPERTIES
   C_VISIBILITY_PRESET hidden
   VISIBILITY_INLINES_HIDDEN ON
