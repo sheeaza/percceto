@@ -321,7 +321,9 @@ uint64_t pf_writers_dropped(struct pf_trace *t)
     return total;
 }
 
-void pf_writer_flush_own_locked(struct pf_trace *t)
+/* Continuous drain: commits the calling thread's partial chunk, so the drain
+ * includes its last events. Caller holds pool_lock. */
+static void pf_writer_flush_own_locked(struct pf_trace *t)
 {
     struct pf_tls_slot *s = &pf_tls.slots[t->index];
     if (s->trace != t || !s->writer)

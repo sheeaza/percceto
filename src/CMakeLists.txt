@@ -6,9 +6,12 @@
 add_library(pftrace STATIC
   pb_writer.c
   pf_chunk.c
+  pf_emit.c
+  pf_output.c
   pf_pb_drain.c
   pf_pb_encode.c
   pf_raw.c
+  pf_track.c
   pftrace.c
 )
 
@@ -45,7 +48,8 @@ set_target_properties(pftrace PROPERTIES
 function(pftrace_add_sanitized name sanitizer)
   set(target pftrace${name})
   add_library(${target} STATIC
-    pb_writer.c pf_chunk.c pf_pb_drain.c pf_pb_encode.c pf_raw.c pftrace.c)
+    pb_writer.c pf_chunk.c pf_emit.c pf_output.c pf_pb_drain.c pf_pb_encode.c pf_raw.c
+    pf_track.c pftrace.c)
   target_include_directories(${target}
     PUBLIC ${PROJECT_SOURCE_DIR}/include
     PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}

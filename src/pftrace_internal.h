@@ -404,10 +404,6 @@ bool pf_writer_rotate(struct pf_trace *t, struct pf_writer *w);
 struct pf_chunk *pf_committed_take(struct pf_trace *t);
 void pf_chunks_release(struct pf_trace *t, struct pf_chunk *head);
 
-/* Continuous drain: commits the calling thread's partial chunk, so the drain
- * includes its last events. Caller holds pool_lock. */
-void pf_writer_flush_own_locked(struct pf_trace *t);
-
 /* Snapshot drain: the committed FIFO stays in place while the lock is held,
  * so producers that need a chunk wait until the dump is done. Every writer's
  * partial chunk is linked after the FIFO, so one walk covers all of them. It
@@ -543,8 +539,7 @@ static inline const struct pf_rec *pf_walk_next(struct pf_walk *w)
     return r;
 }
 
-/* --- Shared helpers ----------------------------------------------------
- * now_ns is inline; the rest are defined in pftrace.c. */
+/* --- Shared helpers ---------------------------------------------------- */
 
 static inline uint64_t now_ns(clockid_t clk)
 {
@@ -553,10 +548,23 @@ static inline uint64_t now_ns(clockid_t clk)
     return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
 }
 
-int out_flush(struct pf_trace *t);
-bool intern_lookup_or_insert(struct intern_table *tab, const char *key, uint64_t *iid_out,
-                             bool *is_new_out);
+/* Resets @tab to empty, with iids starting from 1. Defined in pf_raw.c. */
 void intern_table_reset(struct intern_table *tab);
+
+/* --- Track table, defined in pf_track.c --------------------------------- */
+
+/* Copies @name into @dst, a PF_TRACK_NAME_MAX buffer, cut to fit. */
+void copy_track_name(char *dst, const char *name);
+
+/* Appends a track and returns its uuid, or 0 when the table is full. Takes
+ * track_lock. */
+uint64_t track_add(struct pf_trace *t, enum track_kind kind, uint64_t parent_uuid, int32_t pid,
+                   int32_t tid, const char *name, enum pf_unit unit);
+
+/* Renames the track @uuid. The new name is picked up by the next drain,
+ * which re-emits the descriptor. No-op for an unknown uuid. Takes
+ * track_lock. */
+void track_rename(struct pf_trace *t, uint64_t uuid, const char *name);
 
 /* Copies track @i into @out if its descriptor is due: it was registered at
  * or after index @first, or it was renamed since it was last emitted. On
@@ -571,8 +579,22 @@ bool track_emit_due(struct pf_trace *t, unsigned i, unsigned first, struct track
 int pb_drain_locked(struct pf_trace *t, const struct pf_chunk *head);
 int raw_drain_locked(struct pf_trace *t, const struct pf_chunk *head);
 int raw_write_header(struct pf_trace *t); /* pf_raw.c */
-/* Continuous rotation, pftrace.c. Caller holds out_lock. */
+
+/* --- Output and the drain, defined in pf_output.c ------------------------ */
+
+/* Writes the staged output buffer to the open file. Caller holds out_lock. */
+int out_flush(struct pf_trace *t);
+
+/* Continuous rotation. Caller holds out_lock. */
 bool rotate_due(const struct pf_trace *t, size_t next);
 int rotate_locked(struct pf_trace *t);
+
+/* Whether the file name in @cfg suits its mode; see pf_config.name. */
+bool open_name_ok(const struct pf_config *cfg);
+
+/* Continuous mode: starts the drain thread, and stops it. Stopping joins the
+ * thread and writes whatever is still buffered. Start returns 0, or -1. */
+int pf_drain_start(struct pf_trace *t);
+void pf_drain_stop(struct pf_trace *t);
 
 #endif /* PFTRACE_INTERNAL_H */

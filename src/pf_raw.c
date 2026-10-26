@@ -22,6 +22,63 @@
 #define RAW_CHUNK_EVENTS 3u
 #define RAW_CHUNK_KEYS 4u
 
+/* --- Interning table --------------------------------------------------
+ * Fixed-capacity open-addressing hash table (name -> iid). Owned
+ * exclusively by whichever thread is draining, serialized by
+ * pf_trace.out_lock, so it needs no locking of its own. If it ever fills
+ * up, a lookup of a new key fails and the caller writes its definition
+ * again -- always correct, just less deduplicated.
+ *
+ * Keyed on the name's *address*, not its bytes. Names are string literals
+ * (pf_slice_begin enforces it), so one call site always presents the same
+ * pointer and a hit is a single comparison with no hashing of characters.
+ * Two identical literals in different translation units may not coalesce,
+ * which costs a duplicate iid for the same text -- harmless, and the
+ * Perfetto UI shows both as the same name. */
+
+/* Fibonacci hashing, to mix an address whose low bits are often
+ * predictable (literals land adjacent in .rodata) into the whole index. */
+static uint64_t hash_ptr(const char *p)
+{
+    return (uint64_t)(uintptr_t)p * 11400714819323198485ULL >> 32;
+}
+
+/* Returns true if `key` is now represented by *iid_out (found or newly
+ * inserted); *is_new_out tells the caller whether this is a fresh
+ * entry that still needs an InternedData record emitted. Returns false
+ * only when the table is full and `key` wasn't already present. */
+static bool intern_lookup_or_insert(struct intern_table *tab, const char *key, uint64_t *iid_out,
+                                    bool *is_new_out)
+{
+    size_t idx = (size_t)(hash_ptr(key) % PF_INTERN_CAP);
+    for (size_t probe = 0; probe < PF_INTERN_CAP; probe++) {
+        struct intern_slot *slot = &tab->slots[idx];
+        if (!slot->key) {
+            if (tab->count >= PF_INTERN_CAP)
+                return false;
+            slot->key = key;
+            slot->iid = tab->next_iid++;
+            tab->count++;
+            *iid_out = slot->iid;
+            *is_new_out = true;
+            return true;
+        }
+        if (slot->key == key) {
+            *iid_out = slot->iid;
+            *is_new_out = false;
+            return true;
+        }
+        idx = (idx + 1) % PF_INTERN_CAP;
+    }
+    return false;
+}
+
+void intern_table_reset(struct intern_table *tab)
+{
+    memset(tab, 0, sizeof(*tab));
+    tab->next_iid = 1;
+}
+
 /* Field writers. The width comes from the parameter type, so each call site
  * casts to the width the spec gives. Host byte order is the file's byte order
  * because raw_write_header refuses big-endian builds. */
