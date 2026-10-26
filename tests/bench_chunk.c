@@ -1,7 +1,6 @@
 /* Cost of the chunk buffers, by chunk size and by thread count.
  *
- * bench.c measures one thread against one snapshot trace. This one asks two
- * questions about the chunk design:
+ * This asks two questions about the chunk design:
  *
  *  - Rotation: a producer takes the pool lock once per chunk. Sweeping
  *    chunk_slots shows what that costs per event, from a chunk of 16 records
@@ -15,13 +14,12 @@
  * alone. After the first wrap every rotation steals a committed chunk under
  * the pool lock, which is the steady-state cost a producer pays. The first
  * pass over fresh pages is short against the run, so page faults barely show.
- * Drain cost is measured by bench.c.
  *
  * The library reads the clock on every event. Where clock_gettime() is a real
  * syscall rather than a vDSO read, that cost dwarfs the buffer work, so this
- * program stubs the library's clock with a counter, as the other benches do. The
- * timing loops use a direct syscall so their numbers are real. The raw clock
- * cost is printed on the first line for comparison.
+ * program stubs the library's clock with a counter. The timing loops use a
+ * direct syscall so their numbers are real. The raw clock cost is printed on
+ * the first line for comparison.
  */
 
 #define _GNU_SOURCE

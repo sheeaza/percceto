@@ -1,10 +1,8 @@
 /* Per-event cost on each side of the chunk buffers: the producer that emits
  * records, and the consumer that drains them.
  *
- * bench_chunk measures the producer alone, in snapshot mode, where nothing is
- * drained. bench.c measures one snapshot dump. This one runs continuous mode,
- * so the drain thread is live while the producers emit, and reports both
- * sides of the same run:
+ * This program runs continuous mode, so the drain thread is live while the
+ * producers emit, and reports both sides of the same run:
  *
  *  - Producer: ns per event on each emitting thread, from its first emit to
  *    its last. This is what the caller pays.
@@ -29,7 +27,7 @@
  *    counted from the emits, not assumed.
  *
  * The library reads the clock on every event, so this program stubs it with a
- * counter, as bench_chunk does. The timing loops use a direct syscall.
+ * counter. The timing loops use a direct syscall.
  */
 
 #define _GNU_SOURCE
@@ -48,8 +46,8 @@
 #define MAX_THREADS 12
 #define EVENTS_PER_THREAD 2000000u
 
-/* Stubs the library's clock. Thread-local, as in bench_chunk, so the stub adds
- * no shared cache line for the producers to contend on. */
+/* Stubs the library's clock. Thread-local, so the stub adds no shared cache
+ * line for the producers to contend on. */
 static __thread uint64_t g_fake_ns;
 int clock_gettime(clockid_t clk, struct timespec *ts)
 {

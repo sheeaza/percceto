@@ -9,7 +9,7 @@
  * Single-threaded, but measuring the same reserve path a multi-threaded
  * caller takes: the fetch-add is unconditional, so this is the uncontended
  * cost of the real thing rather than a cheaper special case. Contention
- * adds to it; see test_stress for behaviour under several producers.
+ * adds to it, so multi-producer cost is higher than shown here.
  */
 
 #include <inttypes.h>

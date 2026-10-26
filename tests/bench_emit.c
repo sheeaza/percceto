@@ -1,6 +1,6 @@
 /* Producer cost per event kind, for each output format.
  *
- * bench_chunk times one shape, a static begin and an end. The emit path
+ * Timing so far covers one shape, a static begin and an end. The emit path
  * branches on the kind of event: a counter has a value and no name, a dynamic
  * name is copied, arguments add a section or annotations. This one times each
  * kind on its own, so a change to one branch shows on its line rather than in
@@ -8,7 +8,7 @@
  *
  * One thread, snapshot mode, with a pool small enough to wrap, so rotation is
  * in the steady state and nothing drains. The library's clock is stubbed with
- * a counter, as bench_chunk does; the timing uses a direct syscall. Each line
+ * a counter; the timing uses a direct syscall. Each line
  * is the best of several runs, which is steadier than the mean on a busy box.
  */
 

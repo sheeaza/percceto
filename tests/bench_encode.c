@@ -61,7 +61,7 @@ static const char *const kNames[NAMES] = {
     "hash",  "copy",   "filter", "reduce", "index",    "flush", "wait",  "notify",
 };
 
-/* Name lookup, as in bench_intern.c: a scan of a writer's 32 slots, or one
+/* Name lookup: a scan of a writer's 32 slots, or one
  * frozen global hash table. Each returns the name index, which feeds the
  * encode so the lookup is not dropped. */
 #define WRITER_SLOTS 32u
