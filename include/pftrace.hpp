@@ -228,10 +228,9 @@ inline void instant_args(pf_trace *t, uint64_t track_uuid, const char *name,
  *      the constraint on static buffers.
  * @...: Arguments for @name as a printf format.
  */
-#define PF_SCOPED_SLICE(t, track_uuid, name, ...)                                 \
-    pf::Slice PF_CAT(pf_scoped_slice_, __COUNTER__)(                              \
-        (pf_slice_begin((t), (track_uuid), name __VA_OPT__(, ) __VA_ARGS__),      \
-         pf::Slice::Begun{}),                                                     \
+#define PF_SCOPED_SLICE(t, track_uuid, name, ...)                                                 \
+    pf::Slice PF_CAT(pf_scoped_slice_, __COUNTER__)(                                              \
+        (pf_slice_begin((t), (track_uuid), name __VA_OPT__(, ) __VA_ARGS__), pf::Slice::Begun{}), \
         (t), (track_uuid))
 
 /**
@@ -240,8 +239,8 @@ inline void instant_args(pf_trace *t, uint64_t track_uuid, const char *name,
  * @name: Slice name, dispatched as PF_SCOPED_SLICE() dispatches it.
  * @...: Arguments for @name as a printf format.
  */
-#define PF_SCOPED_SLICE_G(name, ...)                                                    \
-    pf::ThreadSlice PF_CAT(pf_scoped_slice_g_, __COUNTER__)(                            \
+#define PF_SCOPED_SLICE_G(name, ...)                         \
+    pf::ThreadSlice PF_CAT(pf_scoped_slice_g_, __COUNTER__)( \
         (pf_slice_begin_g(name __VA_OPT__(, ) __VA_ARGS__), pf::ThreadSlice::Begun{}))
 
 /*
