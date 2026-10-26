@@ -1,4 +1,5 @@
-/* Prototype for TODO_done.md item 3: what protobuf encoding costs on the producer.
+/* Prototype for docs/TODO_done.md item 3: what protobuf encoding costs on the
+ * producer.
  *
  * The drain currently encodes each record into a TracePacket. Moving that onto
  * the emitting thread adds the same work to the caller. This measures that
