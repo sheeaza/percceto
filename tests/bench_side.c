@@ -26,8 +26,10 @@
  *    counter sample. About 1.4 records per iteration, so events per thread are
  *    counted from the emits, not assumed.
  *
- * The library reads the clock on every event, so this program stubs it with a
- * counter. The timing loops use a direct syscall.
+ * The library reads the clock on every event, so by default this program stubs
+ * it with a counter. Build with -DBENCH_SIDE_REAL_CLOCK to leave the library's
+ * clock_gettime alone and measure with the real per-event clock read. The
+ * timing loops use a direct syscall either way.
  */
 
 #define _GNU_SOURCE
@@ -49,6 +51,7 @@
 #define MAX_CPUS 256
 #define EVENTS_PER_THREAD 2000000u
 
+#ifndef BENCH_SIDE_REAL_CLOCK
 /* Stubs the library's clock. Thread-local, so the stub adds no shared cache
  * line for the producers to contend on. */
 static __thread uint64_t g_fake_ns;
@@ -60,6 +63,7 @@ int clock_gettime(clockid_t clk, struct timespec *ts)
     ts->tv_nsec = (long)(g_fake_ns % 1000000000u);
     return 0;
 }
+#endif
 
 static uint64_t now_ns(void)
 {

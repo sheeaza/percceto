@@ -821,17 +821,17 @@ Cancelled after measuring with clang 21.1.8. `bench_side`, scratch builds,
   line `pf_writer_for` already reads and a branch that never changes for a
   trace, so the expected gain is under 1 ns.
 
-## 16. Timestamp source
+## ~~16. Timestamp source~~ (cancelled)
 
-`now_ns()` calls `clock_gettime(CLOCK_BOOTTIME)` on every event. `bench_side`
-stubs it, so no table above includes it. A vDSO call costs about 15 to 25 ns
-on bare metal, the size of the whole encoder, and 4.4 us was measured on a VM
-(see "Emit path: argument count").
-
-Option: read the TSC (or `cntvct_el0` on ARM) and have the drain emit a
-`ClockSnapshot` that maps a custom clock id to BOOTTIME periodically. Perfetto
-converts on import. Needs an invariant TSC check at open and a fallback to
-`clock_gettime`.
+~~`now_ns()` calls `clock_gettime(CLOCK_BOOTTIME)` on every event. Measured
+with `bench_side` built with `-DBENCH_SIDE_REAL_CLOCK` (the real clock) against
+the stub, ten interleaved passes: the real clock adds about 4 to 8 ns per event
+at 1 to 16 threads, 8 ns on `simple`. Reading `rdtsc` in its place (benchmark
+build only, no snapshot or conversion) saves about 5 ns on average, 6 ns on
+`simple`. Not worth the cost: the TSC path needs a snapshot mapping to BOOTTIME,
+a per-chunk clock read, a 128-bit tick-to-ns conversion on every event, an
+invariant-TSC check and frequency calibration at open, and a drift bound
+between snapshots. Perfetto's handling of a secondary clock was not checked.~~
 
 ## ~~17. Smaller packets with incremental state~~ (done)
 
