@@ -604,7 +604,7 @@ The per-thread producer cost grows with thread count, from about 17 ns at 1
 thread to about 45 ns at 8 on the simple workload. The single-thread encoder
 cannot explain that, so items 14 and 15 come first.
 
-## 14. Per-thread cost growth with thread count
+## ~~14. Per-thread cost growth with thread count~~ (done)
 
 Find out why the cost per event rises with threads before changing the encoder.
 Profile `bench_side` at 1 and 8 threads with `perf stat` and `perf c2c`.
@@ -775,9 +775,11 @@ Two symbols in the profile are outside the producer numbers. `clock_gettime`
 `__madvise` from the pool pre-fault in `pf_trace_open`, which the producer
 window does not include.
 
-`perf c2c` is still not run. The `pf_trace` field split was judged not worth
-changing at 4096 slots and is not measured. Re-measure the pool lock only if
-the 1-thread or 8-thread rows regress.
+`perf c2c` on `simple`, 8 threads, 4096 slots, found 2 shared cache lines and
+3 HITM events in 5621 samples, all local: `pf_pb_place` (2) and `pf_slice_end`
+(1). That is negligible, so the `pf_trace` field split is not worth doing at
+this chunk size. Re-measure the pool lock or the field layout only if the
+1-thread or 8-thread rows regress. Item 14 is closed.
 
 ## ~~15. Fewer call layers on the hot path~~ (cancelled)
 
