@@ -544,6 +544,19 @@ static void raw_commit(struct pf_writer *w, uint32_t rec_size)
     pf_writer_publish(w);
 }
 
+/* Writes a raw record that is the head alone: no arguments, no copied name.
+ * @u fills the name/value union: a borrowed name, a counter value, or 0. */
+static void raw_emit_head(struct pf_trace *t, struct pf_writer *w, uint64_t ts, uint64_t track,
+                          uint32_t type, uint32_t flags, uint64_t u)
+{
+    struct pf_rec *r = raw_reserve(t, w, PF_REC_HEAD_BYTES);
+    if (!r)
+        return;
+    raw_head(r, ts, track, type, flags);
+    r->u.value = u;
+    raw_commit(w, PF_REC_HEAD_BYTES);
+}
+
 /* A counter sample: a value and no name, in the head alone. */
 static void emit_counter(struct pf_trace *t, uint64_t track_uuid, uint64_t raw_value,
                          bool value_is_double)
@@ -557,13 +570,8 @@ static void emit_counter(struct pf_trace *t, uint64_t track_uuid, uint64_t raw_v
         return;
     }
 
-    struct pf_rec *r = raw_reserve(t, w, PF_REC_HEAD_BYTES);
-    if (!r)
-        return;
-    raw_head(r, ts, track_uuid, TYPE_COUNTER,
-             RF_HAS_VALUE | (value_is_double ? RF_VALUE_IS_DOUBLE : 0u));
-    r->u.value = raw_value;
-    raw_commit(w, PF_REC_HEAD_BYTES);
+    raw_emit_head(t, w, ts, track_uuid, TYPE_COUNTER,
+                  RF_HAS_VALUE | (value_is_double ? RF_VALUE_IS_DOUBLE : 0u), raw_value);
 }
 
 /* An event with a static name, in the head alone. */
@@ -578,12 +586,7 @@ static void emit_named(struct pf_trace *t, uint32_t type, uint64_t track_uuid, c
         return;
     }
 
-    struct pf_rec *r = raw_reserve(t, w, PF_REC_HEAD_BYTES);
-    if (!r)
-        return;
-    raw_head(r, ts, track_uuid, type, 0u);
-    r->u.name = name;
-    raw_commit(w, PF_REC_HEAD_BYTES);
+    raw_emit_head(t, w, ts, track_uuid, type, 0u, (uint64_t)(uintptr_t)name);
 }
 
 /* An event with a static name and 1 to PF_MAX_ARGS typed arguments, as
@@ -625,12 +628,7 @@ static void emit_dyn(struct pf_trace *t, uint32_t type, uint64_t track_uuid, con
     }
 
     if (!name) {
-        struct pf_rec *r = raw_reserve(t, w, PF_REC_HEAD_BYTES);
-        if (!r)
-            return;
-        raw_head(r, ts, track_uuid, type, 0u);
-        r->u.name = NULL;
-        raw_commit(w, PF_REC_HEAD_BYTES);
+        raw_emit_head(t, w, ts, track_uuid, type, 0u, 0);
         return;
     }
     bool cut;
@@ -663,12 +661,7 @@ static void emit_end(struct pf_trace *t, uint64_t track_uuid)
         return;
     }
 
-    struct pf_rec *r = raw_reserve(t, w, PF_REC_HEAD_BYTES);
-    if (!r)
-        return;
-    raw_head(r, ts, track_uuid, TYPE_SLICE_END, 0u);
-    r->u.name = NULL;
-    raw_commit(w, PF_REC_HEAD_BYTES);
+    raw_emit_head(t, w, ts, track_uuid, TYPE_SLICE_END, 0u, 0);
 }
 
 void pf_slice_begin_args_impl(struct pf_trace *t, uint64_t track_uuid, const char *name,
