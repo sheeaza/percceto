@@ -4,8 +4,11 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <time.h>
 
-#include "pftrace_internal.h"
+struct pf_arg;
+struct pf_trace;
+struct pf_writer;
 
 /* Producer-side protobuf encoding. Each event is encoded into its writer's
  * chunk as one Trace.packet, so the drain copies bytes and does not encode.

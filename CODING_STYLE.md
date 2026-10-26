@@ -145,3 +145,36 @@ Every header must compile on its own. A `.c` file that contains only
 `#include "header.h"` must compile cleanly with the project's flags, including
 `-Werror`. The header includes everything it uses, so no includer has to add
 headers first.
+
+## Forward declarations in headers
+
+When a header uses another header's struct only through a pointer, forward
+declare the struct instead of including that header. The header stays
+self-contained: a pointer to an incomplete type compiles without the full
+definition.
+
+- A forward declaration is enough for pointer members, and for pointer
+  parameters and return types in prototypes.
+- Include the header when the full definition is needed: a member held by
+  value, an array of the struct, `sizeof` or `offsetof` on it, or an inline
+  function or macro in the header that reads its fields.
+- The `.c` that dereferences the pointer includes the defining header itself.
+- Forward declare only structs. A typedef, an enum, or a macro from the other
+  header still needs the include.
+
+```c
+/* h1.h */
+struct h2_xxx; /* used only by pointer, so h2.h is not included */
+
+struct h1_xxx {
+    struct h2_xxx *obj;
+};
+
+/* h2.h */
+struct h2_xxx {
+    int field;
+};
+```
+
+Fewer includes mean fewer rebuilds when `h2.h` changes, and no include cycles
+when two headers point at each other.
