@@ -320,7 +320,7 @@ longer releases the first.~~
 with `ENOSPC`. The lookup costs about the same as the single slot at 8 threads
 (within noise). At 1 thread it may cost 0.5–1 ns per event, which is about the
 size of the noise, so this is not settled. The simple API's thread track uuid is
-still one TLS slot (`tl_slot` in `pftrace.c`), so the uuid is for one trace
+still one TLS slot (`tl_slot` in `pf_emit.c`), so the uuid is for one trace
 only; that is left as it is.~~
 
 ## ~~8. Bounded, rotating output in continuous mode~~ (done)
@@ -427,7 +427,7 @@ other: 424.9M for `146f39c`, 423.4M for `69c7460`, so the extra time is not
 extra work. Passing the address of the local `pb_args` into the size and encode
 helpers on the no-argument path cost about 2 ns on realistic. Passing a static
 empty `pb_args` on that path recovered it, at 28.5 ns. The mechanism is not
-confirmed; padding the stack frame alone did not recover it. `src/pf_encode.c`
+confirmed; padding the stack frame alone did not recover it. `src/pf_pb_encode.c`
 is back at `146f39c` for readability.
 
 Args workload: `bench_side` has an `args` workload, which calls
@@ -462,8 +462,8 @@ arguments as the protobuf path. The raw format is version 6:
   The layout is in `docs/raw_format.md`.
 - Argument keys are sent in a KEYS chunk (kind 4), defined once per file, the
   same way event names are in the NAMES chunk.
-- The raw writer in `src/pftrace.c` writes the section; the drain in
-  `src/pftrace_raw.c` defines the keys.
+- The raw writer in `src/pf_emit.c` writes the section; the drain in
+  `src/pf_raw.c` defines the keys.
 - `tools/pfraw2pb.py` reads version 6 and emits each argument as a
   DebugAnnotation with `name_iid`.
 - `tests/test_raw_roundtrip.c` has its own reader for the section and checks an
@@ -512,7 +512,7 @@ were taken with different settings.
 
 ## ~~13. Intern debug annotation names~~ (done)
 
-`enc_annotation` in `src/pf_encode.c` writes each argument's key inline, on
+`enc_annotation` in `src/pf_pb_encode.c` writes each argument's key inline, on
 every event. Keys are string literals, so they can be interned like event
 names, and that would cut the bytes and encode work on the args path.
 
@@ -589,7 +589,7 @@ Within the spread of the inline build in every row. Not adopted: the call sites
 get harder to read and the measured gain is not there.
 
 Decision: the change to make is `always_inline` on `emit_event_args`. Keep the
-three bools. Not yet applied to `src/pftrace.c`.
+three bools. Not yet applied to `src/pf_emit.c`.
 
 Withdrawn: with clang 21.1.8 the same change is about 1.3 ns slower at one
 thread. See item 15, cancelled.
@@ -798,7 +798,7 @@ Cancelled after measuring with clang 21.1.8. `bench_side`, scratch builds,
 |---|---:|---:|---:|
 | HEAD | 1.747G | 19.5 | 33.2 |
 | `always_inline` on `emit_event_args` | 1.723G | 20.9 | 33.1 |
-| that, with `pftrace.c` and `pf_encode.c` in one unit | 1.723G | 19.4 | 32.4 |
+| that, with `pf_emit.c` and `pf_pb_encode.c` in one unit | 1.723G | 19.4 | 32.4 |
 | that, with `pf_pb_emit` forced inline | 1.575G | 19.0 | 31.7 |
 
 - `always_inline` alone is about 1.3 ns slower at 1 thread, steady over 16
@@ -809,7 +809,7 @@ Cancelled after measuring with clang 21.1.8. `bench_side`, scratch builds,
 - One unit is not enough: clang does not inline `pf_pb_emit` on its own, so
   LTO alone would not help. Not tested with LTO itself, since the build
   environment has no lld.
-- Moving the emit path into `pf_encode.c` with `pf_pb_emit` forced inline gave
+- Moving the emit path into `pf_pb_encode.c` with `pf_pb_emit` forced inline gave
   protobuf about 2.5 to 3 ns at 1 thread (simple 19.5 to 17.1, realistic 29.3
   to 26.3, args 33.0 to 30.1) and 4 threads simple 25.1 to 19.6. Raw got
   slower, 8.4 to 9.3 ns, and up 4% in instructions: the shared function now
