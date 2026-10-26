@@ -101,7 +101,7 @@ target_link_libraries(bench_side PRIVATE pftrace Threads::Threads)
 add_executable(bench_emit bench_emit.c)
 target_link_libraries(bench_emit PRIVATE pftrace Threads::Threads)
 
-# Prototype for TODO item 3: protobuf encoding cost on the producer.
+# Prototype for TODO_done.md item 3: protobuf encoding cost on the producer.
 add_executable(bench_encode bench_encode.c)
 target_link_libraries(bench_encode PRIVATE pftrace)
 target_include_directories(bench_encode PRIVATE ${PROJECT_SOURCE_DIR}/src)

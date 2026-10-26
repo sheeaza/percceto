@@ -189,7 +189,7 @@ address reused while the cache points at it. This needs no registry.
 
 - A thread that never exits keeps the trace open, and its partial chunk is not
   written. A process that exits without its threads exiting loses those events.
-  This is the cost of close returning early; see TODO.md item 7 for the
+  This is the cost of close returning early; see TODO_done.md item 7 for the
   one-trace-per-thread limit that comes with it.
 - Continuous mode has no timer flush. A low-rate thread's last events are lost
   only if the process dies before its chunk fills, its thread exits, or the
@@ -205,7 +205,7 @@ address reused while the cache points at it. This needs no registry.
   emitting after close, so its events reach the file only at its exit.
 - Rebinding unbinds the old trace. A thread that binds a second trace gives up
   its first, and its later events go to the second only. This is a behaviour
-  change from the old last-bound-trace rule; see TODO.md item 7.
+  change from the old last-bound-trace rule; see TODO_done.md item 7.
 - Snapshot mode. Buffered events of a snapshot trace stay in memory until the
   last reference goes, and are lost then unless a dump was taken first. Close
   does not dump.
