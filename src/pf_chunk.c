@@ -227,7 +227,6 @@ struct pf_writer *pf_writer_bind(struct pf_trace *t)
     if (w) {
         w->cur = NULL;
         w->used = t->chunk_payload;
-        w->seq = 0;
     }
 
     pf_tls.slots[t->index].trace = t;
@@ -282,7 +281,6 @@ bool pf_writer_rotate(struct pf_trace *t, struct pf_writer *w)
         c->next = NULL;
         c->used = 0;
         c->writer = w->id;
-        c->seq = w->seq++;
         w->epoch++;
     }
     w->cur = c;

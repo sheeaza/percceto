@@ -126,7 +126,6 @@ struct pf_chunk {
      * record, so a snapshot dump can read a chunk that is still being filled. */
     _Atomic uint32_t used;
     uint32_t writer; /* owning writer slot */
-    uint64_t seq; /* per-writer chunk number */
     /* Records back to back: a head of PF_REC_HEAD_BYTES, plus a copied name.
      * Records never split across chunks: one that does not fit the rest
      * rotates to the next chunk. */
@@ -143,14 +142,13 @@ struct pb_intern_slot {
     uint32_t epoch;
 };
 
-/* One per bound thread. The producer owns @cur, @used and @seq. @bound is
+/* One per bound thread. The producer owns @cur and @used. @bound is
  * read and written only under reg_lock. Aligned to a cache line so two
  * producers' hot fields never share one; the array is allocated to match. */
 struct pf_writer {
     _Alignas(64) struct pf_chunk *cur; /* NULL until the first rotation */
     uint32_t used; /* bytes in @cur; a record that would pass chunk_payload rotates */
     uint32_t id;
-    uint64_t seq;
     /* Bumped on every rotation. A name's definition is in the current chunk
      * only if its cache slot was stamped with this epoch. */
     uint32_t epoch;
