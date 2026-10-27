@@ -122,8 +122,8 @@ int main(void)
     printf("  chunks: %" PRIu64 " x %" PRIu64 " bytes = %" PRIu64 " bytes pool, "
            "%" PRIu64 " bytes writer+track tables\n",
            s.chunk_count, s.chunk_bytes, s.pool_bytes, s.meta_bytes);
-    printf("  slots: %" PRIu64 " per chunk, %" PRIu64 " bytes per slot\n", s.chunk_slots,
-           s.slot_bytes);
+    printf("  payload: %" PRIu64 " bytes per chunk, %" PRIu64 " bytes per record\n",
+           s.chunk_payload, s.slot_bytes);
 
     pf_trace_close(t);
     dir_reset(dir);

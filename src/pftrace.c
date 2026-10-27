@@ -79,7 +79,7 @@ void pf_config_init(struct pf_config *cfg)
 {
     memset(cfg, 0, sizeof(*cfg));
     cfg->buffer_bytes = DEFAULT_BUFFER_BYTES;
-    cfg->chunk_slots = 256;
+    cfg->chunk_bytes = 256 * PF_REC_HEAD_BYTES;
     cfg->max_threads = 256;
     cfg->mode = PF_MODE_SNAPSHOT;
     cfg->format = PF_FORMAT_PROTOBUF;
@@ -101,7 +101,7 @@ static bool config_ok(const struct pf_config *cfg)
 {
     if (!cfg || !cfg->path || !open_name_ok(cfg) || !clock_ok(cfg->clock_id))
         return false;
-    return cfg->watermark_pct <= 99 && cfg->chunk_slots != 0 && cfg->max_threads != 0;
+    return cfg->watermark_pct <= 99 && cfg->chunk_bytes != 0 && cfg->max_threads != 0;
 }
 
 struct pf_trace *pf_trace_open(const struct pf_config *cfg)
@@ -239,7 +239,7 @@ void pf_trace_stats(const struct pf_trace *t, struct pf_stats *out)
     out->files_overwritten = atomic_load_explicit(&m->files_overwritten, memory_order_relaxed);
     /* Fixed at open, so no lock is needed to read them. */
     out->chunk_bytes = m->chunk_bytes;
-    out->chunk_slots = m->chunk_slots;
+    out->chunk_payload = m->chunk_payload;
     out->slot_bytes = PF_REC_HEAD_BYTES;
     out->chunk_count = m->chunk_count;
     out->pool_bytes = (uint64_t)m->chunk_bytes * m->chunk_count;

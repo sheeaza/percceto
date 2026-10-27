@@ -264,9 +264,7 @@ struct pf_trace {
     void *pool_mem;
     size_t chunk_bytes;
     uint32_t chunk_count;
-    uint32_t chunk_slots;
-    /* Record bytes a chunk holds: chunk_slots records. A writer's @used
-     * reaches this and rotates. */
+    /* Payload bytes a chunk holds. A writer's @used reaches this and rotates. */
     uint32_t chunk_payload;
     struct pf_chunk *free_list;
     /* Chunks on free_list. Written under pool_lock, read without it, so a
@@ -367,9 +365,9 @@ struct pf_trace {
 
 /* --- Chunk pool and writers, defined in pf_chunk.c ---------------------- */
 
-/* Bytes one chunk of @slots records takes in the pool, header included,
- * padded to a cache line. */
-size_t pf_chunk_bytes(uint32_t slots);
+/* Bytes one chunk with @payload bytes of records takes in the pool, header
+ * included, padded to a cache line. */
+size_t pf_chunk_bytes(size_t payload);
 
 /* Allocates the pool and writer table. The pool is the trace's only sizeable
  * allocation. Returns 0, or -1 with errno set. */

@@ -46,6 +46,9 @@
 #include "dump_dir.h"
 #include "pftrace.h"
 
+/* Record head size, as PF_REC_HEAD_BYTES in pftrace_internal.h. The bench stays on the public header. */
+#define REC_HEAD_BYTES 32
+
 #define DIR "bench_side.d"
 #define MAX_THREADS 256
 #define MAX_CPUS 256
@@ -225,7 +228,7 @@ static void run(unsigned threads, size_t slots, uint64_t pairs, enum workload lo
     cfg.format = want_raw ? PF_FORMAT_RAW : PF_FORMAT_PROTOBUF;
     cfg.mode = PF_MODE_CONTINUOUS;
     cfg.buffer_bytes = 2048u << 20;
-    cfg.chunk_slots = slots;
+    cfg.chunk_bytes = slots * REC_HEAD_BYTES;
     cfg.max_threads = threads;
 
     struct pf_trace *t = pf_trace_open(&cfg);
@@ -273,7 +276,7 @@ static void run(unsigned threads, size_t slots, uint64_t pairs, enum workload lo
         snprintf(place, sizeof(place), "P %2u, E %2u", on_p, threads - on_p);
     else
         snprintf(place, sizeof(place), "unpinned");
-    printf("%-9s threads %2u (%s), chunk_slots %5zu: producer %6.1f ns/event, "
+    printf("%-9s threads %2u (%s), records/chunk %5zu: producer %6.1f ns/event, "
            "consumer tail %6.1f ns/event, %" PRIu64 " events, %" PRIu64 " dropped\n",
            kLabels[load], threads, place, slots, producer_ns, consumer_ns, emitted, s.dropped);
     dir_reset(DIR);

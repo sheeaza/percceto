@@ -27,7 +27,7 @@ raw records" below.
 ## Config
 
 - `buffer_bytes`: total buffering budget. Default 8 MiB. Must hold two chunks.
-- `chunk_slots`: chunk size in records. Default 256. Chunk bytes follow from it.
+- `chunk_bytes`: chunk payload size in bytes. Default 8 KiB, which is 256 raw records. The pool chunk adds a header.
 - `max_threads`: writer slots. Default 256.
 
 ## Hot path
@@ -62,8 +62,7 @@ trade-offs are the same as for protobuf entries, and are set out in
 - A name longer than `PF_DYN_NAME_MAX` is cut to the cap, ending in `...`, and
   the cut is counted. A record larger than a whole chunk payload is dropped and counted,
   as protobuf entries are.
-- `chunk_slots`, a record count, no longer bounds a chunk for raw. The chunk is
-  bounded by its payload in bytes.
+- `chunk_bytes`, the payload size in bytes, bounds a chunk for both formats.
 
 ## Protobuf
 

@@ -19,6 +19,7 @@
 
 #include "dump_dir.h"
 #include "pftrace.h"
+#include "pftrace_internal.h"
 
 #define DIR "timestamps.d"
 #define THREADS 4
@@ -105,7 +106,7 @@ int main(void)
     cfg.name = "timestamps.pftrace";
     cfg.mode = PF_MODE_CONTINUOUS;
     cfg.clock_id = CLOCK_REALTIME;
-    cfg.chunk_slots = 16;
+    cfg.chunk_bytes = 16 * PF_REC_HEAD_BYTES;
     cfg.buffer_bytes = 16u << 20;
     struct pf_trace *t = pf_trace_open(&cfg);
     CHECK(t != NULL, "open");

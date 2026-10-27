@@ -79,6 +79,7 @@ set_tests_properties(rotate PROPERTIES FIXTURES_SETUP rotate_traces)
 # A trace with known timestamps, including a clock that steps back, for the
 # import_timestamps test in tools/ to check against what Perfetto imports.
 add_executable(test_timestamps test_timestamps.c)
+target_include_directories(test_timestamps PRIVATE ${PROJECT_SOURCE_DIR}/src)
 target_link_libraries(test_timestamps PRIVATE pftrace Threads::Threads)
 target_compile_definitions(test_timestamps PRIVATE _GNU_SOURCE)
 add_test(NAME timestamps COMMAND test_timestamps WORKING_DIRECTORY ${PFTRACE_RUN_DIR})
@@ -89,7 +90,7 @@ set_tests_properties(timestamps PROPERTIES FIXTURES_SETUP timestamp_traces)
 add_executable(bench bench.c)
 target_link_libraries(bench PRIVATE pftrace Threads::Threads)
 
-# Chunk-buffer cost: rotation per chunk_slots, and scaling across threads.
+# Chunk-buffer cost: rotation per chunk size, and scaling across threads.
 add_executable(bench_chunk bench_chunk.c)
 target_link_libraries(bench_chunk PRIVATE pftrace Threads::Threads)
 

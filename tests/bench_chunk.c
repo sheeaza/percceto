@@ -3,7 +3,7 @@
  * This asks two questions about the chunk design:
  *
  *  - Rotation: a producer takes the pool lock once per chunk. Sweeping
- *    chunk_slots shows what that costs per event, from a chunk of 16 records
+ *    chunk size shows what that costs per event, from a chunk of 16 records
  *    up to chunks big enough that rotation is negligible.
  *  - Scaling: each producer writes into a chunk it owns, so the per-event
  *    cost should stay flat as threads are added. The commit and drain
@@ -33,6 +33,9 @@
 
 #include "dump_dir.h"
 #include "pftrace.h"
+
+/* Record head size, as PF_REC_HEAD_BYTES in pftrace_internal.h. The bench stays on the public header. */
+#define REC_HEAD_BYTES 32
 
 #define DIR "bench_chunk.d"
 #define MAX_THREADS 8
@@ -103,7 +106,7 @@ static void run(unsigned threads, size_t slots, uint64_t pairs)
     cfg.path = DIR;
     cfg.mode = PF_MODE_SNAPSHOT;
     cfg.buffer_bytes = 8u << 20;
-    cfg.chunk_slots = slots;
+    cfg.chunk_bytes = slots * REC_HEAD_BYTES;
     cfg.max_threads = threads;
     cfg.drain_interval_ms = 60000; /* keep the trim thread out of the way */
 
@@ -143,7 +146,7 @@ static void run(unsigned threads, size_t slots, uint64_t pairs)
 
     uint64_t emitted = (uint64_t)threads * pairs * 2;
     double wall_s = (double)(last - first) / 1e9;
-    printf("threads %u, chunk_slots %5zu: %6.1f ns/event per thread, "
+    printf("threads %u, records/chunk %5zu: %6.1f ns/event per thread, "
            "%6.2f M events/s total, %" PRIu64 " events counted\n",
            threads, slots, per_thread_ns, (double)emitted / wall_s / 1e6, s.events);
     dir_reset(DIR);
@@ -160,7 +163,7 @@ int main(void)
     for (unsigned i = 0; i < sizeof(slots) / sizeof(slots[0]); i++)
         run(1, slots[i], EVENTS_PER_THREAD);
 
-    printf("\nScaling, chunk_slots 256, %u events per thread:\n", EVENTS_PER_THREAD * 2);
+    printf("\nScaling, 256 records per chunk, %u events per thread:\n", EVENTS_PER_THREAD * 2);
     for (unsigned n = 1; n <= MAX_THREADS; n *= 2)
         run(n, 256, EVENTS_PER_THREAD);
 

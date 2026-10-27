@@ -1,7 +1,7 @@
 /* Chunk pool and writers. See docs/chunk_buffers_design.md.
  *
  * Producers take the pool lock only when they rotate to a new chunk, once per
- * chunk_slots events. The drain takes it to detach or walk the committed FIFO.
+ * chunk's payload of events. The drain takes it to detach or walk the committed FIFO.
  * Nothing on the per-event path reads or writes shared state, apart from a
  * relaxed store to the thread's own writer counter. */
 
@@ -122,15 +122,14 @@ static void make_exit_key(void)
 }
 
 /* A chunk's size, padded to a cache line so no two chunks share one. */
-size_t pf_chunk_bytes(uint32_t slots)
+size_t pf_chunk_bytes(size_t payload)
 {
-    return roundup(sizeof(struct pf_chunk) + slots * PF_REC_HEAD_BYTES, (size_t)64);
+    return roundup(sizeof(struct pf_chunk) + payload, (size_t)64);
 }
 
 int pf_pool_init(struct pf_trace *t)
 {
-    uint32_t slots = (uint32_t)t->cfg.chunk_slots;
-    size_t chunk_bytes = pf_chunk_bytes(slots);
+    size_t chunk_bytes = pf_chunk_bytes(t->cfg.chunk_bytes);
     size_t count = t->cfg.buffer_bytes / chunk_bytes;
 
     /* A writer needs a spare chunk while its full one is committed. */
@@ -176,8 +175,7 @@ int pf_pool_init(struct pf_trace *t)
 
     t->chunk_bytes = chunk_bytes;
     t->chunk_count = (uint32_t)count;
-    t->chunk_slots = slots;
-    t->chunk_payload = slots * PF_REC_HEAD_BYTES;
+    t->chunk_payload = (uint32_t)t->cfg.chunk_bytes;
     t->watermark_chunks = (uint32_t)(count * t->cfg.watermark_pct / 100u);
 
     pthread_mutex_init(&t->pool_lock, NULL);
@@ -225,7 +223,7 @@ struct pf_writer *pf_writer_bind(struct pf_trace *t)
     pthread_mutex_unlock(&t->reg_lock);
 
     /* Fields owned by the producer are set here, before the thread uses the
-     * writer. used == slots makes the first emit rotate and take a chunk. */
+     * writer. used == chunk_payload makes the first emit rotate and take a chunk. */
     if (w) {
         w->cur = NULL;
         w->used = t->chunk_payload;

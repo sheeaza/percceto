@@ -206,8 +206,8 @@ header's `record_size` assumed. The trade-offs:
 - Size limit. A copied name is capped at `PF_DYN_NAME_MAX`, 128 bytes. A longer
   name is cut to 125 bytes and the last three bytes are `...`, so a reader can
   see the cut. The truncation is counted in the stats.
-- Chunk capacity. `chunk_slots`, a record count, no longer bounds a chunk. The
-  chunk is bounded by its payload size in bytes.
+- Chunk capacity. `chunk_bytes`, the payload size in bytes, bounds a chunk. It
+  replaces `chunk_slots`, a record count.
 - Format version. The change bumps `version` to 6 and keeps `record_size` at 32.
   A version 5 reader rejects a version 6 file, so the change is not silent.
 

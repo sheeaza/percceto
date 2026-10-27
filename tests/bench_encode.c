@@ -4,7 +4,7 @@
  * The drain currently encodes each record into a TracePacket. Moving that onto
  * the emitting thread adds the same work to the caller. This measures that
  * work alone, on one thread, with no library and no drain: each event is
- * encoded into a packet buffer that is reset every chunk_slots records, the way
+ * encoded into a packet buffer that is reset every chunk's worth of records, the way
  * a chunk would fill, and compared against storing the same record as a plain
  * 48-byte struct, which is what the producer does today.
  *

@@ -69,15 +69,15 @@ enum pf_format {
  *      is extended rather than truncated. Snapshot: must be %NULL, since
  *      each pf_trace_dump() names its own file.
  * @buffer_bytes: Total in-RAM buffering. Divided into chunks of
- *      @chunk_slots records' worth of bytes each; the count is rounded down.
+ *      @chunk_bytes of payload each, plus a header; the count is rounded down.
  *      Must hold at least two chunks. 0 selects 8 MiB. This is the only
  *      sizeable allocation the library makes, and it happens once, at open.
- * @chunk_slots: Size of a chunk, in records. A chunk holds this many
- *      fixed-size records in raw format, and this many times 48 bytes of
- *      encoded events in protobuf, where an event takes fewer bytes, so more
- *      events fit. A thread fills one chunk at a time and hands it over when
- *      it is full, so this sets how often a thread takes shared state. 0 is
- *      rejected at open. pf_config_init() selects 256.
+ * @chunk_bytes: Payload size of a chunk, in bytes. A thread fills one chunk at
+ *      a time and hands it over when it is full, so this sets how often a
+ *      thread takes shared state. Raw and protobuf events are both variable
+ *      length, so a chunk holds as many events as fit. An event larger than
+ *      the payload is dropped and counted. 0 is rejected at open.
+ *      pf_config_init() selects 8 KiB, which is 256 raw records.
  * @max_threads: Threads that may be bound to this trace at once. A thread
  *      past the limit drops its events and counts them. A thread's slot is
  *      freed when it exits, so later threads can bind it. 0 is rejected at
@@ -117,7 +117,7 @@ struct pf_config {
     const char *path;
     const char *name;
     size_t buffer_bytes;
-    size_t chunk_slots;
+    size_t chunk_bytes;
     unsigned max_threads;
     enum pf_mode mode;
     enum pf_format format;
@@ -140,11 +140,10 @@ struct pf_config {
  * @meta_bytes: Bytes allocated for the writer table and the track table,
  *      both sized at open. The staging buffers are not included: they grow
  *      with use.
- * @chunk_slots: Event records per chunk, from &pf_config.chunk_slots.
+ * @chunk_payload: Payload bytes per chunk, from &pf_config.chunk_bytes.
  * @slot_bytes: Size of the fixed head of one raw event record, in bytes. A
  *      record with a dynamic name is longer by the name, padded to 8 bytes.
  *      A protobuf event is variable length, so its size is not fixed.
- *      %chunk_slots times this many bytes gives the chunk payload.
  * @bytes_written: Bytes handed to write() across all dumps.
  * @dropped: Events discarded rather than recorded, which means the output
  *      file has a gap. Never counts the events %PF_MODE_SNAPSHOT
@@ -172,7 +171,7 @@ struct pf_stats {
     uint64_t chunk_count;
     uint64_t pool_bytes;
     uint64_t meta_bytes;
-    uint64_t chunk_slots;
+    uint64_t chunk_payload;
     uint64_t slot_bytes;
     uint64_t truncated;
     uint64_t files;

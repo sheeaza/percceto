@@ -37,7 +37,7 @@ static int failures;
 
 /* Chunk bytes for a given slot count: header plus records. Mirrors pf_pool_init. */
 /* The library's own chunk size, so the test follows any change to padding. */
-#define CHUNK_BYTES(slots) pf_chunk_bytes(slots)
+#define CHUNK_BYTES(slots) pf_chunk_bytes((slots) * PF_REC_HEAD_BYTES)
 
 static void setup(struct pf_config *cfg, enum pf_mode mode, const char *dir)
 {
@@ -45,7 +45,7 @@ static void setup(struct pf_config *cfg, enum pf_mode mode, const char *dir)
     cfg->path = dir;
     cfg->mode = mode;
     cfg->name = mode == PF_MODE_CONTINUOUS ? "chunk.pftrace" : NULL;
-    cfg->chunk_slots = 4;
+    cfg->chunk_bytes = 4 * PF_REC_HEAD_BYTES;
     cfg->max_threads = 8;
 }
 
@@ -67,11 +67,11 @@ static void test_open_limits(void)
     pf_trace_close(t);
 
     cfg.buffer_bytes = 2 * CHUNK_BYTES(4);
-    cfg.chunk_slots = 0;
+    cfg.chunk_bytes = 0;
     errno = 0;
     CHECK(pf_trace_open(&cfg) == NULL && errno == EINVAL,
-          "zero chunk_slots should fail with EINVAL");
-    cfg.chunk_slots = 4;
+          "zero chunk_bytes should fail with EINVAL");
+    cfg.chunk_bytes = 4 * PF_REC_HEAD_BYTES;
 
     cfg.max_threads = 0;
     errno = 0;
@@ -239,9 +239,9 @@ static void test_accounting(void)
     pf_trace_stats(t, &s);
     uint64_t accounted = s.events + s.dropped;
     CHECK(accounted <= TOTAL, "accounted %llu of %d", (unsigned long long)accounted, TOTAL);
-    CHECK(TOTAL - accounted <= cfg.chunk_slots,
+    CHECK(TOTAL - accounted <= cfg.chunk_bytes / PF_REC_HEAD_BYTES,
           "%llu events unaccounted, more than one chunk (%zu)",
-          (unsigned long long)(TOTAL - accounted), cfg.chunk_slots);
+          (unsigned long long)(TOTAL - accounted), cfg.chunk_bytes / PF_REC_HEAD_BYTES);
     pf_trace_close(t);
 }
 
