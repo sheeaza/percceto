@@ -3,7 +3,7 @@
 # Sources are listed relative to this directory, so the paths stay correct
 # if the directory is ever vendored into another project.
 
-add_library(pftrace STATIC
+set(PFTRACE_SOURCES
   pb_writer.c
   pf_chunk.c
   pf_emit.c
@@ -14,6 +14,8 @@ add_library(pftrace STATIC
   pf_track.c
   pftrace.c
 )
+
+add_library(pftrace STATIC ${PFTRACE_SOURCES})
 
 target_include_directories(pftrace
   PUBLIC ${PROJECT_SOURCE_DIR}/include
@@ -41,17 +43,7 @@ set_target_properties(pftrace PROPERTIES
 # preset above hides the rest. The initial-exec TLS model is left off: a
 # dlopen'ed object with initial-exec TLS can fail when static TLS runs out
 # (docs/TODO_done.md). Output name is pftrace so the file is libpftrace.so.
-add_library(pftrace_shared SHARED
-  pb_writer.c
-  pf_chunk.c
-  pf_emit.c
-  pf_output.c
-  pf_pb_drain.c
-  pf_pb_encode.c
-  pf_raw.c
-  pf_track.c
-  pftrace.c
-)
+add_library(pftrace_shared SHARED ${PFTRACE_SOURCES})
 set_target_properties(pftrace_shared PROPERTIES
   OUTPUT_NAME pftrace
   C_VISIBILITY_PRESET hidden
@@ -75,9 +67,7 @@ target_compile_definitions(pftrace_shared PRIVATE _DEFAULT_SOURCE)
 #   sanitizer the -fsanitize= value
 function(pftrace_add_sanitized name sanitizer)
   set(target pftrace${name})
-  add_library(${target} STATIC
-    pb_writer.c pf_chunk.c pf_emit.c pf_output.c pf_pb_drain.c pf_pb_encode.c pf_raw.c
-    pf_track.c pftrace.c)
+  add_library(${target} STATIC ${PFTRACE_SOURCES})
   target_include_directories(${target}
     PUBLIC ${PROJECT_SOURCE_DIR}/include
     PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}
