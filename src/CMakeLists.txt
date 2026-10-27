@@ -36,6 +36,34 @@ set_target_properties(pftrace PROPERTIES
   VISIBILITY_INLINES_HIDDEN ON
 )
 
+# Shared copy of the library, libpftrace.so. Same sources as the static
+# library; SHARED implies -fPIC. Only PF_API symbols are exported, because the
+# preset above hides the rest. The initial-exec TLS model is left off: a
+# dlopen'ed object with initial-exec TLS can fail when static TLS runs out
+# (docs/TODO_done.md). Output name is pftrace so the file is libpftrace.so.
+add_library(pftrace_shared SHARED
+  pb_writer.c
+  pf_chunk.c
+  pf_emit.c
+  pf_output.c
+  pf_pb_drain.c
+  pf_pb_encode.c
+  pf_raw.c
+  pf_track.c
+  pftrace.c
+)
+set_target_properties(pftrace_shared PROPERTIES
+  OUTPUT_NAME pftrace
+  C_VISIBILITY_PRESET hidden
+  VISIBILITY_INLINES_HIDDEN ON
+)
+target_include_directories(pftrace_shared
+  PUBLIC ${PROJECT_SOURCE_DIR}/include
+  PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}
+)
+target_link_libraries(pftrace_shared PUBLIC Threads::Threads)
+target_compile_definitions(pftrace_shared PRIVATE _DEFAULT_SOURCE)
+
 # Sanitized copy of the library, for the stress tests in tests/ to link. The
 # whole library is instrumented, so the sanitizer sees every access the
 # stress test drives through it.
