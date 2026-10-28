@@ -3,7 +3,6 @@
 #define _GNU_SOURCE
 #endif
 
-#include <errno.h>
 #include <pthread.h>
 #include <stdarg.h>
 #include <stdatomic.h>
@@ -264,7 +263,7 @@ void pf_slice_begin_fmt_impl(struct pf_trace *t, uint64_t track_uuid, const char
     char name[FMT_NAME_BYTES];
     va_list ap;
     va_start(ap, fmt);
-    pf_slice_begin_dyn_impl(t, track_uuid, format_name(name, sizeof(name), fmt, ap));
+    emit_dyn(t, TYPE_SLICE_BEGIN, track_uuid, format_name(name, sizeof(name), fmt, ap));
     va_end(ap);
 }
 
@@ -273,25 +272,7 @@ void pf_instant_event_fmt_impl(struct pf_trace *t, uint64_t track_uuid, const ch
     char name[FMT_NAME_BYTES];
     va_list ap;
     va_start(ap, fmt);
-    pf_instant_event_dyn_impl(t, track_uuid, format_name(name, sizeof(name), fmt, ap));
-    va_end(ap);
-}
-
-void pf_slice_begin_g_fmt_impl(const char *fmt, ...)
-{
-    char name[FMT_NAME_BYTES];
-    va_list ap;
-    va_start(ap, fmt);
-    pf_slice_begin_g_dyn_impl(format_name(name, sizeof(name), fmt, ap));
-    va_end(ap);
-}
-
-void pf_instant_event_g_fmt_impl(const char *fmt, ...)
-{
-    char name[FMT_NAME_BYTES];
-    va_list ap;
-    va_start(ap, fmt);
-    pf_instant_event_g_dyn_impl(format_name(name, sizeof(name), fmt, ap));
+    emit_dyn(t, TYPE_INSTANT, track_uuid, format_name(name, sizeof(name), fmt, ap));
     va_end(ap);
 }
 
@@ -323,9 +304,9 @@ void pf_counter_set_double(struct pf_trace *t, uint64_t counter_track_uuid, doub
 }
 
 /* --- Simple API -------------------------------------------------------
- * The trace is the process default, set by pf_trace_open_g() and cleared by
- * pf_trace_close_g(). pf_trace_open() and pf_trace_close() never touch it.
- * It is expected to be created once by the main thread
+ * The trace is the process default. pf_trace_open_g() in pftrace.c sets it and
+ * pf_trace_close_g() clears it. pf_trace_open() and pf_trace_close() never
+ * touch it. It is expected to be created once by the main thread
  * and live for the whole process, so it is never swapped while threads
  * use it. Each thread caches the uuid of its own track in its pf_tls slot for
  * that trace. The hot path is one pointer load, one TLS read and a flag check.
@@ -333,13 +314,6 @@ void pf_counter_set_double(struct pf_trace *t, uint64_t counter_track_uuid, doub
  *
  * Renames are kept in the slot, so a name set before registration applies
  * at registration, and one set after re-emits the descriptor. */
-
-static struct pf_trace *g_default_trace;
-
-static struct pf_trace *default_trace(void)
-{
-    return g_default_trace;
-}
 
 /* Cache miss: register this thread's track on @t. Name precedence: the
  * name set by pf_thread_name(), then the OS thread name, then "thread-<tid>".
@@ -379,49 +353,73 @@ void pf_slice_begin_g_impl(const char *name)
 {
     struct pf_trace *t = default_trace();
     if (t)
-        pf_slice_begin_impl(t, thread_track(t), name);
+        emit_named(t, TYPE_SLICE_BEGIN, thread_track(t), name);
 }
 
 void pf_slice_end_g(void)
 {
     struct pf_trace *t = default_trace();
     if (t)
-        pf_slice_end(t, thread_track(t));
+        emit_end(t, thread_track(t));
 }
 
 void pf_instant_event_g_impl(const char *name)
 {
     struct pf_trace *t = default_trace();
     if (t)
-        pf_instant_event_impl(t, thread_track(t), name);
+        emit_named(t, TYPE_INSTANT, thread_track(t), name);
 }
 
 void pf_slice_begin_args_g_impl(const char *name, unsigned nargs, const struct pf_arg *args)
 {
     struct pf_trace *t = default_trace();
     if (t)
-        pf_slice_begin_args_impl(t, thread_track(t), name, nargs, args);
+        emit_named_args(t, TYPE_SLICE_BEGIN, thread_track(t), name, nargs, args);
 }
 
 void pf_instant_event_args_g_impl(const char *name, unsigned nargs, const struct pf_arg *args)
 {
     struct pf_trace *t = default_trace();
     if (t)
-        pf_instant_event_args_impl(t, thread_track(t), name, nargs, args);
+        emit_named_args(t, TYPE_INSTANT, thread_track(t), name, nargs, args);
 }
 
 void pf_slice_begin_g_dyn_impl(const char *name)
 {
     struct pf_trace *t = default_trace();
     if (t)
-        pf_slice_begin_dyn_impl(t, thread_track(t), name);
+        emit_dyn(t, TYPE_SLICE_BEGIN, thread_track(t), name);
 }
 
 void pf_instant_event_g_dyn_impl(const char *name)
 {
     struct pf_trace *t = default_trace();
     if (t)
-        pf_instant_event_dyn_impl(t, thread_track(t), name);
+        emit_dyn(t, TYPE_INSTANT, thread_track(t), name);
+}
+
+void pf_slice_begin_g_fmt_impl(const char *fmt, ...)
+{
+    char name[FMT_NAME_BYTES];
+    va_list ap;
+    va_start(ap, fmt);
+    const char *s = format_name(name, sizeof(name), fmt, ap);
+    va_end(ap);
+    struct pf_trace *t = default_trace();
+    if (t)
+        emit_dyn(t, TYPE_SLICE_BEGIN, thread_track(t), s);
+}
+
+void pf_instant_event_g_fmt_impl(const char *fmt, ...)
+{
+    char name[FMT_NAME_BYTES];
+    va_list ap;
+    va_start(ap, fmt);
+    const char *s = format_name(name, sizeof(name), fmt, ap);
+    va_end(ap);
+    struct pf_trace *t = default_trace();
+    if (t)
+        emit_dyn(t, TYPE_INSTANT, thread_track(t), s);
 }
 
 void pf_thread_name(const char *name)
@@ -445,68 +443,19 @@ uint64_t pf_track_thread_uuid_g(void)
     return t ? thread_track(t) : 0;
 }
 
-uint64_t pf_track_counter_g(uint64_t parent_uuid, const char *name, enum pf_unit unit)
-{
-    struct pf_trace *t = default_trace();
-    return t ? pf_track_counter(t, parent_uuid, name, unit) : 0;
-}
-
 void pf_counter_set_int_g(uint64_t counter_track_uuid, int64_t value)
 {
     struct pf_trace *t = default_trace();
     if (t)
-        pf_counter_set_int(t, counter_track_uuid, value);
+        emit_counter(t, counter_track_uuid, (uint64_t)value, false);
 }
 
 void pf_counter_set_double_g(uint64_t counter_track_uuid, double value)
 {
     struct pf_trace *t = default_trace();
-    if (t)
-        pf_counter_set_double(t, counter_track_uuid, value);
-}
-
-int pf_trace_dump_g(const char *name, char *file, size_t size)
-{
-    struct pf_trace *t = default_trace();
-    if (!t) {
-        errno = ENODEV;
-        return -1;
+    if (t) {
+        uint64_t bits;
+        memcpy(&bits, &value, 8);
+        emit_counter(t, counter_track_uuid, bits, true);
     }
-    return pf_trace_dump(t, name, file, size);
-}
-
-int pf_trace_flush_g(const char *name, char *file, size_t size)
-{
-    struct pf_trace *t = default_trace();
-    if (!t) {
-        errno = ENODEV;
-        return -1;
-    }
-    return pf_trace_flush(t, name, file, size);
-}
-
-int pf_trace_open_g(const struct pf_config *cfg)
-{
-    struct pf_trace *t = pf_trace_open(cfg);
-    if (!t)
-        return -1;
-    g_default_trace = t;
-    return 0;
-}
-
-void pf_trace_close_g(void)
-{
-    struct pf_trace *t = default_trace();
-    if (!t)
-        return;
-
-    /* Cleared before the drain stops, so no simple-API call reaches a trace
-     * that is being torn down. */
-    g_default_trace = NULL;
-    pf_trace_close(t);
-}
-
-struct pf_trace *pf_trace_default_g(void)
-{
-    return default_trace();
 }

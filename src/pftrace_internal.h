@@ -593,4 +593,15 @@ bool open_name_ok(const struct pf_config *cfg);
 int pf_drain_start(struct pf_trace *t);
 void pf_drain_stop(struct pf_trace *t);
 
+/* --- Simple API default trace, defined in pftrace.c ----------------------
+ * The process default trace the _g calls use. pf_trace_open_g() sets it and
+ * pf_trace_close_g() clears it. Not PF_API, so it is hidden from the library's
+ * exports and a load of it stays a plain data access. */
+extern struct pf_trace *g_default_trace;
+
+static inline struct pf_trace *default_trace(void)
+{
+    return g_default_trace;
+}
+
 #endif /* PFTRACE_INTERNAL_H */

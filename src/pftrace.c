@@ -287,3 +287,60 @@ void pf_trace_close(struct pf_trace *t)
     pf_unbind_thread(t);
     pf_trace_unref(t);
 }
+
+/* --- Simple API: the process default trace ----------------------------- */
+
+/* The trace the _g calls in pf_emit.c emit into. See pftrace_internal.h. */
+struct pf_trace *g_default_trace;
+
+int pf_trace_open_g(const struct pf_config *cfg)
+{
+    struct pf_trace *t = pf_trace_open(cfg);
+    if (!t)
+        return -1;
+    g_default_trace = t;
+    return 0;
+}
+
+void pf_trace_close_g(void)
+{
+    struct pf_trace *t = default_trace();
+    if (!t)
+        return;
+
+    /* Cleared before the drain stops, so no simple-API call reaches a trace
+     * that is being torn down. */
+    g_default_trace = NULL;
+    pf_trace_close(t);
+}
+
+struct pf_trace *pf_trace_default_g(void)
+{
+    return default_trace();
+}
+
+int pf_trace_dump_g(const char *name, char *file, size_t size)
+{
+    struct pf_trace *t = default_trace();
+    if (!t) {
+        errno = ENODEV;
+        return -1;
+    }
+    return pf_trace_dump(t, name, file, size);
+}
+
+int pf_trace_flush_g(const char *name, char *file, size_t size)
+{
+    struct pf_trace *t = default_trace();
+    if (!t) {
+        errno = ENODEV;
+        return -1;
+    }
+    return pf_trace_flush(t, name, file, size);
+}
+
+uint64_t pf_track_counter_g(uint64_t parent_uuid, const char *name, enum pf_unit unit)
+{
+    struct pf_trace *t = default_trace();
+    return t ? pf_track_counter(t, parent_uuid, name, unit) : 0;
+}
